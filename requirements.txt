@@ -1,0 +1,10 @@
+torch>=2.6
+transformers>=4.53.0
+accelerate
+datasets
+scipy
+scikit-learn
+nltk
+immutabledict
+langdetect
+absl-py

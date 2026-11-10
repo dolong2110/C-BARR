@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Section 6.1 & Phase 1 (W1): Validated Environment Setup
+pip install --upgrade pip
+pip install "torch>=2.6" "transformers>=4.53.0" accelerate datasets scipy scikit-learn \
+    nltk immutabledict langdetect absl-py
+
+# Optional CUDA kernels for Linux/NVCC GPU hosts (Qwen3.5 Gated DeltaNet layers)
+if command -v nvcc >/dev/null 2>&1; then
+    pip install "flash-linear-attention==0.5.2" || true
+    pip install "causal-conv1d==1.7.0" --no-build-isolation || true
+fi
+
+# Vendor upstream Google Research instruction_following_eval if not already present
+if [ ! -d "./instruction_following_eval" ]; then
+    rm -rf /tmp/gr
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/google-research/google-research.git /tmp/gr
+    (cd /tmp/gr && git sparse-checkout set instruction_following_eval)
+    cp -r /tmp/gr/instruction_following_eval ./instruction_following_eval
+    rm -rf /tmp/gr
+fi
+
+python3 -m nltk.downloader punkt punkt_tab stopwords averaged_perceptron_tagger_eng
+python3 -c "from langdetect import DetectorFactory; DetectorFactory.seed = 0; print('Environment setup OK')"

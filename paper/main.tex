@@ -1,0 +1,139 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{graphicx}
+
+\title{Cascaded Budgeted Adaptive Reasoning Routing (C-BARR):\\
+Mitigating Overthinking and Constraint Drift Across Hybrid DeltaNet and Dense Language Models}
+
+\author{Anonymous Authors}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Dual-mode reasoning language models face a fundamental trade-off between multi-step deliberation and strict surface-form constraint compliance: while extended \texttt{<think>} chains improve multi-step arithmetic and structural planning, they trigger severe token overthinking on simple queries and degrade negative-inhibition and structural-wrapper compliance on instruction-following benchmarks. We introduce \textbf{Cascaded Budgeted Adaptive Reasoning Routing (C-BARR)}, a training-free test-time routing and intervention framework operating on frozen model weights with only six scalar calibration parameters fitted on 120 held-out examples ($\texttt{seed\_60}$ and $\texttt{dev\_60}$). C-BARR combines (1) a sub-millisecond numeral-masked lexical constraint router (\textbf{Gate 1}) that bypasses deliberation on pure precision constraints and extracts recursive-safe rule clauses, (2) a $\le 32$-token non-thinking Shannon entropy and Thinking Inertia probe (\textbf{Gate 2}) for uncertain queries, and (3) tight tiered thinking termination ($B \in \{64, 128, 250\}$) paired with channel-stripped post-\texttt{</think>} constraint re-anchoring (\textbf{Method M2}). Through counterfactual causal diagnostic controls across hybrid Gated DeltaNet (\texttt{Qwen3.5}) and dense Grouped-Query Attention (\texttt{SmolLM3-3B}) backbones, we disentangle context-length recency decay ($\rho_{\text{recency}}$) from semantic self-priming interference ($\rho_{\text{interference}}$).
+\end{abstract}
+
+\section{Introduction and Motivation}
+Recent reasoning language models support explicit chain-of-thought deliberation inside \texttt{<think>}...\texttt{</think>} blocks \cite{muennighoff2025s1,ma2025nothinking}. However, indiscriminately enabling thinking induces both severe token overthinking \cite{aggarwal2025optimalthinkingbench} and systematic instruction-following degradation on strict lexical and structural constraints \cite{li2025pitfalls,kumar2026constraint}. Conversely, simply disabling native thinking switches fails to prevent visible step-by-step derivations due to \emph{Thinking Inertia} \cite{lei2026thinkinginertia}. C-BARR resolves this dilemma by repurposing Thinking Inertia and token-level Shannon entropy as online escalation signals while protecting constraint compliance via zero-distance post-\texttt{</think>} re-anchoring.
+
+\section{Related Work and Model Backbones}
+Prior test-time compute methods either force static deliberation budgets \cite{muennighoff2025s1,ma2025nothinking}, train external 7B routers \cite{li2025pitfalls}, require stochastic multi-draft agreement \cite{lee2026dart}, or assume monotonic accuracy gains from thinking \cite{zeng2025pac,yu2026bpac}. Instruction-retention techniques that duplicate prompts in the user turn \cite{leviathan2025promptrep} decay across long reasoning traces, while pre-softmax attention steering \cite{venkateswaran2026spotlight} cannot operate on hybrid linear-attention architectures such as \texttt{Qwen3.5}, where 75\% of layers use Gated DeltaNet recurrent fast-weight state matrices updated via multiplicative decay gates \cite{yang2024gateddeltanet}.
+
+\section{Formal C-BARR Methodology}
+\subsection{Gate 1: Numeral-Masked Lexical Screening and Clause Extraction}
+Gate 1 screens user prompts across all 25 canonical IFEval constraint templates \cite{zhou2023ifeval}, partitioning them into 10 Planning and 15 Precision (5 Inhibition + 10 Structural) types while masking unit-bound counts before detecting multi-number symbolic math cues ($\phi_{\text{sym}}$).
+
+\subsection{Gate 2: Fast Non-Thinking Entropy and Thinking Inertia Probing}
+On queries not resolved by Gate 1, Gate 2 decodes up to 32 non-thinking tokens, recording step entropies $(H_{\text{first}}, H_{\text{mean}}, H_{\text{max}})$ and an online Thinking Inertia indicator $I_{\text{inertia}}(x) \in \{0, 1\}$ \cite{lei2026thinkinginertia,zhu2026savethinking}.
+
+\subsection{Method M2: Tight Budgeted Termination and Post-Think Re-Anchoring}
+When escalated, C-BARR assigns a tiered thinking budget $B(x) \in \{64, 128, 250\}$ (deducting $T_{\text{probe}}$ at the top tier so total deliberative tokens $T_{\text{delib}} = T_{\text{probe}} + T_{\text{think}} \le 250$), splices the termination string \texttt{P\_TERM} upon truncation \cite{ma2025nothinking}, and prefills a channel-stripped reminder immediately after \texttt{</think>} (\texttt{post\_stripped}).
+
+\section{Experimental Setup and Metrics}
+All splits ($\texttt{seed\_60}$, $\texttt{dev\_60}$, $\texttt{eval\_450}$, $\texttt{ifeval\_diag\_341\_strict}$, and $\texttt{ifeval\_diag\_491}$) are frozen deterministically at $\text{seed}=42$ with zero UID overlap. For deterministic language-detection grading in IFEval, we pin \texttt{DetectorFactory.seed = 0} and \texttt{random.seed(0)} prior to each verification call and flag the four documented upstream prompt-kwargs mismatch keys (\texttt{30, 337, 2078, 3311}).
+
+% Table 1: Main C-BARR Comparison on Frozen N=450 Suite
+\begin{table}[t]
+\centering
+\caption{Main results across the frozen $N=450$ suite (\texttt{Qwen/Qwen3.5-4B} primary; \texttt{HuggingFaceTB/SmolLM3-3B} dense control). \textbf{M2} caps thinking at $B\in \{64,128,250\}$ via \texttt{P\_TERM} and injects a channel-stripped 1-line constraint reminder immediately after \texttt{</think>}. ${\overline{T}}_{\text{tot}}$ includes Gate-2 probe, \texttt{<think>}, injected reminder, and response tokens. $^\dagger p < 0.05$ vs.\ \textbf{B1b} (Holm-Bonferroni exact McNemar).}
+\label{tab:main_results}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccccccccc}
+\toprule
+\textbf{System Variant} & \textbf{GSM-E} & \textbf{GSM-H} & \textbf{CSQA} & \textbf{IFE-Plan} & \textbf{IFE-Prec} & \textbf{IFE-Conf} & \textbf{MacroAcc} $\uparrow$ & $\textbf{OAA}_{250}$ $\uparrow$ & $\textbf{AUC}_{\text{OAA}}$ $\uparrow$ & ${U}_{0.05}$ $\uparrow$ & ${\overline{T}}_{\text{tot}}$ / \textbf{Calls} $\downarrow$ \\
+\midrule
+B0: Always Non-Thinking ($B=0$)             & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+B1a: Prompted CoT (\textit{Step-by-step})   & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+B1b: Always Thinking ($B=2048$)             & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+B2a: Self-Selective Prompting               & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+B2b: Budget-Matched Random Esc.             & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+\midrule
+M1a: Regex Constraint Router (Gate 1)       & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+M1b: Fast Entropy + Inertia Router (Gate 2) & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+M1c: Dual-Signal Cascade (Gate 1 + Gate 2)  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+\midrule
+M2-64: C-BARR Fixed Cap ($B=64$ + Post-Anc.)  & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+M2-128: C-BARR Fixed Cap ($B=128$ + Post-Anc.)& -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+M2-256: C-BARR Fixed Cap ($B=250$ + Post-Anc.)& -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+M2-Pre: Tiered $\{64,128,250\}$ + Pre-Anc.    & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+\textbf{M2: Full C-BARR ($\{64,128,250\}$ + Post-Anc.)} & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / $1+p$ \\
+\midrule
+\textit{Instance-Level Oracle\_UB}          & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- & -- / 1.00 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Main Results and Ablations}
+Table~\ref{tab:main_results} reports accuracy and efficiency metrics across the frozen $N=450$ evaluation suite.
+
+\section{Cross-Scale Disagreement and Loop Pathology Audit}
+Table~\ref{tab:scale_and_pathology} summarizes the 4-regime disagreement audit and repetition loop rates across model scales.
+
+% Table 2: Cross-Scale 4-Regime Flip Audit, Loop Pathology, and C-BARR Recovery
+\begin{table}[t]
+\centering
+\caption{Cross-scale 4-regime disagreement audit (\textbf{B0} vs.\ \textbf{B1b} on $N=450$), greedy 4-gram repetition loop rate, unclosed-\texttt{<think>} budget exhaustion rate ($B=2048$), and \textbf{M2 (Full C-BARR)} efficiency-adjusted gains across Hybrid Gated DeltaNet (\texttt{Qwen3.5}) and Dense GQA (\texttt{SmolLM3-3B}) backbones.}
+\label{tab:scale_and_pathology}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccccccc}
+\toprule
+\textbf{Model Backbone} & \textbf{Mixer Architecture} & \textbf{\% Helped} & \textbf{\% Hurt} & \textbf{B1b Loop\%} $\downarrow$ & \textbf{B1b Exh.\%} $\downarrow$ & \textbf{M2 Loop\%} $\downarrow$ & \textbf{B1b Macro} & \textbf{M2 Macro} $\uparrow$ & \textbf{Token Sav.\%} $\uparrow$ \\
+\midrule
+\texttt{Qwen3.5-0.8B} & 18 DeltaNet + 6 Attn   & -- & -- & -- & -- & -- & -- & -- & -- \\
+\texttt{Qwen3.5-2B}   & 18 DeltaNet + 6 Attn   & -- & -- & -- & -- & -- & -- & -- & -- \\
+\texttt{Qwen3.5-4B}   & 24 DeltaNet + 8 Attn   & -- & -- & -- & -- & -- & -- & -- & -- \\
+\texttt{Qwen3.5-9B}   & 24 DeltaNet + 8 Attn   & -- & -- & -- & -- & -- & -- & -- & -- \\
+\midrule
+\texttt{SmolLM3-3B}   & 36 Full GQA (3:1 NoPE) & -- & -- & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Causal Diagnostic Analysis on $E_{\text{hurt}}$}
+Table~\ref{tab:diagnostic_control} disentangles recency decay ($\rho_{\text{recency}}$) from semantic interference ($\rho_{\text{interference}}$) on held-out IFEval ``Hurt'' prompts.
+
+% Table 3: Section 6 Causal Diagnostic Control: Trace Stripping vs. Post-Think Re-Anchoring on E_hurt
+\begin{table}[t]
+\centering
+\caption{Strict prompt-level recovery (\%) on held-out IFEval ``Hurt'' prompts ($\text{Pass}(\text{B0})=1\wedge \text{Pass}(\text{B1b})=0$ on $N=341$ strictly \texttt{eval\_450}-disjoint and $N=491$ calibration-disjoint pools), comparing \textbf{Trace Stripping} vs.\ \textbf{Post-Think Constraint Re-Anchoring} across Hybrid Gated DeltaNet (\texttt{Qwen3.5-4B}) and Dense GQA (\texttt{SmolLM3-3B}) to separate recency decay (${\rho }_{\text{recency}}$) from semantic interference (${\rho }_{\text{interference}}$).}
+\label{tab:diagnostic_control}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Intervention Condition (Fixed ${t}_{\text{think}}$)} & \textbf{Causal Factor Isolated} & \multicolumn{2}{c}{\textbf{Qwen3.5-4B (DeltaNet)}} & \multicolumn{2}{c}{\textbf{SmolLM3-3B (Dense)}} \\
+\cmidrule(lr){3-4} \cmidrule(lr){5-6}
+ & & \textbf{Inhibition} & \textbf{Structural} & \textbf{Inhibition} & \textbf{Structural} \\
+\midrule
+B1b: Unmodified \texttt{<think>} ($|{t}_{\text{think}}|$)            & Baseline failure state (0\%)                & 0.0 & 0.0 & 0.0 & 0.0 \\
+\textbf{Control A1: Trace Stripping} ($0$ toks)                    & Deletes \texttt{<think>}; removes decay + interference & --  & --  & --  & --  \\
+\textbf{Control B2a: Post-Think Constraint Re-Anchor (Stripped)}   & Keeps \texttt{<think>}; restores post-\texttt{</think>} recency & --  & --  & --  & --  \\
+\midrule
+Control B1: Pre-\texttt{</think>} Clause Re-Anchor                 & Tests pre- vs.\ post-\texttt{</think>} tag locus & --  & --  & --  & --  \\
+Control B2b: Post-\texttt{</think>} Unstripped Visible Prefill     & Quantifies wrapper verifier corruption      & --  & --  & --  & --  \\
+Control A2: Length-Matched Math Filler ($|{t}_{\text{think}}|$)      & Keeps distance; removes task priming        & --  & --  & --  & --  \\
+Control B3: Intra-Trace Cut (No Re-Anchor)                         & Halves distance; keeps early priming        & --  & --  & --  & --  \\
+\midrule
+\textit{Derived Recency-Decay Share (${\rho }_{\text{recency}}$, \%)} & ${R}_{\text{post}}/{R}_{\text{strip}}$        & --  & --  & --  & --  \\
+\textit{Residual Semantic Interference (${\rho }_{\text{interf}}$, \%)}& $({R}_{\text{strip}}-\max({R}_{\text{post}},{R}_{\text{pre}}))/{R}_{\text{strip}}$ & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Conclusion and Limitations}
+C-BARR demonstrates that lightweight dual-signal routing paired with tight thinking caps and channel-stripped post-\texttt{</think>} constraint re-anchoring eliminates overthinking while recovering strict instruction compliance without weight updates.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

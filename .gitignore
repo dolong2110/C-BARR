@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# OS / Editor metadata
+.DS_Store
+.idea/
+.vscode/
+
+# Large intermediate model caches
+outputs/*_cache.jsonl
