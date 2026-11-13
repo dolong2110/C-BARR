@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
 import numpy as np
 from langdetect import DetectorFactory
@@ -252,20 +253,19 @@ class TestCBARRPreflight(unittest.TestCase):
         if not eval_path.exists():
             self.skipTest("data/eval_450.jsonl not materialized yet")
 
-        smoke_items = build_smoke_12(
-            eval_path,
-            [pathlib.Path("/tmp/smoke_12.jsonl"), ROOT / "outputs" / "smoke_12.jsonl"],
-        )
-        for model_id in ("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"):
-            eng = MockDualModeEngine(model_id)
-            tag = model_id.replace("/", "__")
-            res = verify_gate_3_on_engine(
-                eng, smoke_items, ROOT / "outputs" / f"smoke_12_{tag}.jsonl"
-            )
-            self.assertTrue(res["gate3_no_hash_prefix_on_ifeval"])
-            self.assertTrue(res["gate3_no_32tok_truncation"])
-            self.assertTrue(res["gate3_p_term_and_zero_reminder_leak"])
-            self.assertTrue(res["d13_delib_le_250_verified"])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = pathlib.Path(tmp)
+            smoke_items = build_smoke_12(eval_path, [tmp_dir / "smoke_12.jsonl"])
+            for model_id in ("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"):
+                eng = MockDualModeEngine(model_id)
+                tag = model_id.replace("/", "__")
+                res = verify_gate_3_on_engine(
+                    eng, smoke_items, tmp_dir / f"smoke_12_{tag}.jsonl"
+                )
+                self.assertTrue(res["gate3_no_hash_prefix_on_ifeval"])
+                self.assertTrue(res["gate3_no_32tok_truncation"])
+                self.assertTrue(res["gate3_p_term_and_zero_reminder_leak"])
+                self.assertTrue(res["d13_delib_le_250_verified"])
 
 
 if __name__ == "__main__":
