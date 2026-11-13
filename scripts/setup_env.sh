@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Section 6.1 & Phase 1 (W1): Validated Environment Setup
 pip install --upgrade pip
-pip install "torch>=2.6" "transformers>=4.53.0" accelerate datasets scipy scikit-learn \
+pip install "torch>=2.6" "transformers>=4.53.0" accelerate datasets matplotlib scipy scikit-learn \
     nltk immutabledict langdetect absl-py
 
 # Optional CUDA kernels for Linux/NVCC GPU hosts (Qwen3.5 Gated DeltaNet layers)
@@ -21,5 +21,7 @@ if [ ! -d "./instruction_following_eval" ]; then
     rm -rf /tmp/gr
 fi
 
+# Download NLTK sentence/POS resources required by google-research instruction_following_eval
 python3 -m nltk.downloader punkt punkt_tab stopwords averaged_perceptron_tagger_eng
+# Verify seeded langdetect import (Patch D3) before running any evaluation
 python3 -c "from langdetect import DetectorFactory; DetectorFactory.seed = 0; print('Environment setup OK')"

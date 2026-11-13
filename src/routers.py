@@ -19,6 +19,7 @@ class CalibratedRouterParams:
 
 
 def _build_gate2_feature_vec(g1: Gate1Output, probe: dict[str, Any]) -> np.ndarray:
+    """Extracts the 5 scalar Gate-2 logistic regression features in canonical order."""
     return np.array(
         [
             float(probe["H_first"]),
@@ -36,10 +37,13 @@ def select_tiered_budget(
 ) -> int:
     """Assigns C-BARR Stage-2 thinking cap B(x) in {64, 128, 250} (Patch D13: capped at 250)."""
     is_mc = "(A)" in prompt and "(B)" in prompt
+    # Easy non-symbolic multiple choice needs only a brief 64-token sanity check
     if is_mc and g1.phi_sym == 0:
         return 64
+    # Conflicting constraints (planning + precision) or planning+math need the full 250-token SLA tier
     if g1.phi_plan == 1 and (g1.phi_prec == 1 or g1.phi_sym == 1):
         return 250
+    # High peak probe entropy or Thinking Inertia escalates uncertain items to the top 250 tier
     if probe is not None and (probe["H_max"] >= tau_h_high or probe["I_inertia"] == 1):
         return 250
     if g1.phi_plan == 1:
@@ -48,6 +52,7 @@ def select_tiered_budget(
 
 
 def _get_slow_rec(rec: dict[str, Any], b_val: int, direct: bool, prefix: str = "m2") -> dict[str, Any]:
+    """Selects direct-pass (no probe tax) vs. Gate-2-escalated (T_probe deducted) cached slow record."""
     if b_val in (250, 256):
         if direct and f"{prefix}_b256_direct" in rec:
             return rec[f"{prefix}_b256_direct"]
@@ -68,9 +73,11 @@ class CBARRCalibrator:
         seed_records: list[dict[str, Any]],
         dev_records: list[dict[str, Any]],
     ) -> CalibratedRouterParams:
+        """Stage A: fit logistic regression on seed_60; Stage B: tune tau* on dev_60 for U_0.05."""
         X_seed, y_seed = [], []
         h_max_thinking_helped: list[float] = []
 
+        # Positive label: thinking strictly beats fast probe, or fast probe failed with Thinking Inertia
         for rec in seed_records:
             X_seed.append(_build_gate2_feature_vec(rec["g1"], rec["probe"]))
             z_fast = int(rec["fast_done"]["z"])
@@ -83,6 +90,7 @@ class CBARRCalibrator:
         X_arr = np.vstack(X_seed)
         y_arr = np.asarray(y_seed, dtype=int)
 
+        # Deterministic prior weights fallback if synthetic/small seed split happens to be single-class
         if len(np.unique(y_arr)) < 2:
             coef = [0.6, 0.8, 0.4, 1.0, 0.5]
             intercept = -1.0
@@ -92,6 +100,7 @@ class CBARRCalibrator:
             coef = [float(c) for c in clf.coef_[0]]
             intercept = float(clf.intercept_[0])
 
+        # High-uncertainty entropy threshold is anchored at the median H_max where thinking helped
         tau_h_high = (
             float(np.median(h_max_thinking_helped)) if h_max_thinking_helped else 0.85
         )
@@ -100,6 +109,7 @@ class CBARRCalibrator:
         best_u = -1e9
         best_esc_rate = 0.35
 
+        # Grid-search Gate-2 escalation threshold tau in [0.15, 0.85] to maximize utility on dev_60
         w_vec = np.asarray(coef, dtype=np.float64)
         for tau in np.linspace(0.15, 0.85, 29):
             utilities: list[float] = []
@@ -170,6 +180,7 @@ def resolve_all_variants_for_item(
     gate2_esc = p_esc >= params.tau_prob
 
     def _merge_probe_and_slow(slow_run: dict[str, Any]) -> dict[str, Any]:
+        """Accounts for both the initial Gate-2 probe call and the escalated slow-thinking call."""
         merged = dict(slow_run)
         merged["T_probe"] = probe["T_probe"]
         merged["T_total"] = probe["T_probe"] + slow_run["T_total"]
@@ -180,9 +191,12 @@ def resolve_all_variants_for_item(
     def _route_with_slow_target(
         direct_slow: dict[str, Any], esc_slow: dict[str, Any]
     ) -> dict[str, Any]:
+        """Executes C-BARR's 3-branch cascade: Gate-1 bypass -> Gate-1 plan direct -> Gate-2 probe."""
         if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+            # Pure precision rules regress under thinking; bypass deliberation immediately (1.0 call)
             return cache_row["b0"]
         if g1.phi_plan == 1:
+            # Planning rules benefit reliably from deliberation; escalate directly without probe tax
             return direct_slow
         return _merge_probe_and_slow(esc_slow) if gate2_esc else cache_row["fast_done"]
 

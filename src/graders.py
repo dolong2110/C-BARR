@@ -18,6 +18,9 @@ evaluation_main = _ifeval_mod if hasattr(_ifeval_mod, "InputExample") else __imp
     "instruction_following_eval.evaluation_lib", fromlist=["InputExample"]
 )
 
+# Split precision constraints into two diagnostic mechanisms for Section 6 E_hurt analysis:
+# - INHIBITION_IDS: rules requiring suppression of default habits (no commas, lowercase, forbidden words, language)
+# - STRUCTURAL_IDS: rules requiring explicit output scaffolding (JSON, title delimiters, postscript, repeat prompt)
 INHIBITION_IDS: frozenset[str] = frozenset({
     "punctuation:no_comma",
     "keywords:forbidden_words",
@@ -51,6 +54,7 @@ SPILLOVER_RE = re.compile(
     r"^\s*(?:wait[,:\s]|let's\s+think|step\s+1\b|hmm[,:\s])", re.IGNORECASE
 )
 
+# Precedence-ordered numeric extraction patterns (LaTeX \boxed -> #### / cue -> trailing number)
 NUM_TOKEN_RE = re.compile(r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:/\d+)?")
 BOXED_CONTENT_RE = re.compile(r"\\boxed\{\s*([^{}]+(?:\{[^{}]*\}[^{}]*)*)\s*\}")
 HASH_ANS_RE = re.compile(r"####\s*\$?\s*([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)")
@@ -61,6 +65,7 @@ CUE_ANS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Precedence-ordered multiple-choice option extractors for CommonsenseQA
 MC_BOXED_RE = re.compile(r"\\boxed\{\s*\(?([A-E])\)?\s*\}", re.IGNORECASE)
 MC_EXPLICIT_RE = re.compile(
     r"(?:final\s+answer|correct\s+(?:answer|option|choice)|best\s+(?:answer|option|choice)|answer|option|choice)"
@@ -72,6 +77,7 @@ MC_PAREN_RE = re.compile(r"\(([A-E])\)")
 
 
 def strip_special_end_tokens(text: str) -> str:
+    """Removes tokenizer EOS/chat-turn sentinel strings before downstream grading."""
     cleaned = text
     for tok in SPECIAL_END_TOKENS:
         cleaned = cleaned.replace(tok, "")
@@ -84,16 +90,19 @@ def split_think_and_answer(
     """Returns (think_trace, clean_final_answer, think_exhausted)."""
     cleaned = strip_special_end_tokens(raw_text)
     if is_prompted_cot:
+        # B1a/B2a prompted modes separate CoT from the scored answer via "Final Answer:"
         if "Final Answer:" in cleaned:
             cot_part, final_part = cleaned.rsplit("Final Answer:", 1)
             return cot_part.strip(), final_part.strip(), False
         return "", cleaned.strip(), False
 
+    # Use rsplit so any stray literal "<think>" inside reasoning does not truncate early
     if "</think>" in cleaned:
         think_part, ans_part = cleaned.rsplit("</think>", 1)
         think_part = re.sub(r"^\s*<think>\s*", "", think_part)
         return think_part, ans_part.lstrip("\n").strip(), False
 
+    # Model hit max_new_tokens inside <think> without ever closing </think> -> empty final answer
     if expect_think_close or cleaned.lstrip().startswith("<think>"):
         return re.sub(r"^\s*<think>\s*", "", cleaned), "", True
 
@@ -105,6 +114,7 @@ def has_4gram_repetition_loop(text: str, min_repeats: int = 4) -> bool:
     tokens = text.lower().split()
     if len(tokens) < 16:
         return False
+    # Check distributed repetition across the full trace as well as contiguous tail stalling
     counts: dict[tuple[str, str, str, str], int] = {}
     for i in range(len(tokens) - 3):
         gram = (tokens[i], tokens[i + 1], tokens[i + 2], tokens[i + 3])
@@ -126,6 +136,7 @@ def has_cot_spillover(final_answer: str, truncated: bool = True) -> bool:
 
 
 def _parse_numeric_token(s: str) -> float | None:
+    """Parses comma-formatted decimals and simple 'a/b' fractions safely."""
     s = s.strip().replace(",", "").rstrip(".")
     if not s or s in ("-", "+"):
         return None
@@ -140,10 +151,12 @@ def _parse_numeric_token(s: str) -> float | None:
 
 
 def grade_gsm8k(final_answer: str, gold: float) -> int:
+    """Grades numeric GSM8K answers using the last matched boxed, cued, or trailing number."""
     if not final_answer:
         return 0
     boxed_matches = BOXED_CONTENT_RE.findall(final_answer)
     if boxed_matches:
+        # Take the final \boxed{...} and strip LaTeX styling/currency wrappers before parsing
         inner = re.sub(r"\\(?:text|mathrm|textbf|mathbf)\{[^{}]*\}", " ", boxed_matches[-1])
         inner = inner.replace("\\$", "").replace("$", "").replace("\\%", "")
         frac = re.search(r"\\d?frac\{\s*([-+]?\d+)\s*\}\{\s*([-+]?\d+)\s*\}", inner)
@@ -163,6 +176,7 @@ def grade_gsm8k(final_answer: str, gold: float) -> int:
             if val is not None:
                 return int(abs(val - gold) < 1e-4)
 
+    # Last-resort fallback: inspect the final standalone number in the answer text
     nums = NUM_TOKEN_RE.findall(final_answer)
     if not nums:
         return 0
@@ -171,6 +185,7 @@ def grade_gsm8k(final_answer: str, gold: float) -> int:
 
 
 def grade_csqa(final_answer: str, gold_letter: str) -> int:
+    """Grades A-E multiple-choice answers, ignoring English articles like 'A dog'."""
     if not final_answer:
         return 0
     gold_u = gold_letter.strip().upper()
@@ -184,6 +199,7 @@ def grade_csqa(final_answer: str, gold_letter: str) -> int:
     paren_matches = MC_PAREN_RE.findall(final_answer)
     if paren_matches:
         return int(paren_matches[-1].upper() == gold_u)
+    # Strip indefinite article "A <word>" so prose starting with "A dog..." is not misread as option (A)
     cleaned = re.sub(r"\bA\s+[a-z]{2,}\b", " ", final_answer)
     letters = re.findall(r"\b([A-E])\b", cleaned)
     return int(bool(letters) and letters[-1].upper() == gold_u)
@@ -191,6 +207,7 @@ def grade_csqa(final_answer: str, gold_letter: str) -> int:
 
 def grade_ifeval_item(item: dict[str, Any], final_answer: str) -> dict[str, Any]:
     """Runs official google-research instruction_following_eval strict & loose verifiers."""
+    # Re-pin PRNG state per item so language:response_language is independent of evaluation order
     DetectorFactory.seed = 0
     random.seed(0)
 
@@ -199,6 +216,7 @@ def grade_ifeval_item(item: dict[str, Any], final_answer: str) -> dict[str, Any]
         key=item["key"],
         instruction_id_list=inst_ids,
         prompt=item["prompt"],
+        # Strip None kwargs from HF google/IFEval rows so verifier checks don't crash on unset args
         kwargs=[{k: v for k, v in kw.items() if v is not None} for kw in item["kwargs"]],
     )
     if not final_answer:

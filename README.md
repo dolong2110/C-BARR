@@ -21,8 +21,12 @@ It combines:
 | `src/graders.py` | Seeded channel parser, 4-gram loop & CoT spillover audit, and verifiers | Pins `DetectorFactory.seed = 0`; strips `<think>` and EOS markers; grades GSM8K, CSQA, and IFEval (Inhibition + Structural); logs `has_cot_spillover` (Patch D16). |
 | `src/engine.py` | 25-template Gate 1, `CBARRDualModeEngine`, $B \in \{64, 128, 250\}$ termination, Controls A1–B3 | Normalizes `Qwen3.5` and `SmolLM3-3B` chat templates (freezing `Today Date: 01 November 2026`); caps answer budget at 1024 tokens (Patch D14); executes `post_stripped` and `pre_close` re-anchoring. |
 | `src/routers.py` | Two-stage `seed_60`/`dev_60` calibrator and B0–M2 policy resolver | Fits logistic Gate-2 weights on `seed_60`, tunes $\tau^*$ on `dev_60`, caps top-tier deliberation at 250 tokens (Patch D13), and resolves `B0`–`B2b`, `M1a`–`M1c`, `M2_B64/128/256`, `M2_Pre`, and `M2`. |
-| `src/metrics.py` | Statistical inference, efficiency metrics, and causal attribution | Computes exact & Lancaster mid-$p$ McNemar, Holm-Bonferroni, 10k paired bootstrap CIs, `MacroAcc`, `OAA_250`, `AUC_OAA`, `U_0.05`, `BSR(B)`, `spillover_rate`, `Oracle_UB`, and $\rho_{\text{recency}}$ vs. $\rho_{\text{interference}}$. |
-| `scripts/run_matrix.py` | Incremental GPU cache runner and LaTeX row generator | Runs and caches primitives across splits with deterministic greedy deduplication (Patch D15), runs $E_{\text{hurt}}$ diagnostic controls, and writes `matrix_summary.json` and `tables_rows.tex`. |
+| `src/metrics.py` | Statistical inference, efficiency metrics, and causal attribution | Computes exact & Lancaster mid-$p$ McNemar, Holm-Bonferroni, Wilson 95% CIs (`wilson_ci`), Clean-446 defect filtering (`filter_clean_446`), paired bootstrap CIs, `MacroAcc`, `OAA_250`, `AUC_OAA`, `U_0.05`, `BSR(B)`, `spillover_rate`, `Oracle_UB`, and $\rho_{\text{recency}}$ vs. $\rho_{\text{interference}}$. |
+| `scripts/run_matrix.py` | Incremental GPU cache runner and LaTeX row generator | Verifies `manifest_sha256.json`, supports `--calibrate-only` / `--device` / `--mock` / `--include-b512`, incrementally caches primitives and `E_hurt` controls (`diag_controls_cache.jsonl`), and writes non-clobbering `matrix_summary_{strict341,diag491}.json`. |
+| `scripts/analyze_and_plot.py` | Phase 7 (W8) analysis, tables, and vector PDF figures | Runs Clean-446 sensitivity, 10k paired bootstrap CIs, Gates 4–6 & Contingency R1–R4 audit, and generates `outputs/stats_summary.json`, `outputs/paper_tables.tex`, and `paper/figures/fig{1,2,3}_*.pdf`. |
+| `scripts/run_gpu_phases_4_to_6.sh` | Linux CUDA orchestration (Step 0 + Phases 4–7) | Runs preflight tests, `--calibrate-only`, `Qwen3.5-4B` (`strict341` + `diag491`), `SmolLM3-3B`, `0.8B/2B` (optional `--with-9b`, `--with-w7`, `--include-b512`), `analyze_and_plot.py`, and `check_anonymity.sh`. |
+| `scripts/ext_deltanet_blend.py` / `scripts/ext_prefill_mlp.py` | Optional Workstream W7 extensions | Gated DeltaNet `recurrent_states` blending (`Qwen3.5`) on $E_{\text{hurt}}$ and mid-layer prefill hidden-state MLP escalation probe. |
+| `scripts/check_anonymity.sh` | Double-blind submission linter | Verifies `\author{Anonymous Authors}` and checks `.tex`, `.bib`, and PDF metadata under `paper/` for PII/path leaks. |
 | `scripts/run_smoke_test.py` | Phase 3 (W3) 12-item smoke test runner and Gate 3 verifier | Slices 2 items/slice into `outputs/smoke_12.jsonl` and `/tmp/smoke_12.jsonl` and verifies all Phase 3 invariants. |
 | `tests/test_cbarr_preflight.py` | Pre-flight unit test suite (W1–W3 & Patches D1–D16) | Verifies 25/25 IFEval regex recall, `DetectorFactory.seed == 0`, graders, D13–D16 patches, split disjointness, and smoke gate. |
 | `paper/main.tex` | Manuscript & Booktabs LaTeX Templates | Integrates Tables 1, 2, and 3 (`paper/references.bib` includes 2025–2026 baselines with anonymized metadata). |
@@ -51,14 +55,22 @@ python scripts/run_smoke_test.py
 python scripts/run_smoke_test.py --live-gpu
 ```
 
-### Phases 4–6 (W4–W6): Full Calibration, Primary Matrix & Cross-Scale Sweep
+### Phases 4–7 (W4–W8): Calibration, Full Matrix, Analysis & Publication Artifacts
 ```bash
-for MODEL in Qwen/Qwen3.5-4B HuggingFaceTB/SmolLM3-3B; do
-  python scripts/run_matrix.py --model "${MODEL}" --strict-diag
+# Single-command GPU orchestration (calibration -> 4B -> SmolLM3-3B -> 0.8B/2B -> stats & figures)
+bash scripts/run_gpu_phases_4_to_6.sh
+
+# Or run stages manually:
+python scripts/run_matrix.py --model Qwen/Qwen3.5-4B --calibrate-only
+python scripts/run_matrix.py --model Qwen/Qwen3.5-4B --strict-diag
+python scripts/run_matrix.py --model Qwen/Qwen3.5-4B
+python scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --strict-diag
+python scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B
+
+for MODEL in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B; do
   python scripts/run_matrix.py --model "${MODEL}"
 done
 
-for MODEL in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-9B; do
-  python scripts/run_matrix.py --model "${MODEL}" --strict-diag
-done
+python scripts/analyze_and_plot.py
+bash scripts/check_anonymity.sh
 ```

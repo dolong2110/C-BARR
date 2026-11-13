@@ -17,8 +17,51 @@ SLICE_ORDER: Sequence[str] = (
     "ifeval_conflict",
 )
 
+# Upstream google/IFEval prompt-kwargs mismatch keys documented in google-research Issue #3103
+KNOWN_UPSTREAM_DEFECT_KEYS: frozenset[int] = frozenset({30, 337, 2078, 3311})
+
+
+def wilson_ci(
+    successes: int, total: int, z: float = 1.959963984540054
+) -> tuple[float, float, float]:
+    """Computes (rate, lo, hi) Wilson score confidence interval."""
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+    p = float(successes) / float(total)
+    z2 = z * z
+    denom = 1.0 + z2 / total
+    center = (p + z2 / (2.0 * total)) / denom
+    half = (z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * total)) / total)) / denom
+    return p, max(0.0, center - half), min(1.0, center + half)
+
+
+def is_clean_item(item: dict[str, Any]) -> bool:
+    """Returns False iff item matches upstream google/IFEval defect keys (Issue #3103)."""
+    if item.get("dataset") != "ifeval":
+        return True
+    if bool(item.get("has_upstream_defect", False)):
+        return False
+    raw_key = item.get("key")
+    if raw_key is not None and int(raw_key) in KNOWN_UPSTREAM_DEFECT_KEYS:
+        return False
+    return True
+
+
+def filter_clean_446(
+    items: list[dict[str, Any]], runs: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Filters aligned (items, runs) pairs to Clean-446 (excluding upstream IFEval defects)."""
+    clean_items: list[dict[str, Any]] = []
+    clean_runs: list[dict[str, Any]] = []
+    for item, run in zip(items, runs):
+        if is_clean_item(item):
+            clean_items.append(item)
+            clean_runs.append(run)
+    return clean_items, clean_runs
+
 
 def exact_and_midp_mcnemar(z_base: list[int], z_method: list[int]) -> dict[str, float]:
+    """Paired two-sided exact binomial & Lancaster mid-p McNemar tests over discordant pairs."""
     b_only = sum(1 for a, b in zip(z_base, z_method) if a == 1 and b == 0)
     m_only = sum(1 for a, b in zip(z_base, z_method) if a == 0 and b == 1)
     n = b_only + m_only
@@ -39,12 +82,14 @@ def exact_and_midp_mcnemar(z_base: list[int], z_method: list[int]) -> dict[str, 
 
 
 def holm_bonferroni(p_values: list[float]) -> list[float]:
+    """Step-down Holm-Bonferroni FWER adjustment with monotonicity enforcement."""
     m = len(p_values)
     order = np.argsort(p_values)
     adjusted = [0.0] * m
     running_max = 0.0
     for rank, idx in enumerate(order):
         adj = min(1.0, p_values[idx] * (m - rank))
+        # Step-down adjusted p-values must be non-decreasing across sorted hypotheses
         running_max = max(running_max, adj)
         adjusted[idx] = running_max
     return adjusted
@@ -70,6 +115,7 @@ def compute_auc_oaa(z: list[int], t_delib: list[int], t_max: int = 2048) -> floa
     """Exact closed-form Area Under the Overthinking-Adjusted Accuracy curve on [0, t_max]."""
     arr_z = np.asarray(z, dtype=np.float64)
     arr_t = np.asarray(t_delib, dtype=np.float64)
+    # Closed form of (1/t_max) * integral_0^t_max 1[T_delib <= t] dt = max(0, (t_max - T_delib) / t_max)
     weights = np.clip((t_max - arr_t) / max(1, t_max), 0.0, 1.0)
     return float(np.mean(arr_z * weights))
 
@@ -94,6 +140,8 @@ def compute_causal_decomposition(
     """Quantifies Recency Decay vs. Semantic Interference shares on E_hurt (Causal Attribution)."""
     if not z_strip:
         return {
+            "rho_recency": 0.0,
+            "rho_interference": 0.0,
             "recency_recovery_share_pct": 0.0,
             "residual_interference_share_pct": 0.0,
             "locus_gap_pre_minus_post_pp": 0.0,
@@ -104,9 +152,15 @@ def compute_causal_decomposition(
     r_pre = float(np.mean(z_pre_anchor))
     r_raw = float(np.mean(z_post_raw))
     denom = max(1e-9, r_strip)
+    # Recency share = fraction of Trace-Stripping ceiling recovered merely by post-</think> reminder
+    rho_recency = r_post / denom
+    # Residual semantic interference = ceiling gap not recovered by either pre- or post-think anchoring
+    rho_interference = max(0.0, r_strip - max(r_post, r_pre)) / denom
     return {
-        "recency_recovery_share_pct": 100.0 * (r_post / denom),
-        "residual_interference_share_pct": 100.0 * max(0.0, r_strip - max(r_post, r_pre)) / denom,
+        "rho_recency": rho_recency,
+        "rho_interference": rho_interference,
+        "recency_recovery_share_pct": 100.0 * rho_recency,
+        "residual_interference_share_pct": 100.0 * rho_interference,
         "locus_gap_pre_minus_post_pp": 100.0 * (r_pre - r_post),
         "wrapper_corruption_penalty_pp": 100.0 * (r_post - r_raw),
     }
@@ -176,6 +230,7 @@ def compute_4regime_and_oracle(
     """Computes Helped/Hurt/Tie-Pass/Tie-Fail counts and minimal-token Oracle_UB."""
     z_b0 = [int(r["z"]) for r in b0_runs]
     z_b1b = [int(r["z"]) for r in b1b_runs]
+    # 4-regime disagreement audit: identifies where thinking flips B0 from fail->pass (Helped) or pass->fail (Hurt)
     helped = sum(1 for a, b in zip(z_b0, z_b1b) if a == 0 and b == 1)
     hurt = sum(1 for a, b in zip(z_b0, z_b1b) if a == 1 and b == 0)
     tie_pass = sum(1 for a, b in zip(z_b0, z_b1b) if a == 1 and b == 1)
@@ -183,6 +238,7 @@ def compute_4regime_and_oracle(
 
     oracle_synthesized: list[dict[str, Any]] = []
     for i in range(len(items)):
+        # Oracle_UB assumes an omniscient single-call router choosing the cheapest passing config
         passing = [cfg[i] for cfg in candidate_run_lists if int(cfg[i]["z"]) == 1]
         if passing:
             best = dict(min(passing, key=lambda r: int(r["T_total"])))

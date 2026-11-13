@@ -81,6 +81,7 @@ def build_all_splits(out_dir: str = "data", seed: int = 42) -> dict[str, str]:
 
     def parse_gsm(ex: dict[str, Any], idx: int, split_tag: str) -> dict[str, Any]:
         rationale, gold_str = ex["answer"].split("####")
+        # Proxy problem difficulty using gold solution step count (<=2 easy vs. >=4 hard; drop 3-step mid)
         steps = len([ln for ln in rationale.strip().splitlines() if ln.strip()])
         gold_val = float(gold_str.strip().replace(",", ""))
         sub = "gsm8k_easy" if steps <= 2 else ("gsm8k_hard" if steps >= 4 else "gsm8k_mid")
@@ -162,6 +163,9 @@ def build_all_splits(out_dir: str = "data", seed: int = 42) -> dict[str, str]:
     dev_ifeval = plan_pool[15:25] + prec_pool[15:25]
     eval_ifeval = plan_pool[25:85] + prec_pool[25:85] + conf_pool[:30]
 
+    # Build two Section 6 diagnostic pools from IFEval:
+    # - diag_ifeval_491 excludes calibration (seed+dev) for higher statistical power on E_hurt
+    # - diag_ifeval_341_strict additionally excludes eval_450 to prevent any overlap with main evaluation
     cal_uids = {x["uid"] for x in (seed_ifeval + dev_ifeval)}
     eval_ifeval_uids = {x["uid"] for x in eval_ifeval}
 
@@ -196,6 +200,7 @@ def build_all_splits(out_dir: str = "data", seed: int = 42) -> dict[str, str]:
     manifest: dict[str, str] = {}
     for fname, rows in splits.items():
         fpath = out / fname
+        # sort_keys=True guarantees deterministic JSON serialization and stable SHA-256 digests
         payload = "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in rows)
         fpath.write_text(payload, encoding="utf-8")
         manifest[fname] = hashlib.sha256(payload.encode("utf-8")).hexdigest()

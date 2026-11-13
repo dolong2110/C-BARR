@@ -82,6 +82,8 @@ CANONICAL_25_TEMPLATES: dict[str, str] = {
 
 
 class TestCBARRPreflight(unittest.TestCase):
+    """Verifies W1-W3 offline gates: IFEval template recall, graders, D12-D16 fixes, splits, and smoke harness."""
+
     def test_w1_detector_factory_seed_and_symbol_renaming(self) -> None:
         self.assertEqual(DetectorFactory.seed, 0)
         self.assertIs(DualModeEngine, CBARRDualModeEngine)

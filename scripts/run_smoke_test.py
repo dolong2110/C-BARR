@@ -81,6 +81,7 @@ class MockDualModeEngine(CBARRDualModeEngine):
     def _decode_raw(
         self, prompt_str: str, max_new_tokens: int, log_entropies: bool = False
     ) -> dict[str, Any]:
+        """Simulates deterministic dual-mode decoding across thinking caps, probes, and answers."""
         # Record continuation prompts containing P_TERM for Gate 3 verification
         if P_TERM in prompt_str:
             self.last_cont_prefix = prompt_str

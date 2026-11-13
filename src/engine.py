@@ -12,6 +12,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.graders import strip_special_end_tokens
 
+# Unit-bound numerals (e.g., "300 words", "1990s", "2nd paragraph") are masked before
+# counting numbers for phi_sym so length/structural rules don't mimic math problems.
 UNIT_NUM_RE = re.compile(
     r"\b\d+\s*(?:words?|sentences?|paragraphs?|sections?|bullets?|"
     r"bullet points?|items?|lines?|characters?|letters?|times?|commas?|asterisks?|placeholders?)\b"
@@ -68,6 +70,7 @@ INERTIA_MARKERS: Sequence[str] = (
     "step", "because", "first", "let's", "therefore", "wait", "since"
 )
 REFLECTION_SPLIT_RE = re.compile(r"\b(?:Wait|Alternatively|Hmm)\b|\n\n")
+# Deliberation-closing phrase spliced before </think> when a budget cap truncates <think>
 P_TERM = "\nOkay, I think I have finished thinking."
 
 
@@ -80,6 +83,8 @@ class Gate1Output:
 
 
 def run_gate1_lexical(prompt: str) -> Gate1Output:
+    """Runs Gate 1: sub-millisecond regex constraint screening and anchor-clause extraction."""
+    # Mask unit counts first so prompts like "Write 3 paragraphs of 50 words" don't set phi_sym=1
     masked = UNIT_NUM_RE.sub(" [UNIT_COUNT] ", prompt)
     nums = STANDALONE_NUM_RE.findall(masked.replace(",", ""))
     phi_sym = int(len(nums) >= 2 and bool(MATH_CUE_RE.search(masked)))
@@ -87,6 +92,7 @@ def run_gate1_lexical(prompt: str) -> Gate1Output:
     phi_prec = int(bool(PRECISION_RE.search(prompt)))
 
     clauses: list[str] = []
+    # Normalize "repeat the prompt" cleanly so injecting the reminder doesn't repeat itself recursively
     if REPEAT_PROMPT_RE.search(prompt):
         clauses.append(
             "Repeat the user's complete original request word-for-word without change before answering."
@@ -99,6 +105,7 @@ def run_gate1_lexical(prompt: str) -> Gate1Output:
 
     joined = " ".join(clauses)
     words = joined.split()
+    # Cap reminder clause to 30 words to keep injected token overhead (T_inj) small
     if len(words) > 30:
         joined = " ".join(words[:30])
     return Gate1Output(
@@ -115,10 +122,13 @@ def _build_reanchor_block(
         return f"{term}\n</think>\n", ""
 
     reminder_line = f"[Reminder: strictly follow: {anchor_clause}]"
+    # post_stripped: place reminder right after </think> in context, stripped from scored output
     if anchor_locus == "post_stripped":
         return f"{term}\n</think>\n{reminder_line}\n", ""
+    # pre_close: place check inside <think> just before </think> to ablate tag-boundary locus
     if anchor_locus == "pre_close":
         return f"{term}\nConstraint check: strictly follow: {anchor_clause}\n</think>\n", ""
+    # post_raw: leak reminder into the scored answer to quantify wrapper corruption on strict rules
     if anchor_locus == "post_raw":
         return f"{term}\n</think>\n{reminder_line}\n", f"{reminder_line}\n"
     raise ValueError(f"Unsupported anchor_locus: {anchor_locus}")
@@ -168,6 +178,7 @@ class CBARRDualModeEngine:
         enable_thinking: bool,
         system_prompt: str | None = None,
     ) -> str:
+        # SmolLM3 uses /think or /no_think tags in the system prompt instead of enable_thinking
         msgs: list[dict[str, str]] = []
         if system_prompt is not None:
             sys_txt = system_prompt
@@ -186,15 +197,18 @@ class CBARRDualModeEngine:
                 enable_thinking=enable_thinking,
             )
         except TypeError:
+            # Older/model-specific tokenizers without enable_thinking kwarg
             rendered = self.tok.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True
             )
 
+        # Pin SmolLM3's system date header so prompts/caches remain reproducible across calendar days
         if self.is_smollm3 and self.freeze_smollm3_date:
             rendered = re.sub(
                 r"Today Date: [^\n]+", f"Today Date: {self.freeze_smollm3_date}", rendered
             )
 
+        # Guarantee an explicit opening <think> tag before budgeted generation starts
         if enable_thinking and system_prompt is None and not rendered.rstrip().endswith("<think>"):
             rendered += "<think>\n"
         return rendered
@@ -218,6 +232,7 @@ class CBARRDualModeEngine:
         gen_ids = out.sequences[0, inp.input_ids.shape[1] :].tolist()
         hit_eos = bool(gen_ids and gen_ids[-1] in self.eos_ids)
 
+        # Measure entropy only across non-EOS content tokens so stopping punctuation doesn't skew stats
         content_len = len(gen_ids)
         while content_len > 0 and gen_ids[content_len - 1] in self.eos_ids:
             content_len -= 1
@@ -318,6 +333,7 @@ class CBARRDualModeEngine:
     ) -> dict[str, Any]:
         """Runs 32-token non-thinking uncertainty probe without corrupting IFEval prefixes."""
         g1 = g1 or run_gate1_lexical(prompt)
+        # Only prepend format prefixes on clear MC / math queries; empty prefix keeps IFEval clean
         is_mc = "(A)" in prompt and "(B)" in prompt
         is_pure_math = bool(g1.phi_sym and not g1.phi_prec and not g1.phi_plan)
         ans_prefix = "Answer: " if is_mc else ("#### " if is_pure_math else "")
@@ -328,6 +344,7 @@ class CBARRDualModeEngine:
         clean_fast = strip_special_end_tokens(res["raw_text"]).strip()
         low = clean_fast.lower()
 
+        # Detect Thinking Inertia: verbose non-thinking starts on MC/math or CoT discourse cues
         concise_probe = is_mc or is_pure_math
         inertia = int(
             (concise_probe and res["content_tokens"] > 16)
@@ -408,6 +425,7 @@ class CBARRDualModeEngine:
         if "</think>" in clean_raw1:
             t_think, t_after = clean_raw1.split("</think>", 1)
             t_think_toks = len(self.tok.encode(t_think, add_special_tokens=False))
+            # Branch 1: model closed </think> and finished answer cleanly with no re-anchor needed
             if not anchor_clause and s1["hit_eos"]:
                 t_final_clean = strip_special_end_tokens(t_after).lstrip("\n").strip()
                 t_final_toks = max(0, s1["total_gen_tokens"] - t_think_toks)
@@ -425,6 +443,7 @@ class CBARRDualModeEngine:
                     "think_exhausted": False,
                     "latency_ms": s1["latency_ms"],
                 }
+            # Branch 2: closed </think> inside budget_b, but answer hit budget_b before EOS -> continue answer
             if not anchor_clause and not s1["hit_eos"]:
                 after_clean_toks = max(0, s1["total_gen_tokens"] - t_think_toks)
                 rem_ans = max(1, max_ans_tokens - after_clean_toks)
@@ -446,11 +465,13 @@ class CBARRDualModeEngine:
                     "latency_ms": s1["latency_ms"] + s2["latency_ms"],
                 }
 
+            # Branch 3: closed </think> naturally, but we discard post-</think> draft and re-anchor
             t_wasted = max(0, s1["total_gen_tokens"] - t_think_toks)
             close_block, vis_prefix = _build_reanchor_block(False, anchor_clause, anchor_locus)
             cont_prefix = pref + t_think + close_block
             truncated = False
         else:
+            # Unbudgeted B1b mode returns think_exhausted=True when B=2048 runs out inside <think>
             if not allow_budget_force:
                 return {
                     "t_think": strip_special_end_tokens(clean_raw1),
@@ -466,6 +487,7 @@ class CBARRDualModeEngine:
                     "think_exhausted": True,
                     "latency_ms": s1["latency_ms"],
                 }
+            # Budgeted M2 mode: force-close <think> via P_TERM + optional constraint reminder
             t_think = strip_special_end_tokens(clean_raw1)
             t_think_toks = s1["total_gen_tokens"]
             t_wasted = 0
@@ -501,24 +523,31 @@ class CBARRDualModeEngine:
         g1 = run_gate1_lexical(prompt)
         reminder_line = f"[Reminder: strictly follow: {g1.anchor_clause}]"
 
+        # Each mode holds E_hurt item & cached_t_think fixed to isolate recency vs. interference:
         if mode == "A1_strip":
+            # Delete <think> completely (0 distance, 0 interference)
             clamped = self.build_prompt_prefix(prompt, enable_thinking=False)
         elif mode == "B2a_post_anchor":
+            # Keep <think> intact; restore recency after </think> without exposing reminder to graders
             clamped = f"{pref}{cached_t_think}\n</think>\n{reminder_line}\n"
         elif mode == "B2b_post_raw":
+            # Same prefill as B2a, but prepend reminder to scored output to isolate wrapper breakage
             clamped = f"{pref}{cached_t_think}\n</think>\n{reminder_line}\n"
         elif mode == "B1_pre_anchor":
+            # Test pre-</think> injection locus before the closing tag
             clamped = (
                 f"{pref}{cached_t_think}\n"
                 f"Constraint check: strictly follow: {g1.anchor_clause}\n</think>\n"
             )
         elif mode == "A2_math_swap":
+            # Match token length of cached_t_think using off-task GSM8K math rationales
             n_toks = len(self.tok.encode(cached_t_think, add_special_tokens=False))
             repeats = (n_toks // max(1, len(math_filler_pool_ids))) + 1
             pooled = (math_filler_pool_ids * repeats)[:n_toks]
             matched_math = self.tok.decode(pooled, skip_special_tokens=True)
             clamped = f"{pref}{matched_math}\n</think>\n"
         elif mode == "B3_early_cut_no_anchor":
+            # Truncate at first reflection pivot (or midpoint) without reminder to halve context distance
             m = REFLECTION_SPLIT_RE.search(cached_t_think[32:]) if len(cached_t_think) > 32 else None
             prefix_think = (
                 cached_t_think[: 32 + m.start()] if m else cached_t_think[: len(cached_t_think) // 2]
