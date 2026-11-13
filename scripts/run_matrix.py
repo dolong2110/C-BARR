@@ -6,6 +6,7 @@ import hashlib
 import json
 import pathlib
 import sys
+import time
 from typing import Any
 import numpy as np
 import torch
@@ -154,84 +155,131 @@ def cache_split_primitives(
     # B0-B2/M1/M2 variants offline and backfill --include-b512 without re-running completed items.
     rows_out: list[dict[str, Any]] = []
     upgraded_existing = False
+    total_items = len(items)
+    n_new = 0
+    n_cached = 0
+    t_start = time.perf_counter()
+    t_last_log = t_start
+    split_tag = cache_path.stem.replace("_cache", "")
+
     with cache_path.open("a", encoding="utf-8") as f_append:
-        for item in items:
+        for idx, item in enumerate(items, start=1):
             uid = item["uid"]
-            if uid in existing:
-                cached_row = existing[uid]
-                if include_b512 and full_eval_modes and "m2_b512" not in cached_row:
-                    g1 = run_gate1_lexical(item["prompt"])
-                    cached_row["m2_b512"] = _run_or_reuse_m2_row(
-                        item, g1, cached_row["b1b"], 512, "post_stripped"
-                    )
-                    upgraded_existing = True
-                rows_out.append(cached_row)
-                continue
-
-            prompt = item["prompt"]
-            g1 = run_gate1_lexical(prompt)
-            # Patch D14: max_new_tokens=1024
-            b0 = _annotate_run(item, engine.run_direct_non_thinking(prompt, max_new_tokens=1024))
-            probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
-            # Patch D15: Reuse b0 when probe has empty ans_prefix under deterministic greedy decoding
-            fast_done = (
-                dict(b0)
-                if probe["ans_prefix"] == ""
-                else _annotate_run(item, engine.complete_fast_probe(probe, max_ans_tokens=1024))
-            )
-            b1b = _annotate_run(
-                item,
-                engine.run_capped_think_and_anchor(
-                    prompt,
-                    budget_b=2048,
-                    anchor_clause="",
-                    max_ans_tokens=1024,
-                    allow_budget_force=False,
-                ),
-            )
-
-            rec: dict[str, Any] = {
-                "item": item,
-                "b0": b0,
-                "probe": {k: v for k, v in probe.items() if k != "step_entropies"},
-                "fast_done": fast_done,
-                "b1b": b1b,
-            }
-
-            if run_calib_tiers or full_eval_modes:
-                # Patch D13: Deduct T_probe at B=250 when escalated from Gate 2 so T_probe + T_think <= 250 (OAA_250)
-                b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
-                rec["m2_b64"] = _run_or_reuse_m2_row(item, g1, b1b, 64, "post_stripped")
-                rec["m2_b128"] = _run_or_reuse_m2_row(item, g1, b1b, 128, "post_stripped")
-                rec["m2_b256"] = _run_or_reuse_m2_row(
-                    item, g1, b1b, b256_after_probe, "post_stripped"
-                )
-                # Patch D13: Cap m2_b256_direct at budget_b=250
-                rec["m2_b256_direct"] = _run_or_reuse_m2_row(item, g1, b1b, 250, "post_stripped")
-
-            if full_eval_modes:
-                b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
-                rec["b1a"] = _annotate_run(item, engine.run_prompted_mode(prompt, "B1a_cot"))
-                rec["b2a"] = _annotate_run(item, engine.run_prompted_mode(prompt, "B2a_self_select"))
-                # Patch D15: Alias m2_pre_* = m2_* when anchor_clause == ""
-                if not g1.anchor_clause:
-                    for k_suf in ("b64", "b128", "b256", "b256_direct"):
-                        rec[f"m2_pre_{k_suf}"] = dict(rec[f"m2_{k_suf}"])
+            try:
+                if uid in existing:
+                    cached_row = existing[uid]
+                    if include_b512 and full_eval_modes and "m2_b512" not in cached_row:
+                        g1 = run_gate1_lexical(item["prompt"])
+                        cached_row["m2_b512"] = _run_or_reuse_m2_row(
+                            item, g1, cached_row["b1b"], 512, "post_stripped"
+                        )
+                        upgraded_existing = True
+                    n_cached += 1
+                    rows_out.append(cached_row)
                 else:
-                    for b_val, k_suf in (
-                        (64, "b64"),
-                        (128, "b128"),
-                        (b256_after_probe, "b256"),
-                        (250, "b256_direct"),
-                    ):
-                        rec[f"m2_pre_{k_suf}"] = _run_or_reuse_m2_row(item, g1, b1b, b_val, "pre_close")
-                if include_b512:
-                    rec["m2_b512"] = _run_or_reuse_m2_row(item, g1, b1b, 512, "post_stripped")
+                    prompt = item["prompt"]
+                    g1 = run_gate1_lexical(prompt)
+                    # Patch D14: max_new_tokens=1024
+                    b0 = _annotate_run(
+                        item, engine.run_direct_non_thinking(prompt, max_new_tokens=1024)
+                    )
+                    probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
+                    # Patch D15: Reuse b0 when probe has empty ans_prefix under deterministic greedy decoding
+                    fast_done = (
+                        dict(b0)
+                        if probe["ans_prefix"] == ""
+                        else _annotate_run(
+                            item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
+                        )
+                    )
+                    b1b = _annotate_run(
+                        item,
+                        engine.run_capped_think_and_anchor(
+                            prompt,
+                            budget_b=2048,
+                            anchor_clause="",
+                            max_ans_tokens=1024,
+                            allow_budget_force=False,
+                        ),
+                    )
 
-            f_append.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            f_append.flush()
-            existing[uid] = rec
-            rows_out.append(rec)
+                    rec: dict[str, Any] = {
+                        "item": item,
+                        "b0": b0,
+                        "probe": {k: v for k, v in probe.items() if k != "step_entropies"},
+                        "fast_done": fast_done,
+                        "b1b": b1b,
+                    }
+
+                    if run_calib_tiers or full_eval_modes:
+                        # Patch D13: Deduct T_probe at B=250 when escalated from Gate 2 so T_probe + T_think <= 250 (OAA_250)
+                        b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
+                        rec["m2_b64"] = _run_or_reuse_m2_row(item, g1, b1b, 64, "post_stripped")
+                        rec["m2_b128"] = _run_or_reuse_m2_row(item, g1, b1b, 128, "post_stripped")
+                        rec["m2_b256"] = _run_or_reuse_m2_row(
+                            item, g1, b1b, b256_after_probe, "post_stripped"
+                        )
+                        # Patch D13: Cap m2_b256_direct at budget_b=250
+                        rec["m2_b256_direct"] = _run_or_reuse_m2_row(
+                            item, g1, b1b, 250, "post_stripped"
+                        )
+
+                    if full_eval_modes:
+                        b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
+                        rec["b1a"] = _annotate_run(item, engine.run_prompted_mode(prompt, "B1a_cot"))
+                        rec["b2a"] = _annotate_run(
+                            item, engine.run_prompted_mode(prompt, "B2a_self_select")
+                        )
+                        # Patch D15: Alias m2_pre_* = m2_* when anchor_clause == ""
+                        if not g1.anchor_clause:
+                            for k_suf in ("b64", "b128", "b256", "b256_direct"):
+                                rec[f"m2_pre_{k_suf}"] = dict(rec[f"m2_{k_suf}"])
+                        else:
+                            for b_val, k_suf in (
+                                (64, "b64"),
+                                (128, "b128"),
+                                (b256_after_probe, "b256"),
+                                (250, "b256_direct"),
+                            ):
+                                rec[f"m2_pre_{k_suf}"] = _run_or_reuse_m2_row(
+                                    item, g1, b1b, b_val, "pre_close"
+                                )
+                        if include_b512:
+                            rec["m2_b512"] = _run_or_reuse_m2_row(
+                                item, g1, b1b, 512, "post_stripped"
+                            )
+
+                    f_append.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    f_append.flush()
+                    existing[uid] = rec
+                    n_new += 1
+                    rows_out.append(rec)
+
+                now = time.perf_counter()
+                if (
+                    total_items >= 40
+                    and (idx % 25 == 0 or (now - t_last_log) >= 30.0)
+                    and idx < total_items
+                ):
+                    elapsed = now - t_start
+                    eta_str = (
+                        f" | eta={(elapsed / n_new) * (total_items - idx):.0f}s"
+                        if n_new > 0 and n_cached == 0
+                        else ""
+                    )
+                    print(
+                        f"[{split_tag} {idx}/{total_items}] new={n_new} cached={n_cached} "
+                        f"elapsed={elapsed:.1f}s{eta_str}",
+                        flush=True,
+                    )
+                    t_last_log = now
+            except Exception as exc:
+                print(
+                    f"[ERROR] Failed in {split_tag} at item {idx}/{total_items} uid={uid}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise
 
     # Persist backfilled m2_b512 entries atomically so interrupted rewrites cannot corrupt cache
     if upgraded_existing:
@@ -241,6 +289,12 @@ def cache_split_primitives(
                 f_tmp.write(json.dumps(row, ensure_ascii=False) + "\n")
         tmp_path.replace(cache_path)
 
+    total_elapsed = time.perf_counter() - t_start
+    print(
+        f"[{split_tag}] completed {total_items} items (new={n_new}, cached={n_cached}) "
+        f"in {total_elapsed:.1f}s",
+        flush=True,
+    )
     return rows_out
 
 
@@ -283,15 +337,28 @@ def run_section6_diagnostics(
     summary: dict[str, Any] = {}
 
     with controls_cache_path.open("a", encoding="utf-8") as f_ctrl:
+        print(
+            f"[diag_controls] E_hurt={len(e_hurt)} items across {len(modes)} causal controls",
+            flush=True,
+        )
         for m in modes:
+            t_mode = time.perf_counter()
             all_pass, inh_pass, str_pass = [], [], []
             for row in e_hurt:
                 uid = str(row["item"]["uid"])
                 cached = cached_controls.get((uid, m))
                 if cached is None:
-                    ans = engine.run_diagnostic_control(
-                        row["item"]["prompt"], row["b1b"]["t_think"], filler_ids, mode=m
-                    )
+                    try:
+                        ans = engine.run_diagnostic_control(
+                            row["item"]["prompt"], row["b1b"]["t_think"], filler_ids, mode=m
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[ERROR] diag control {m} failed at uid={uid}: {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        raise
                     g = grade_item(row["item"], ans)
                     cached = {"uid": uid, "mode": m, "a_final": ans, "grade": g}
                     cached_controls[(uid, m)] = cached
@@ -315,6 +382,11 @@ def run_section6_diagnostics(
                 "inhibition_recovery_pct": 100.0 * float(np.mean(inh_pass)) if inh_pass else 0.0,
                 "structural_recovery_pct": 100.0 * float(np.mean(str_pass)) if str_pass else 0.0,
             }
+            print(
+                f"[diag_controls] {m}: {summary[m]['overall_recovery_pct']:.1f}% "
+                f"({summary[m]['overall_pass_count']}/{len(e_hurt)}) in {time.perf_counter() - t_mode:.1f}s",
+                flush=True,
+            )
 
     summary["causal_attribution"] = compute_causal_decomposition(
         z_strip=per_mode_z["A1_strip"],
@@ -482,10 +554,23 @@ def main() -> None:
     diag_file = "ifeval_diag_341_strict.jsonl" if args.strict_diag else "ifeval_diag_491.jsonl"
     diag_items = _load_jsonl(data_dir / diag_file)
 
+    t_run_start = time.perf_counter()
+    resolved_runtime = (
+        ("mock", "mock")
+        if args.mock
+        else resolve_device_and_dtype(device_arg=args.device, dtype_arg=args.dtype)
+    )
+    print(
+        f"[run_matrix] model={args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
+        f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}",
+        flush=True,
+    )
+
     engine = _build_engine(
         args.model, device_arg=args.device, use_mock=args.mock, dtype_arg=args.dtype
     )
 
+    t_calib_start = time.perf_counter()
     seed_rows = cache_split_primitives(
         engine, seed_items, out_dir / "seed_60_cache.jsonl", False, True
     )
@@ -497,7 +582,10 @@ def main() -> None:
 
     calibrator = CBARRCalibrator()
     params = calibrator.fit(seed_rows, dev_rows)
+    t_calib_sec = round(time.perf_counter() - t_calib_start, 2)
     calib_summary = _build_calibration_summary(args.model, seed_rows, dev_rows, params)
+    calib_summary["wall_time_sec"] = t_calib_sec
+    calib_summary["runtime"] = {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])}
     calib_path = out_dir / "calibration_summary.json"
     calib_path.write_text(json.dumps(calib_summary, indent=2) + "\n", encoding="utf-8")
 
@@ -507,10 +595,11 @@ def main() -> None:
             f"(outside [0.20, 0.85]), tau_prob={params.tau_prob:.3f}."
         )
     if args.calibrate_only:
-        print(f"Saved calibration summary for {args.model} to {calib_path}")
+        print(f"Saved calibration summary for {args.model} to {calib_path} ({t_calib_sec:.1f}s)")
         print(json.dumps(calib_summary["calibrated_params"], indent=2))
         return
 
+    t_eval_start = time.perf_counter()
     eval_rows = cache_split_primitives(
         engine,
         eval_items,
@@ -519,6 +608,7 @@ def main() -> None:
         True,
         include_b512=args.include_b512,
     )
+    t_eval_sec = round(time.perf_counter() - t_eval_start, 2)
     rng_b2b = np.random.default_rng(42)
 
     variant_names = (
@@ -588,13 +678,23 @@ def main() -> None:
         oracle_candidates,
     )
 
+    t_diag_start = time.perf_counter()
     gsm_seed = [x for x in seed_items if x["dataset"] == "gsm8k"]
     diag_summary = run_section6_diagnostics(engine, diag_items, gsm_seed, out_dir)
+    t_diag_sec = round(time.perf_counter() - t_diag_start, 2)
+    t_total_sec = round(time.perf_counter() - t_run_start, 2)
 
     report = {
         "model": args.model,
         "diag_pool": diag_tag,
         "diag_n_items": len(diag_items),
+        "runtime": {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])},
+        "timing_sec": {
+            "calibration": t_calib_sec,
+            "eval_matrix": t_eval_sec,
+            "section6_diagnostics": t_diag_sec,
+            "total_wall": t_total_sec,
+        },
         "calibrated_params": params.__dict__,
         "systems": {
             k: {mk: mv for mk, mv in v.items() if mk not in ("z_vec", "u_vec")}
@@ -627,8 +727,9 @@ def main() -> None:
     (out_dir / f"tables_rows_{diag_tag}.tex").write_text(tex_payload, encoding="utf-8")
     (out_dir / "tables_rows.tex").write_text(tex_payload, encoding="utf-8")
     print(
-        f"Completed matrix run for {args.model} ({diag_tag}). "
-        f"Saved to {out_dir / f'matrix_summary_{diag_tag}.json'}"
+        f"Completed matrix run for {args.model} ({diag_tag}) in {t_total_sec:.1f}s. "
+        f"Saved to {out_dir / f'matrix_summary_{diag_tag}.json'}",
+        flush=True,
     )
 
 

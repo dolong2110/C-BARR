@@ -775,6 +775,21 @@ def main() -> None:
     print(f"Saved stats to {out_dir / 'stats_summary.json'}")
     print(f"Saved LaTeX tables to {out_dir / 'paper_tables.tex'}")
     print(f"Saved 3 vector PDF figures to {fig_dir}/")
+    for m_name, m_stats in stats_out["models"].items():
+        g4 = m_stats["gate_audit"]["gate4_primary"]
+        cont = m_stats["gate_audit"]["contingencies"]
+        rep_sys = bundles[m_name]["report"]["systems"]
+        m2_s = rep_sys["M2"]
+        b1b_s = rep_sys["B1b"]
+        boot = m_stats.get("paired_bootstrap_95ci", {}).get("M2_minus_B1b", {}).get("oaa_250", {})
+        gate4_ok = g4["m2_macro_ge_b1b"] and g4["token_reduction_pct"] > 0
+        print(
+            f"[SUMMARY {m_name}] M2 Macro={100*m2_s['macro_acc']:.1f}% vs B1b={100*b1b_s['macro_acc']:.1f}% | "
+            f"OAA_250={100*m2_s['oaa_250']:.1f}% (Delta={100*boot.get('diff_b_minus_a', 0):.1f} pp) | "
+            f"TokRed={g4['token_reduction_pct']:.1f}% | p_holm={g4['m2_p_holm_vs_b1b']:.4g} | "
+            f"Gate4={'PASS' if gate4_ok else 'CHECK'} | "
+            f"R2(rec/int)={100*cont['R2_rho_recency']:.1f}%/{100*cont['R2_rho_interference']:.1f}%"
+        )
 
 
 if __name__ == "__main__":

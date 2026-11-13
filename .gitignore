@@ -13,7 +13,9 @@ env/
 .idea/
 .vscode/
 
-# Large intermediate model caches
+# Large intermediate model caches and raw terminal run logs
 outputs/*_cache.jsonl
 outputs/*/*_cache.jsonl
 outputs/*/*.tmp
+outputs/logs/
+outputs/experiment_history.jsonl

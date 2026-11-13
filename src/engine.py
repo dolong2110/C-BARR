@@ -114,7 +114,10 @@ def run_gate1_lexical(prompt: str) -> Gate1Output:
 
 
 def _build_reanchor_block(
-    truncated: bool, anchor_clause: str, anchor_locus: str
+    truncated: bool,
+    anchor_clause: str,
+    anchor_locus: str,
+    post_think_bridge: str | None = None,
 ) -> tuple[str, str]:
     """Returns (injected_close_block, visible_prefix_kept_in_scored_answer)."""
     term = P_TERM if truncated else ""
@@ -122,15 +125,18 @@ def _build_reanchor_block(
         return f"{term}\n</think>\n", ""
 
     reminder_line = f"[Reminder: strictly follow: {anchor_clause}]"
-    # post_stripped: place reminder right after </think> in context, stripped from scored output
-    if anchor_locus == "post_stripped":
-        return f"{term}\n</think>\n{reminder_line}\n", ""
     # pre_close: place check inside <think> just before </think> to ablate tag-boundary locus
     if anchor_locus == "pre_close":
         return f"{term}\nConstraint check: strictly follow: {anchor_clause}\n</think>\n", ""
+    # post_stripped: deliver reminder right after </think> without polluting assistant's visible buffer
+    if anchor_locus == "post_stripped":
+        if post_think_bridge:
+            return f"{term}\n</think>{post_think_bridge}", ""
+        return f"{term}\n</think>\n{reminder_line}\n", ""
     # post_raw: leak reminder into the scored answer to quantify wrapper corruption on strict rules
     if anchor_locus == "post_raw":
-        return f"{term}\n</think>\n{reminder_line}\n", f"{reminder_line}\n"
+        block = f"{term}\n</think>{post_think_bridge}" if post_think_bridge else f"{term}\n</think>\n{reminder_line}\n"
+        return block, f"{reminder_line}\n"
     raise ValueError(f"Unsupported anchor_locus: {anchor_locus}")
 
 
@@ -212,6 +218,45 @@ class CBARRDualModeEngine:
         if enable_thinking and system_prompt is None and not rendered.rstrip().endswith("<think>"):
             rendered += "<think>\n"
         return rendered
+
+    def _build_post_think_user_bridge(self, anchor_clause: str) -> str | None:
+        """Wraps a post-</think> reminder inside a turn-delimited user message so greedy decoding never echoes it."""
+        if not anchor_clause or not hasattr(self.tok, "apply_chat_template"):
+            return None
+        sentinel_a = "__CBARR_PREV_ASST__"
+        sentinel_u = "__CBARR_REANCHOR__"
+        msgs = [
+            {"role": "user", "content": "__CBARR_ORIG_REQ__"},
+            {"role": "assistant", "content": sentinel_a},
+            {"role": "user", "content": sentinel_u},
+        ]
+        try:
+            rendered = self.tok.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+        except TypeError:
+            rendered = self.tok.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True
+            )
+        if sentinel_a not in rendered or sentinel_u not in rendered:
+            return None
+        bridge = rendered.split(sentinel_a, 1)[1]
+        reminder_msg = (
+            f"[Reminder: strictly follow: {anchor_clause}]\n"
+            "Apply to the original request above cleanly; do not repeat this note."
+        )
+        return bridge.replace(sentinel_u, reminder_msg, 1)
+
+    def _build_reanchor_for_engine(
+        self, truncated: bool, anchor_clause: str, anchor_locus: str
+    ) -> tuple[str, str]:
+        """Shared re-anchor builder used by both M2 (Phase 4-6) and Section 6 diagnostic controls."""
+        bridge = (
+            self._build_post_think_user_bridge(anchor_clause)
+            if anchor_clause and anchor_locus in ("post_stripped", "post_raw")
+            else None
+        )
+        return _build_reanchor_block(truncated, anchor_clause, anchor_locus, post_think_bridge=bridge)
 
     @torch.no_grad()
     def _decode_raw(
@@ -467,7 +512,9 @@ class CBARRDualModeEngine:
 
             # Branch 3: closed </think> naturally, but we discard post-</think> draft and re-anchor
             t_wasted = max(0, s1["total_gen_tokens"] - t_think_toks)
-            close_block, vis_prefix = _build_reanchor_block(False, anchor_clause, anchor_locus)
+            close_block, vis_prefix = self._build_reanchor_for_engine(
+                False, anchor_clause, anchor_locus
+            )
             cont_prefix = pref + t_think + close_block
             truncated = False
         else:
@@ -491,7 +538,9 @@ class CBARRDualModeEngine:
             t_think = strip_special_end_tokens(clean_raw1)
             t_think_toks = s1["total_gen_tokens"]
             t_wasted = 0
-            close_block, vis_prefix = _build_reanchor_block(True, anchor_clause, anchor_locus)
+            close_block, vis_prefix = self._build_reanchor_for_engine(
+                True, anchor_clause, anchor_locus
+            )
             cont_prefix = pref + t_think + close_block
             truncated = True
 
@@ -527,12 +576,11 @@ class CBARRDualModeEngine:
         if mode == "A1_strip":
             # Delete <think> completely (0 distance, 0 interference)
             clamped = self.build_prompt_prefix(prompt, enable_thinking=False)
-        elif mode == "B2a_post_anchor":
-            # Keep <think> intact; restore recency after </think> without exposing reminder to graders
-            clamped = f"{pref}{cached_t_think}\n</think>\n{reminder_line}\n"
-        elif mode == "B2b_post_raw":
-            # Same prefill as B2a, but prepend reminder to scored output to isolate wrapper breakage
-            clamped = f"{pref}{cached_t_think}\n</think>\n{reminder_line}\n"
+        elif mode in ("B2a_post_anchor", "B2b_post_raw"):
+            # Keep <think> intact; restore post-</think> recency cleanly (B2b keeps visible wrapper in a_final)
+            locus = "post_stripped" if mode == "B2a_post_anchor" else "post_raw"
+            close_block, _ = self._build_reanchor_for_engine(False, g1.anchor_clause, locus)
+            clamped = f"{pref}{cached_t_think}{close_block}"
         elif mode == "B1_pre_anchor":
             # Test pre-</think> injection locus before the closing tag
             clamped = (

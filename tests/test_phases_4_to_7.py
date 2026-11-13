@@ -179,6 +179,8 @@ class TestPhases4To7(unittest.TestCase):
             self.assertEqual(diag491_rep["diag_pool"], "diag491")
             self.assertIn("M2_B512", diag491_rep["auxiliary_systems"])
             self.assertIn("overall_wilson_ci95", diag491_rep["section6_diagnostics"]["A1_strip"])
+            self.assertGreaterEqual(diag491_rep["timing_sec"]["total_wall"], 0.0)
+            self.assertEqual(diag491_rep["runtime"]["device"], "mock")
 
             # 4. Dense control SmolLM3-3B mock run for multi-model table/figure parity
             subprocess.run(
@@ -268,6 +270,42 @@ class TestPhases4To7(unittest.TestCase):
             )
             mlp_res = json.loads((q4_dir / "prefill_mlp_summary.json").read_text())
             self.assertIn("macro_acc", mlp_res["eval_table"])
+
+            # 6b. Experiment logger records stage timings and stats cleanly into JSONL + Markdown
+            timings_file = tmp_out / "timings_test.jsonl"
+            timings_file.write_text(
+                json.dumps({"stage": "Gate 0", "status": "PASS", "duration_sec": 1.25}) + "\n",
+                encoding="utf-8",
+            )
+            md_log = tmp_out / "test_exp_log.md"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/log_experiment.py"),
+                    "--run-id",
+                    "test_run_001",
+                    "--status",
+                    "PASSED",
+                    "--command",
+                    "mock test",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--timings-file",
+                    str(timings_file),
+                    "--md-log",
+                    str(md_log),
+                    "--total-sec",
+                    "1.25",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            hist_rows = _read_jsonl(tmp_out / "experiment_history.jsonl")
+            self.assertEqual(len(hist_rows), 1)
+            self.assertEqual(hist_rows[0]["run_id"], "test_run_001")
+            md_txt = md_log.read_text(encoding="utf-8")
+            self.assertIn("test_run_001", md_txt)
+            self.assertIn("Qwen/Qwen3.5-4B", md_txt)
 
         # 7. Anonymity linter passes on real repo paper/
         subprocess.run(["bash", str(ROOT / "scripts/check_anonymity.sh")], check=True, cwd=str(ROOT))

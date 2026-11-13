@@ -178,6 +178,18 @@ class TestCBARRPreflight(unittest.TestCase):
         self.assertIn(f"{P_TERM}\n</think>\n[Reminder: strictly follow:", close_post)
         self.assertEqual(vis_post, "")
 
+        # Engine post-</think> Turn-2 bridge wraps reminder in a user turn so greedy LMs never echo it
+        for mid in ("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"):
+            eng = MockDualModeEngine(mid)
+            close_eng, vis_eng = eng._build_reanchor_for_engine(True, g1.anchor_clause, "post_stripped")
+            self.assertTrue(close_eng.startswith(f"{P_TERM}\n</think>"))
+            self.assertIn("[Reminder: strictly follow:", close_eng)
+            self.assertIn("<|im_start|>assistant\n", close_eng)
+            self.assertEqual(vis_eng, "")
+            out_m2 = eng.run_capped_think_and_anchor(conflict_prompt, budget_b=64, anchor_clause=g1.anchor_clause)
+            self.assertNotIn("[Reminder:", out_m2["a_final"])
+            self.assertIn("Apply to the original request above cleanly", eng.last_cont_prefix)
+
         close_pre, vis_pre = _build_reanchor_block(True, g1.anchor_clause, "pre_close")
         self.assertTrue(close_pre.endswith("</think>\n"))
         self.assertEqual(vis_pre, "")

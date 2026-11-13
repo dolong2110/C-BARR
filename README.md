@@ -25,7 +25,8 @@ It combines:
 | `src/metrics.py` | Statistical inference, efficiency metrics, and causal attribution | Computes exact & Lancaster mid-$p$ McNemar, Holm-Bonferroni, Wilson 95% CIs (`wilson_ci`), Clean-446 defect filtering (`filter_clean_446`), paired bootstrap CIs, `MacroAcc`, `OAA_250`, `AUC_OAA`, `U_0.05`, `BSR(B)`, `spillover_rate`, `Oracle_UB`, and $\rho_{\text{recency}}$ vs. $\rho_{\text{interference}}$. |
 | `scripts/run_matrix.py` | Incremental GPU cache runner and LaTeX row generator | Verifies `manifest_sha256.json`, supports `--calibrate-only` / `--device` / `--dtype` (`auto` selects `bfloat16` on `sm >= 80`, `float16` on `T4`/`P100`/`mps`) / `--mock` / `--include-b512`, incrementally caches primitives and `E_hurt` controls (`diag_controls_cache.jsonl`), and writes non-clobbering `matrix_summary_{strict341,diag491}.json`. |
 | `scripts/analyze_and_plot.py` | Phase 7 (W8) analysis, tables, and vector PDF figures | Runs Clean-446 sensitivity, 10k paired bootstrap CIs, Gates 4–6 & Contingency R1–R4 audit, and generates `outputs/stats_summary.json`, `outputs/paper_tables.tex`, and `paper/figures/fig{1,2,3}_*.pdf`. |
-| `scripts/run_gpu_phases_4_to_6.sh` | Linux CUDA orchestration (Step 0 + Phases 4–7) | Runs preflight tests, `--calibrate-only`, `Qwen3.5-4B` (`strict341` + `diag491`), `SmolLM3-3B`, `0.8B/2B` (optional `--with-9b`, `--with-w7`, `--include-b512`), `analyze_and_plot.py`, and `check_anonymity.sh`. |
+| `scripts/run_gpu_phases_4_to_6.sh` | Linux CUDA orchestration (Step 0 + Phases 4–7) | Tees logs to `outputs/logs/cbarr_*.log`, records per-stage wall times and metrics into `EXPERIMENT_LOG.md`, supports `--gpu` / `--dtype` / `--with-9b` / `--with-w7` / `--include-b512`. |
+| `scripts/log_experiment.py` & `EXPERIMENT_LOG.md` | Experiment timing & telemetry ledger | Automatically logs git revision, GPU/CUDA/kernel inventory, per-phase wall times, and Gate 4/6 results (including early failure diagnostics via `EXIT` trap). |
 | `scripts/ext_deltanet_blend.py` / `scripts/ext_prefill_mlp.py` | Optional Workstream W7 extensions | Gated DeltaNet `recurrent_states` blending (`Qwen3.5`) on $E_{\text{hurt}}$ and mid-layer prefill hidden-state MLP escalation probe. |
 | `scripts/check_anonymity.sh` | Double-blind submission linter | Verifies `\author{Anonymous Authors}` and checks `.tex`, `.bib`, and PDF metadata under `paper/` for PII/path leaks. |
 | `scripts/run_smoke_test.py` | Phase 3 (W3) 12-item smoke test runner and Gate 3 verifier | Slices 2 items/slice into `outputs/smoke_12.jsonl` and `/tmp/smoke_12.jsonl` and verifies all Phase 3 invariants. |
@@ -44,7 +45,7 @@ The notebook automatically:
 1. Detects Colab vs. Kaggle, selects `--dtype auto` (`float16` on `T4`/`P100`, `bfloat16` on `L4`/`A100`), and redirects `HF_HOME` to `/kaggle/temp/hf_cache` (or `/tmp/hf_cache` on Colab) so `/kaggle/working` never hits the 20 GB output quota.
 2. Clones `dolong2110/C-BARR`, installs missing runtime dependencies without overwriting container PyTorch, and optionally mounts Google Drive on Colab for persistent incremental `outputs/`.
 3. Verifies existing SHA-256 frozen JSONL splits (or downloads HuggingFace `gsm8k`, `tau/commonsense_qa`, and `google/IFEval` via `data/freeze_datasets.py` if absent).
-4. Runs `run_smoke_test.py --live-gpu`, `--calibrate-only`, primary evaluation (`Qwen3.5-4B`, `SmolLM3-3B`), scale sweep (`0.8B`, `2B`, plus `9B` automatically when VRAM >= 22 GB), optional W7 extensions, `analyze_and_plot.py`, and packages results into `cbarr_results_bundle.tar.gz`.
+4. Runs `run_smoke_test.py --live-gpu`, `--calibrate-only`, primary evaluation (`Qwen3.5-4B`, `SmolLM3-3B`), scale sweep (`0.8B`, `2B`, plus `9B` automatically when VRAM >= 22 GB), optional W7 extensions, `analyze_and_plot.py`, and packages results into `cbarr_results_bundle.zip`.
 
 Set optional secrets `HF_TOKEN` (for faster HuggingFace downloads) and `GITHUB_TOKEN` (if cloning while the repo is private) in Colab Secrets or Kaggle Add-ons -> Secrets.
 
@@ -74,8 +75,8 @@ python scripts/run_smoke_test.py --live-gpu
 
 ### Phases 4–7 (W4–W8): Calibration, Full Matrix, Analysis & Publication Artifacts
 ```bash
-# Single-command GPU orchestration (calibration -> 4B -> SmolLM3-3B -> 0.8B/2B -> stats & figures)
-bash scripts/run_gpu_phases_4_to_6.sh
+# Single-command GPU orchestration (saves full logs to outputs/logs/ & timings to EXPERIMENT_LOG.md)
+bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --with-9b --with-w7
 
 # Or run stages manually:
 python scripts/run_matrix.py --model Qwen/Qwen3.5-4B --calibrate-only
