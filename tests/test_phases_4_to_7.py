@@ -1,6 +1,7 @@
 """End-to-end CPU tests for Phases 4-7 automation, metrics, analysis, W7 extensions, and anonymity."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import pathlib
@@ -9,11 +10,13 @@ import sys
 import tempfile
 import unittest
 
+import torch
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.run_matrix import verify_manifest_integrity
+from scripts.run_matrix import resolve_device_and_dtype, verify_manifest_integrity
 from src.metrics import KNOWN_UPSTREAM_DEFECT_KEYS, SLICE_ORDER, filter_clean_446, wilson_ci
 
 
@@ -268,6 +271,51 @@ class TestPhases4To7(unittest.TestCase):
 
         # 7. Anonymity linter passes on real repo paper/
         subprocess.run(["bash", str(ROOT / "scripts/check_anonymity.sh")], check=True, cwd=str(ROOT))
+
+    def test_resolve_device_and_dtype_hardware_safety(self) -> None:
+        """Auto-dtype selects safe CPU fallback and supports explicit dtype overrides."""
+        dev, dt = resolve_device_and_dtype("cpu", "auto")
+        self.assertEqual(dev, "cpu")
+        self.assertEqual(dt, torch.float32)
+
+        self.assertEqual(resolve_device_and_dtype("cpu", "float16")[1], torch.float16)
+        self.assertEqual(resolve_device_and_dtype("cpu", "bfloat16")[1], torch.bfloat16)
+        self.assertEqual(resolve_device_and_dtype("cpu", "float32")[1], torch.float32)
+
+        with self.assertRaises(ValueError):
+            resolve_device_and_dtype("cpu", "fp8")
+
+    def test_colab_kaggle_notebook_valid_json_and_python_syntax(self) -> None:
+        """Generated Colab/Kaggle notebook is valid nbformat 4 JSON with pure AST-valid Python cells."""
+        nb_path = ROOT / "notebooks" / "C_BARR_Colab_Kaggle.ipynb"
+        self.assertTrue(nb_path.exists(), f"Missing notebook: {nb_path}")
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        self.assertEqual(nb.get("nbformat"), 4)
+        cells = nb.get("cells", [])
+        self.assertGreaterEqual(len(cells), 8)
+
+        combined_code = []
+        for idx, cell in enumerate(cells):
+            src = "".join(cell.get("source", [])) if isinstance(cell.get("source"), list) else str(cell.get("source", ""))
+            self.assertTrue(src.strip(), f"Empty cell at index {idx}")
+            if cell.get("cell_type") == "code":
+                for line in src.splitlines():
+                    stripped = line.lstrip()
+                    self.assertFalse(
+                        stripped.startswith("!") or stripped.startswith("%"),
+                        f"Cell {idx} uses shell magic instead of pure Python: {line}",
+                    )
+                ast.parse(src, filename=f"cell_{idx}.py")
+                combined_code.append(src)
+
+        all_src = "\n".join(combined_code)
+        for token in (
+            "dolong2110/C-BARR",
+            "verify_manifest_integrity",
+            "scripts/run_matrix.py",
+            "scripts/analyze_and_plot.py",
+        ):
+            self.assertIn(token, all_src)
 
 
 if __name__ == "__main__":

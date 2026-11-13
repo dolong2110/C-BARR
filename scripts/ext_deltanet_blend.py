@@ -15,6 +15,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.run_matrix import resolve_device_and_dtype
 from src.graders import grade_item
 from src.metrics import wilson_ci
 
@@ -198,8 +199,7 @@ def main() -> None:
         e_hurt = e_hurt[: args.max_items]
 
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    device, dtype = resolve_device_and_dtype("auto", "auto")
     model = AutoModelForCausalLM.from_pretrained(
         args.model, dtype=dtype, trust_remote_code=False
     ).to(device)

@@ -58,8 +58,10 @@ def verify_manifest_integrity(data_dir: pathlib.Path) -> dict[str, str]:
     return manifest
 
 
-def resolve_device_and_dtype(device_arg: str) -> tuple[str, torch.dtype]:
-    """Resolves target compute device and preferred floating dtype."""
+def resolve_device_and_dtype(
+    device_arg: str = "auto", dtype_arg: str = "auto"
+) -> tuple[str, torch.dtype]:
+    """Resolves target compute device and hardware-appropriate floating dtype (BF16 on sm>=80, FP16 on T4/P100/MPS)."""
     if device_arg == "auto":
         if torch.cuda.is_available():
             dev = "cuda"
@@ -70,8 +72,27 @@ def resolve_device_and_dtype(device_arg: str) -> tuple[str, torch.dtype]:
     else:
         dev = device_arg
 
+    dtype_map = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    if dtype_arg != "auto":
+        if dtype_arg not in dtype_map:
+            raise ValueError(f"Unsupported --dtype {dtype_arg!r}; choose from auto, bfloat16, float16, float32")
+        return dev, dtype_map[dtype_arg]
+
     if dev.startswith("cuda"):
-        return dev, torch.bfloat16
+        dev_idx = int(dev.split(":", 1)[1]) if ":" in dev else 0
+        has_native_bf16 = (
+            torch.cuda.is_available()
+            and torch.cuda.is_bf16_supported()
+            and torch.cuda.get_device_capability(dev_idx)[0] >= 8
+        )
+        return dev, (torch.bfloat16 if has_native_bf16 else torch.float16)
     if dev == "mps":
         return dev, torch.float16
     return dev, torch.float32
@@ -313,12 +334,14 @@ def _format_latex_row(label: str, t: dict[str, Any], sig: str = "") -> str:
     )
 
 
-def _build_engine(model_id: str, device_arg: str, use_mock: bool) -> Any:
+def _build_engine(
+    model_id: str, device_arg: str, use_mock: bool, dtype_arg: str = "auto"
+) -> Any:
     if use_mock:
         from scripts.run_smoke_test import MockDualModeEngine
 
         return MockDualModeEngine(model_id)
-    dev, dtype = resolve_device_and_dtype(device_arg)
+    dev, dtype = resolve_device_and_dtype(device_arg, dtype_arg)
     return CBARRDualModeEngine(model_id, device=dev, dtype=dtype)
 
 
@@ -428,6 +451,12 @@ def main() -> None:
         help="Target device ('auto', 'cuda', 'mps', 'cpu', or 'cuda:N').",
     )
     parser.add_argument(
+        "--dtype",
+        type=str,
+        default="auto",
+        help="Model precision ('auto', 'bfloat16', 'float16', or 'float32').",
+    )
+    parser.add_argument(
         "--mock",
         action="store_true",
         help="Use offline MockDualModeEngine for CPU end-to-end verification.",
@@ -453,7 +482,9 @@ def main() -> None:
     diag_file = "ifeval_diag_341_strict.jsonl" if args.strict_diag else "ifeval_diag_491.jsonl"
     diag_items = _load_jsonl(data_dir / diag_file)
 
-    engine = _build_engine(args.model, device_arg=args.device, use_mock=args.mock)
+    engine = _build_engine(
+        args.model, device_arg=args.device, use_mock=args.mock, dtype_arg=args.dtype
+    )
 
     seed_rows = cache_split_primitives(
         engine, seed_items, out_dir / "seed_60_cache.jsonl", False, True

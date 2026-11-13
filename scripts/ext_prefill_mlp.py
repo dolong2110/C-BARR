@@ -17,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.run_matrix import resolve_device_and_dtype
 from src.engine import run_gate1_lexical
 from src.metrics import evaluate_system_table
 from src.routers import _get_slow_rec, select_tiered_budget
@@ -56,8 +57,7 @@ def _extract_hf_prefill_features(
     model_id: str, rows: list[dict[str, Any]], layer_idx: int | None = None
 ) -> np.ndarray:
     tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    device, dtype = resolve_device_and_dtype("auto", "auto")
     model = AutoModelForCausalLM.from_pretrained(
         model_id, dtype=dtype, trust_remote_code=False
     ).to(device)

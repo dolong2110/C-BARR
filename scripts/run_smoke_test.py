@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from src.engine import CBARRDualModeEngine, P_TERM, _build_reanchor_block, run_gate1_lexical
 from src.graders import grade_item, has_4gram_repetition_loop, has_cot_spillover
 from src.metrics import SLICE_ORDER
-from scripts.run_matrix import cache_split_primitives
+from scripts.run_matrix import cache_split_primitives, resolve_device_and_dtype
 
 
 class MockTokenizer:
@@ -308,8 +308,7 @@ def main() -> None:
         tag = model_id.replace("/", "__")
         cache_out = pathlib.Path("outputs") / f"smoke_12_{tag}.jsonl"
         if args.live_gpu:
-            device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-            dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            device, dtype = resolve_device_and_dtype("auto", "auto")
             engine = CBARRDualModeEngine(model_id, device=device, dtype=dtype)
         else:
             engine = MockDualModeEngine(model_id)

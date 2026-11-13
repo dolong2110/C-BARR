@@ -15,3 +15,5 @@ env/
 
 # Large intermediate model caches
 outputs/*_cache.jsonl
+outputs/*/*_cache.jsonl
+outputs/*/*.tmp
