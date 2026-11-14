@@ -393,31 +393,8 @@ class TestPhases4To7(unittest.TestCase):
     def test_colab_kaggle_notebook_valid_json_and_python_syntax(self) -> None:
         """All generated Colab/Kaggle notebooks are valid nbformat 4 JSON with AST-valid Python cells."""
         notebook_expectations = {
-            "C_BARR_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'full'",
-                "RUN_PRIMARY_MATRIX = True",
-                "RUN_SCALE_SWEEP = True",
-                "RUN_PHASE7_ANALYSIS = True",
-                "SYNC_INCLUDE_LEDGER = True",
-            ),
-            "C_BARR_Part1_Primary_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part1'",
-                "RUN_PRIMARY_MATRIX = True",
-                "RUN_SCALE_SWEEP = False",
-                "RUN_PHASE7_ANALYSIS = False",
-                "UNPACK_SYNCED_RESULTS_ON_START = False",
-                "SYNC_INCLUDE_LEDGER = True",
-            ),
-            "C_BARR_Part2_Scale_Analyze_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part2'",
-                "RUN_PRIMARY_MATRIX = False",
-                "RUN_SCALE_SWEEP = True",
-                "RUN_PHASE7_ANALYSIS = True",
-                "UNPACK_SYNCED_RESULTS_ON_START = True",
-                "SYNC_INCLUDE_LEDGER = True",
-            ),
-            "C_BARR_Part1a_Qwen4B_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part1a_4b'",
+            "C_BARR_1_Worker_Qwen4B.ipynb": (
+                "PIPELINE_MODE = 'worker1_4b'",
                 "RUN_CALIBRATE_ONLY = True",
                 "RUN_PRIMARY_MATRIX = True",
                 "RUN_SCALE_SWEEP = False",
@@ -426,8 +403,8 @@ class TestPhases4To7(unittest.TestCase):
                 "SYNC_INCLUDE_LEDGER = False",
                 "Qwen/Qwen3.5-4B",
             ),
-            "C_BARR_Part1b_SmolLM3_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part1b_smollm3'",
+            "C_BARR_2_Worker_SmolLM3.ipynb": (
+                "PIPELINE_MODE = 'worker2_smollm3'",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = True",
                 "RUN_SCALE_SWEEP = False",
@@ -436,8 +413,8 @@ class TestPhases4To7(unittest.TestCase):
                 "SYNC_INCLUDE_LEDGER = False",
                 "HuggingFaceTB/SmolLM3-3B",
             ),
-            "C_BARR_Part2_Scale_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part2_scale'",
+            "C_BARR_3_Worker_Scale.ipynb": (
+                "PIPELINE_MODE = 'worker3_scale'",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = False",
                 "RUN_SCALE_SWEEP = True",
@@ -447,8 +424,8 @@ class TestPhases4To7(unittest.TestCase):
                 "Qwen/Qwen3.5-0.8B",
                 "Qwen/Qwen3.5-2B",
             ),
-            "C_BARR_Part3_W7_Analyze_Colab_Kaggle.ipynb": (
-                "PIPELINE_MODE = 'part3_analyze'",
+            "C_BARR_4_Combine_Analyze.ipynb": (
+                "PIPELINE_MODE = 'combine_analyze'",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = False",
                 "RUN_SCALE_SWEEP = False",
@@ -457,6 +434,8 @@ class TestPhases4To7(unittest.TestCase):
                 "SYNC_INCLUDE_LEDGER = True",
             ),
         }
+        actual_nbs = sorted(p.name for p in (ROOT / "notebooks").glob("*.ipynb"))
+        self.assertEqual(actual_nbs, sorted(notebook_expectations.keys()))
         shared_tokens = (
             "dolong2110/C-BARR",
             "verify_manifest_integrity",
