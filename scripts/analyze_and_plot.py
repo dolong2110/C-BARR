@@ -16,16 +16,21 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from sklearn.linear_model import LogisticRegression
+
+from src.engine import run_gate1_lexical
 from src.logfmt import banner, hl
 from src.metrics import (
     SLICE_ORDER,
+    compute_conformal_risk_bounds,
+    compute_oracle_efficiency_audit,
     evaluate_system_table,
     exact_and_midp_mcnemar,
     filter_clean_446,
     holm_bonferroni,
     wilson_ci,
 )
-from src.routers import CalibratedRouterParams, resolve_all_variants_for_item
+from src.routers import CalibratedRouterParams, _gate2_target_label, resolve_all_variants_for_item
 
 VARIANT_ORDER: tuple[str, ...] = (
     "B0",
@@ -247,6 +252,119 @@ def _extract_causal_shares(diag: dict[str, Any]) -> tuple[float, float]:
     )
 
 
+def _probe_horizon_ablation(
+    model_dir: pathlib.Path,
+    lam_utility: float = 0.05,
+    norm_tokens: float = 250.0,
+) -> dict[str, Any]:
+    """Counterfactual GlimpRouter probe-horizon sweep K in {1, 4, 8, 16, 32} with zero GPU calls."""
+    seed_p = model_dir / "seed_60_cache.jsonl"
+    dev_p = model_dir / "dev_60_cache.jsonl"
+    eval_p = model_dir / "eval_450_cache.jsonl"
+    if not (seed_p.exists() and dev_p.exists() and eval_p.exists()):
+        return {}
+    seed_rows = _load_jsonl(seed_p)
+    dev_rows = _load_jsonl(dev_p)
+    eval_rows = _load_jsonl(eval_p)
+    if not seed_rows or not dev_rows or not eval_rows:
+        return {}
+
+    sample_probe = seed_rows[0].get("probe", {})
+    horizons: list[tuple[int, str, str, str]] = [
+        (1, "H_first", "H_first", "I_inertia_4" if "I_inertia_4" in sample_probe else "I_inertia"),
+    ]
+    for k_val in (4, 8, 16):
+        if f"H_{k_val}_mean" in sample_probe and f"H_{k_val}_max" in sample_probe:
+            i_key = f"I_inertia_{k_val}" if f"I_inertia_{k_val}" in sample_probe else "I_inertia"
+            horizons.append((k_val, f"H_{k_val}_mean", f"H_{k_val}_max", i_key))
+    horizons.append((32, "H_mean", "H_max", "I_inertia"))
+
+    def _feat(row: dict[str, Any], g1: Any, h_mean_k: str, h_max_k: str, i_k: str) -> np.ndarray:
+        pr = row["probe"]
+        return np.array(
+            [
+                float(pr.get("H_first", 0.0)),
+                float(pr.get(h_mean_k, pr.get("H_mean", 0.0))),
+                float(pr.get(h_max_k, pr.get("H_max", 0.0))),
+                float(pr.get(i_k, pr.get("I_inertia", 0))),
+                float(g1.phi_sym),
+            ],
+            dtype=np.float64,
+        )
+
+    out: dict[str, Any] = {}
+    eval_items = [r["item"] for r in eval_rows]
+    for k_val, hm_k, hx_k, in_k in horizons:
+        x_s = np.vstack([_feat(r, run_gate1_lexical(r["item"]["prompt"]), hm_k, hx_k, in_k) for r in seed_rows])
+        y_s = np.asarray([_gate2_target_label(r) for r in seed_rows], dtype=int)
+        if len(np.unique(y_s)) < 2:
+            coef = np.array([0.6, 0.8, 0.4, 1.0, 0.5], dtype=np.float64)
+            intercept = -1.0
+        else:
+            clf = LogisticRegression(C=1.0, class_weight="balanced", random_state=42)
+            clf.fit(x_s, y_s)
+            coef = clf.coef_[0].astype(np.float64)
+            intercept = float(clf.intercept_[0])
+
+        # Calibrate tau on dev_60 matching CBARRCalibrator (adjusting effective Gate-2 probe tax to <= k_val)
+        best_tau, best_u = 0.50, -1e9
+        for tau in np.linspace(0.15, 0.85, 29):
+            u_list = []
+            for r in dev_rows:
+                g1 = run_gate1_lexical(r["item"]["prompt"])
+                if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+                    chosen = r["b0"]
+                elif g1.phi_plan == 1:
+                    chosen = r.get("m2_b256_direct", r["m2_b256"])
+                else:
+                    fv = _feat(r, g1, hm_k, hx_k, in_k)
+                    prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
+                    if prob >= tau:
+                        slow = r.get("m2_b256", r["m2_b128"])
+                        chosen = dict(slow)
+                        eff_probe = min(int(r["probe"].get("T_probe", 32)), k_val)
+                        chosen["T_total"] = eff_probe + int(slow["T_total"])
+                    else:
+                        chosen = r["fast_done"]
+                u_list.append(float(chosen["z"]) - lam_utility * (float(chosen["T_total"]) / norm_tokens))
+            mu = float(np.mean(u_list))
+            if mu > best_u:
+                best_u = mu
+                best_tau = float(tau)
+
+        eval_runs = []
+        for r in eval_rows:
+            g1 = run_gate1_lexical(r["item"]["prompt"])
+            if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+                eval_runs.append(r["b0"])
+            elif g1.phi_plan == 1:
+                eval_runs.append(r.get("m2_b256_direct", r["m2_b256"]))
+            else:
+                fv = _feat(r, g1, hm_k, hx_k, in_k)
+                prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
+                if prob >= best_tau:
+                    slow = r.get("m2_b256", r["m2_b128"])
+                    eff_probe = min(int(r["probe"].get("T_probe", 32)), k_val)
+                    merged = dict(slow)
+                    merged["T_probe"] = eff_probe
+                    merged["T_total"] = eff_probe + int(slow["T_total"])
+                    merged["calls"] = 2
+                    eval_runs.append(merged)
+                else:
+                    eval_runs.append(r["fast_done"])
+
+        tab = evaluate_system_table(eval_items, eval_runs, lam_utility=lam_utility, norm_tokens=norm_tokens)
+        out[f"K_{k_val}"] = {
+            "horizon_tokens": k_val,
+            "tau_prob": best_tau,
+            "macro_acc": float(tab["macro_acc"]),
+            "oaa_250": float(tab["oaa_250"]),
+            "u_005": float(tab["u_005"]),
+            "mean_t_tot": float(tab["mean_t_tot"]),
+        }
+    return out
+
+
 def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict[str, Any]:
     """Runs statistical inference, Clean-446 audit, and Gate checks on a single model bundle."""
     report = bundle["report"]
@@ -344,6 +462,29 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         },
     }
 
+    oracle_eff = compute_oracle_efficiency_audit(
+        systems, report["oracle_and_4regime"]["oracle_summary"]
+    )
+    conformal_audit: dict[str, Any] = {}
+    if bundle.get("calib_summary") and "conformal_risk_dev" in bundle["calib_summary"]:
+        conformal_audit["dev_calibration"] = bundle["calib_summary"]["conformal_risk_dev"]
+    if items and len(runs["M2"]) == len(items):
+        z_eval_b1b = [int(r["z"]) for r in runs["B1b"]]
+        z_eval_m2 = [int(r["z"]) for r in runs["M2"]]
+        eval_deg = compute_conformal_risk_bounds(z_eval_b1b, z_eval_m2, alpha_delta=0.05, n_grid=1)
+        conformal_audit["eval_observed_degradation_risk"] = eval_deg["empirical_degradation_risk"]
+        conformal_audit["eval_degradation_events"] = eval_deg["degradation_events"]
+        if "dev_calibration" in conformal_audit:
+            dev_crc = conformal_audit["dev_calibration"]
+            conformal_audit["within_hoeffding_ucb"] = bool(
+                eval_deg["empirical_degradation_risk"] <= dev_crc["hoeffding_ucb"]
+            )
+            conformal_audit["within_crc_expectation_bound"] = bool(
+                eval_deg["empirical_degradation_risk"] <= dev_crc["crc_expectation_bound"]
+            )
+
+    probe_horizons = _probe_horizon_ablation(bundle["dir"])
+
     return {
         "model": report["model"],
         "diag_pool_loaded": report.get("diag_pool", "unknown"),
@@ -352,6 +493,9 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         "paired_bootstrap_95ci": paired_bootstrap,
         "targeted_mcnemar": targeted_mcnemar,
         "gate_audit": gate_audit,
+        "conformal_risk_audit": conformal_audit,
+        "oracle_efficiency_audit": oracle_eff,
+        "probe_horizon_ablation": probe_horizons,
         "oracle_and_4regime": report["oracle_and_4regime"],
         "auxiliary_systems": report.get("auxiliary_systems", {}),
         "section6_strict341": bundle["strict_diag"],

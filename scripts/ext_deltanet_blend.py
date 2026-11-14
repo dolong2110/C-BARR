@@ -24,6 +24,65 @@ def _load_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+def _is_state_initialized(layer: Any, flag_attr: str, buf_attr: str) -> bool:
+    buf = getattr(layer, buf_attr, None)
+    flags = getattr(layer, flag_attr, None)
+    if not buf or not flags:
+        return False
+    return bool(flags[0] if isinstance(flags, (list, tuple)) else flags.get(0, False))
+
+
+def restore_memory_states(
+    cache_think: Any,
+    cache_prompt: Any,
+    alpha: float,
+    blend_conv: bool = False,
+    evict_think_kv: bool = False,
+) -> dict[str, int]:
+    """Interpolates DeltaNet recurrent/conv states and optionally evicts <think> from GQA KV caches."""
+    n_blended_rec = 0
+    n_blended_conv = 0
+    n_evicted_kv = 0
+    layers_t = getattr(cache_think, "layers", [])
+    layers_p = getattr(cache_prompt, "layers", [])
+    for idx in range(min(len(layers_t), len(layers_p))):
+        lt = layers_t[idx]
+        lp = layers_p[idx]
+        if _is_state_initialized(lt, "is_recurrent_states_initialized", "recurrent_states") and (
+            _is_state_initialized(lp, "is_recurrent_states_initialized", "recurrent_states")
+        ):
+            s_t = lt.recurrent_states[0]
+            s_p = lp.recurrent_states[0]
+            if s_t.shape == s_p.shape:
+                blended = ((1.0 - alpha) * s_t.float() + alpha * s_p.float()).to(s_t.dtype)
+                s_t.copy_(blended)
+                n_blended_rec += 1
+        if blend_conv and _is_state_initialized(lt, "is_conv_states_initialized", "conv_states") and (
+            _is_state_initialized(lp, "is_conv_states_initialized", "conv_states")
+        ):
+            c_t = lt.conv_states[0]
+            c_p = lp.conv_states[0]
+            if c_t.shape == c_p.shape:
+                blended_c = ((1.0 - alpha) * c_t.float() + alpha * c_p.float()).to(c_t.dtype)
+                c_t.copy_(blended_c)
+                n_blended_conv += 1
+        if (
+            evict_think_kv
+            and getattr(lt, "keys", None) is not None
+            and getattr(lp, "keys", None) is not None
+            and getattr(lt, "values", None) is not None
+            and getattr(lp, "values", None) is not None
+        ):
+            lt.keys = lp.keys.clone()
+            lt.values = lp.values.clone()
+            n_evicted_kv += 1
+    return {
+        "n_blended_layers": n_blended_rec,
+        "n_blended_conv": n_blended_conv,
+        "n_evicted_kv": n_evicted_kv,
+    }
+
+
 def blend_deltanet_states(
     cache_think: Any, cache_prompt: Any, alpha: float
 ) -> tuple[Any, int]:
@@ -31,30 +90,8 @@ def blend_deltanet_states(
 
     Leaves softmax GQA key/value caches untouched. Returns (cache_think, n_blended_layers).
     """
-    n_blended = 0
-    layers_t = getattr(cache_think, "layers", [])
-    layers_p = getattr(cache_prompt, "layers", [])
-    for idx in range(min(len(layers_t), len(layers_p))):
-        lt = layers_t[idx]
-        lp = layers_p[idx]
-        has_rec_t = bool(
-            getattr(lt, "is_recurrent_states_initialized", [False])[0]
-            if getattr(lt, "recurrent_states", None)
-            else False
-        )
-        has_rec_p = bool(
-            getattr(lp, "is_recurrent_states_initialized", [False])[0]
-            if getattr(lp, "recurrent_states", None)
-            else False
-        )
-        if has_rec_t and has_rec_p:
-            s_t = lt.recurrent_states[0]
-            s_p = lp.recurrent_states[0]
-            if s_t.shape == s_p.shape:
-                blended = ((1.0 - alpha) * s_t.float() + alpha * s_p.float()).to(s_t.dtype)
-                s_t.copy_(blended)
-                n_blended += 1
-    return cache_think, n_blended
+    stats = restore_memory_states(cache_think, cache_prompt, alpha=alpha)
+    return cache_think, stats["n_blended_layers"]
 
 
 def generate_with_blended_deltanet(
@@ -65,8 +102,10 @@ def generate_with_blended_deltanet(
     t_think: str,
     alpha: float,
     max_ans_tokens: int = 1024,
+    blend_conv: bool = False,
+    evict_think_kv: bool = False,
 ) -> dict[str, Any]:
-    """Prefills prompt + t_think, blends DeltaNet recurrent state toward prompt state, and decodes."""
+    """Prefills prompt + t_think, blends DeltaNet/conv states and optionally evicts <think> KV, then decodes."""
     prompt_msgs = [{"role": "user", "content": prompt_str}]
     prompt_no_think = tok.apply_chat_template(
         prompt_msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
@@ -99,10 +138,19 @@ def generate_with_blended_deltanet(
         cache_t = DynamicCache(config=model.config)
         _ = model(input_ids=inp_f_prefix, past_key_values=cache_t, use_cache=True)
 
-        _, n_blended = blend_deltanet_states(cache_t, cache_p, alpha=alpha)
+        mem_stats = restore_memory_states(
+            cache_t,
+            cache_p,
+            alpha=alpha,
+            blend_conv=blend_conv,
+            evict_think_kv=evict_think_kv,
+        )
+        n_blended = mem_stats["n_blended_layers"]
 
-        # Prime the blended recurrent cache with the closing token and switch to 1-token greedy decode
-        pos = torch.tensor([len(ids_f) - 1], dtype=torch.long, device=device)
+        # When full-attention KV caches were evicted back to the clean prompt cache (length ids_p),
+        # resume cache_position at len(ids_p); otherwise continue after the think prefix (len(ids_f) - 1).
+        start_pos = len(ids_p) if mem_stats["n_evicted_kv"] > 0 else (len(ids_f) - 1)
+        pos = torch.tensor([start_pos], dtype=torch.long, device=device)
         out = model(
             input_ids=last_tok,
             past_key_values=cache_t,
@@ -112,7 +160,7 @@ def generate_with_blended_deltanet(
 
         generated: list[int] = []
         next_tok_id = int(torch.argmax(out.logits[:, -1, :], dim=-1).item())
-        cur_pos = len(ids_f)
+        cur_pos = start_pos + 1
         past = out.past_key_values
         for _ in range(max_ans_tokens):
             generated.append(next_tok_id)
@@ -136,16 +184,25 @@ def generate_with_blended_deltanet(
     return {
         "a_final": text,
         "n_blended_layers": n_blended,
+        "n_blended_conv": mem_stats["n_blended_conv"],
+        "n_evicted_kv": mem_stats["n_evicted_kv"],
         "gen_tokens": len(generated),
     }
 
 
-def run_mock_blend_check(alphas: list[float]) -> dict[str, Any]:
-    """Exercises exact DynamicCache LinearAttentionLayer recurrent-state blending on CPU."""
+def run_mock_blend_check(
+    alphas: list[float],
+    blend_conv: bool = False,
+    evict_think_kv: bool = False,
+) -> dict[str, Any]:
+    """Exercises exact DynamicCache LinearAttentionLayer + DynamicLayer restoration on CPU."""
     try:
-        from transformers.cache_utils import LinearAttentionLayer as _RecurrentLayerCls
+        from transformers.cache_utils import DynamicLayer, LinearAttentionLayer as _RecurrentLayerCls
     except ImportError:
-        from transformers.cache_utils import LinearAttentionAndFullAttentionLayer as _RecurrentLayerCls
+        from transformers.cache_utils import (
+            DynamicLayer,
+            LinearAttentionAndFullAttentionLayer as _RecurrentLayerCls,
+        )
 
     cache_p = DynamicCache()
     cache_t = DynamicCache()
@@ -153,30 +210,76 @@ def run_mock_blend_check(alphas: list[float]) -> dict[str, Any]:
     layer_t = _RecurrentLayerCls()
     layer_p.update_recurrent_state(torch.zeros((1, 4, 8, 8)))
     layer_t.update_recurrent_state(torch.ones((1, 4, 8, 8)) * 2.0)
+    layer_p.update_conv_state(torch.zeros((1, 8, 4)), state_idx=0)
+    layer_t.update_conv_state(torch.ones((1, 8, 4)) * 2.0, state_idx=0)
     cache_p.layers.append(layer_p)
     cache_t.layers.append(layer_t)
 
+    if evict_think_kv:
+        kv_p = DynamicLayer()
+        kv_p.update(torch.zeros((1, 2, 4, 8)), torch.zeros((1, 2, 4, 8)))
+        kv_t = DynamicLayer()
+        kv_t.update(torch.ones((1, 2, 9, 8)), torch.ones((1, 2, 9, 8)))
+        cache_p.layers.append(kv_p)
+        cache_t.layers.append(kv_t)
+
     results = {}
     for a in alphas:
-        # Clone state for clean sweep test
         ct_copy = DynamicCache()
         lt_copy = _RecurrentLayerCls()
         lt_copy.update_recurrent_state(layer_t.recurrent_states[0].clone())
+        lt_copy.update_conv_state(layer_t.conv_states[0].clone(), state_idx=0)
         ct_copy.layers.append(lt_copy)
-        _, n_blended = blend_deltanet_states(ct_copy, cache_p, alpha=a)
+        if evict_think_kv:
+            kv_copy = DynamicLayer()
+            kv_copy.update(cache_t.layers[1].keys.clone(), cache_t.layers[1].values.clone())
+            ct_copy.layers.append(kv_copy)
+
+        stats = restore_memory_states(
+            ct_copy,
+            cache_p,
+            alpha=a,
+            blend_conv=blend_conv,
+            evict_think_kv=evict_think_kv,
+        )
         mean_norm = float(ct_copy.layers[0].recurrent_states[0].mean().item())
-        results[f"alpha_{a:.2f}"] = {"n_blended_layers": n_blended, "blended_mean_val": mean_norm}
-    return {"mode": "mock", "sweep": results}
+        entry: dict[str, Any] = {
+            "n_blended_layers": stats["n_blended_layers"],
+            "n_blended_conv": stats["n_blended_conv"],
+            "n_evicted_kv": stats["n_evicted_kv"],
+            "blended_mean_val": mean_norm,
+        }
+        if blend_conv:
+            entry["conv_mean_val"] = float(ct_copy.layers[0].conv_states[0].mean().item())
+        if evict_think_kv:
+            entry["evicted_kv_seq_len"] = int(ct_copy.layers[1].get_seq_length())
+        results[f"alpha_{a:.2f}"] = entry
+    return {
+        "mode": "mock",
+        "blend_conv_state": blend_conv,
+        "evict_think_kv": evict_think_kv,
+        "sweep": results,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Optional W7: Interpolate Qwen3.5 Gated DeltaNet recurrent states on E_hurt."
+        description="Optional W7: Interpolate DeltaNet recurrent/conv states and evict <think> KV on E_hurt."
     )
     parser.add_argument("--model", type=str, default="Qwen/Qwen3.5-4B")
     parser.add_argument("--out-dir", type=str, default="outputs")
     parser.add_argument("--alphas", type=float, nargs="+", default=[0.0, 0.25, 0.5, 0.75, 1.0])
     parser.add_argument("--max-items", type=int, default=0, help="0 means all E_hurt items")
+    parser.add_argument(
+        "--blend-conv-state",
+        action="store_true",
+        help="Also linearly interpolate Gated DeltaNet 1D conv_states alongside recurrent_states.",
+    )
+    parser.add_argument(
+        "--evict-think-kv",
+        action="store_true",
+        help="Evict <think> tokens from full-attention GQA KV caches back to the prompt KV cache.",
+    )
     parser.add_argument("--mock", action="store_true", help="Run CPU DynamicCache unit sweep only")
     args = parser.parse_args()
 
@@ -186,7 +289,11 @@ def main() -> None:
     out_path = model_dir / "ext_deltanet_blend.json"
 
     if args.mock:
-        res = run_mock_blend_check(args.alphas)
+        res = run_mock_blend_check(
+            args.alphas,
+            blend_conv=args.blend_conv_state,
+            evict_think_kv=args.evict_think_kv,
+        )
         out_path.write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
         print(f"Saved mock DeltaNet blend check to {out_path}")
         return
@@ -220,11 +327,22 @@ def main() -> None:
     for a in args.alphas:
         all_pass, inh_pass, str_pass = [], [], []
         n_blended = 0
+        n_blended_conv = 0
+        n_evicted_kv = 0
         for row in e_hurt:
             out = generate_with_blended_deltanet(
-                model, tok, eos_ids, row["item"]["prompt"], row["b1b"]["t_think"], alpha=a
+                model,
+                tok,
+                eos_ids,
+                row["item"]["prompt"],
+                row["b1b"]["t_think"],
+                alpha=a,
+                blend_conv=args.blend_conv_state,
+                evict_think_kv=args.evict_think_kv,
             )
             n_blended = max(n_blended, int(out["n_blended_layers"]))
+            n_blended_conv = max(n_blended_conv, int(out.get("n_blended_conv", 0)))
+            n_evicted_kv = max(n_evicted_kv, int(out.get("n_evicted_kv", 0)))
             g = grade_item(row["item"], out["a_final"])
             all_pass.append(int(g["z"]))
             if g.get("inhibition_strict_all") is not None:
@@ -233,22 +351,30 @@ def main() -> None:
                 str_pass.append(int(g["structural_strict_all"]))
 
         _, lo, hi = wilson_ci(sum(all_pass), len(all_pass))
-        if e_hurt and n_blended == 0:
+        if e_hurt and n_blended == 0 and n_evicted_kv == 0:
             print(
-                f"[WARN] alpha={a:.2f}: blended 0 recurrent layers (model may lack Gated DeltaNet cache layers).",
+                f"[WARN] alpha={a:.2f}: modified 0 recurrent/KV layers (check model cache architecture).",
                 flush=True,
             )
         alpha_summary[f"{a:.2f}"] = {
             "alpha": a,
             "n_ehurt": len(e_hurt),
             "n_blended_layers": n_blended,
+            "n_blended_conv": n_blended_conv,
+            "n_evicted_kv": n_evicted_kv,
             "overall_recovery_pct": 100.0 * float(np.mean(all_pass)) if all_pass else 0.0,
             "overall_wilson_ci95": [100.0 * lo, 100.0 * hi],
             "inhibition_recovery_pct": 100.0 * float(np.mean(inh_pass)) if inh_pass else 0.0,
             "structural_recovery_pct": 100.0 * float(np.mean(str_pass)) if str_pass else 0.0,
         }
 
-    payload = {"model": args.model, "n_ehurt": len(e_hurt), "alphas": alpha_summary}
+    payload = {
+        "model": args.model,
+        "n_ehurt": len(e_hurt),
+        "blend_conv_state": args.blend_conv_state,
+        "evict_think_kv": args.evict_think_kv,
+        "alphas": alpha_summary,
+    }
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"Saved DeltaNet blending results to {out_path}")
 

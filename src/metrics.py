@@ -221,6 +221,77 @@ def evaluate_system_table(
     }
 
 
+def compute_conformal_risk_bounds(
+    z_base: Sequence[int],
+    z_method: Sequence[int],
+    alpha_delta: float = 0.05,
+    n_grid: int = 1,
+) -> dict[str, Any]:
+    """Finite-sample split Conformal Risk Control & Hoeffding bounds on degradation loss max(0, z_base - z_method)."""
+    losses = [
+        1.0 if (int(a) == 1 and int(b) == 0) else 0.0
+        for a, b in zip(z_base, z_method)
+    ]
+    n = len(losses)
+    if n == 0:
+        return {
+            "n_calib": 0,
+            "degradation_events": 0,
+            "empirical_degradation_risk": 0.0,
+            "crc_expectation_bound": 1.0,
+            "hoeffding_ucb_delta": float(alpha_delta),
+            "hoeffding_ucb": 1.0,
+            "n_grid": int(max(1, n_grid)),
+        }
+    k_events = int(sum(losses))
+    emp_risk = float(k_events / n)
+    # Standard split conformal risk control expectation bound for loss in [0, 1]: (n*R_hat + 1)/(n + 1)
+    crc_bound = min(1.0, float((n * emp_risk + 1.0) / (n + 1.0)))
+    delta_c = max(1e-12, min(0.999999, float(alpha_delta)))
+    eff_grid = max(1, int(n_grid))
+    hoeffding_rad = math.sqrt(math.log(eff_grid / delta_c) / (2.0 * n))
+    hoeffding_ucb = min(1.0, emp_risk + hoeffding_rad)
+    return {
+        "n_calib": n,
+        "degradation_events": k_events,
+        "empirical_degradation_risk": emp_risk,
+        "crc_expectation_bound": crc_bound,
+        "hoeffding_ucb_delta": delta_c,
+        "hoeffding_ucb": hoeffding_ucb,
+        "n_grid": eff_grid,
+    }
+
+
+def compute_oracle_efficiency_audit(
+    systems: dict[str, dict[str, Any]],
+    oracle_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Benchmarks M2 and baselines against the discrete-budget hindsight Oracle_UB."""
+    o_tok = max(1e-6, float(oracle_summary.get("mean_t_tot", 0.0)))
+    o_acc = float(oracle_summary.get("macro_acc", 0.0))
+    o_u = float(oracle_summary.get("u_005", 0.0))
+    audit: dict[str, Any] = {
+        "oracle_macro_acc": o_acc,
+        "oracle_mean_t_tot": float(oracle_summary.get("mean_t_tot", 0.0)),
+        "oracle_u_005": o_u,
+        "variants": {},
+    }
+    for name in ("B0", "B1b", "M1c", "M2_B64", "M2_B128", "M2_B256", "M2_Pre", "M2"):
+        if name not in systems:
+            continue
+        row = systems[name]
+        m_tok = float(row.get("mean_t_tot", 0.0))
+        m_acc = float(row.get("macro_acc", 0.0))
+        m_u = float(row.get("u_005", 0.0))
+        audit["variants"][name] = {
+            "macro_acc_retention": (m_acc / o_acc) if o_acc > 1e-9 else 0.0,
+            "oracle_token_overhead_ratio": m_tok / o_tok,
+            "excess_tokens_over_oracle": m_tok - float(oracle_summary.get("mean_t_tot", 0.0)),
+            "u005_gap_to_oracle": m_u - o_u,
+        }
+    return audit
+
+
 def compute_4regime_and_oracle(
     items: list[dict[str, Any]],
     b0_runs: list[dict[str, Any]],

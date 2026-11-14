@@ -40,7 +40,9 @@ from src.metrics import (
     compute_auc_oaa,
     compute_bsr_curve,
     compute_causal_decomposition,
+    compute_conformal_risk_bounds,
     compute_oaa_t,
+    compute_oracle_efficiency_audit,
     exact_and_midp_mcnemar,
     holm_bonferroni,
     paired_bootstrap_diff_ci,
@@ -266,6 +268,59 @@ class TestCBARRPreflight(unittest.TestCase):
                 self.assertTrue(res["gate3_no_32tok_truncation"])
                 self.assertTrue(res["gate3_p_term_and_zero_reminder_leak"])
                 self.assertTrue(res["d13_delib_le_250_verified"])
+
+    def test_tier0_gate1_disambiguation_crgc_and_conformal_audit(self) -> None:
+        # Capital-word frequency belongs to Precision, never Planning
+        for cap_prompt in (
+            "In your response, words with all capital letters should appear at least 3 times.",
+            "Include ALL CAPITAL words less than 5 times in your reply.",
+        ):
+            g = run_gate1_lexical(cap_prompt)
+            self.assertEqual((g.phi_prec, g.phi_plan, g.phi_sym), (1, 0, 0), cap_prompt)
+
+        # GSM8K "less than twice" & essay word-problem question math stay phi_plan=0, phi_sym=1
+        gsm_twice = "Maya worked 10 hours less than twice what Thomas worked for 8 hours. How many hours did Maya work?"
+        g_twice = run_gate1_lexical(gsm_twice)
+        self.assertEqual((g_twice.phi_plan, g_twice.phi_sym), (0, 1))
+
+        gsm_essay = "Janet writes an essay of 450 words per page and needs 5000 words total, how long will it take?"
+        g_essay = run_gate1_lexical(gsm_essay)
+        self.assertEqual((g_essay.phi_plan, g_essay.phi_sym), (0, 1))
+
+        # Section headers and range/plus planning constraints
+        g_sec = run_gate1_lexical(
+            "Your response must have 3 sections. Mark each with Section X:\nSection 1\n[text]\nSection 2\n[text]"
+        )
+        self.assertEqual((g_sec.phi_plan, g_sec.phi_sym), (1, 0))
+        g_plus = run_gate1_lexical("Write a detailed 300+ word review.")
+        self.assertEqual(g_plus.phi_plan, 1)
+
+        # CRGC balanced conflict bridge fits <= 30 words and keeps both planning & precision constraints
+        conflict_prompt = (
+            "Draft a structured report of at least 3 paragraphs covering quantum sensors. "
+            "Do not use the word 'perhaps' anywhere and end your entire response with THE END."
+        )
+        g_conf = run_gate1_lexical(conflict_prompt)
+        self.assertEqual((g_conf.phi_plan, g_conf.phi_prec), (1, 1))
+        self.assertIn("Structure:", g_conf.anchor_clause)
+        self.assertIn("| Format:", g_conf.anchor_clause)
+        self.assertLessEqual(len(g_conf.anchor_clause.split()), 30)
+
+        # Conformal risk control + discrete Oracle efficiency audit exact arithmetic
+        crc = compute_conformal_risk_bounds([1, 1, 1, 0, 1], [1, 0, 1, 1, 1], alpha_delta=0.05, n_grid=29)
+        self.assertEqual(crc["n_calib"], 5)
+        self.assertEqual(crc["degradation_events"], 1)
+        self.assertAlmostEqual(crc["empirical_degradation_risk"], 0.2, places=6)
+        self.assertAlmostEqual(crc["crc_expectation_bound"], 2.0 / 6.0, places=6)
+        self.assertEqual(crc["n_grid"], 29)
+
+        audit = compute_oracle_efficiency_audit(
+            {"M2": {"macro_acc": 0.80, "mean_t_tot": 150.0, "u_005": 0.77}},
+            {"macro_acc": 0.90, "mean_t_tot": 100.0, "u_005": 0.88},
+        )
+        self.assertAlmostEqual(audit["variants"]["M2"]["macro_acc_retention"], 0.80 / 0.90, places=6)
+        self.assertAlmostEqual(audit["variants"]["M2"]["oracle_token_overhead_ratio"], 1.5, places=6)
+        self.assertAlmostEqual(audit["variants"]["M2"]["u005_gap_to_oracle"], -0.11, places=6)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,7 @@ from src.metrics import (
     SLICE_ORDER,
     compute_4regime_and_oracle,
     compute_causal_decomposition,
+    compute_conformal_risk_bounds,
     evaluate_system_table,
     exact_and_midp_mcnemar,
     holm_bonferroni,
@@ -273,13 +274,13 @@ def cache_split_primitives(
                     )
                     probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
                     # Patch D15: Reuse b0 when probe has empty ans_prefix under deterministic greedy decoding
-                    fast_done = (
-                        dict(b0)
-                        if probe["ans_prefix"] == ""
-                        else _annotate_run(
+                    if probe["ans_prefix"] == "":
+                        probe.pop("_kv_state", None)
+                        fast_done = dict(b0)
+                    else:
+                        fast_done = _annotate_run(
                             item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
                         )
-                    )
                     # Capture greedy B1b Stage-1 token IDs in memory to slice M2 caps without regenerating <think>,
                     # plus per-item s2_memo to skip duplicate Stage-2 decoding when </think> closes early.
                     b1b_s1: dict[str, Any] = {}
@@ -300,7 +301,7 @@ def cache_split_primitives(
                     rec = {
                         "item": item,
                         "b0": b0,
-                        "probe": {k: v for k, v in probe.items() if k != "step_entropies"},
+                        "probe": {k: v for k, v in probe.items() if k not in ("step_entropies", "_kv_state")},
                         "fast_done": fast_done,
                         "b1b": b1b,
                     }
@@ -683,6 +684,12 @@ def _build_calibration_summary(
         dev_items, dev_b0_runs, lam_utility=lam_utility, norm_tokens=norm_tokens
     )
     clf_diag = compute_calibration_diagnostics(seed_rows, dev_rows, params, tau_sweep=tau_sweep)
+    crc_dev = compute_conformal_risk_bounds(
+        z_base=dev_b1b_table["z_vec"],
+        z_method=dev_m2_table["z_vec"],
+        alpha_delta=0.05,
+        n_grid=len(tau_sweep) if tau_sweep else 29,
+    )
 
     r1_in_range = 0.20 <= params.m2_escalation_rate_dev <= 0.85
     tau_at_boundary = params.tau_prob <= 0.16 or params.tau_prob >= 0.84
@@ -692,6 +699,7 @@ def _build_calibration_summary(
         "n_dev": len(dev_rows),
         "calibrated_params": params.__dict__,
         "classifier_metrics": clf_diag,
+        "conformal_risk_dev": crc_dev,
         "dev_gate1_skip_rate": gate1_skip_dev / max(1, len(dev_rows)),
         "dev_escalation_rate": gate2_esc_dev / max(1, len(dev_rows)),
         "contingency_r1_ok": r1_in_range,

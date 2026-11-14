@@ -237,6 +237,14 @@ class TestPhases4To7(unittest.TestCase):
             q4_stats = stats["models"]["Qwen/Qwen3.5-4B"]
             self.assertIn("M2_minus_B1b", q4_stats["paired_bootstrap_95ci"])
             self.assertIn("M2_vs_B0", q4_stats["targeted_mcnemar"])
+            self.assertIn("conformal_risk_audit", q4_stats)
+            self.assertIn("dev_calibration", q4_stats["conformal_risk_audit"])
+            self.assertIn("within_hoeffding_ucb", q4_stats["conformal_risk_audit"])
+            self.assertIn("oracle_efficiency_audit", q4_stats)
+            self.assertIn("variants", q4_stats["oracle_efficiency_audit"])
+            self.assertIn("probe_horizon_ablation", q4_stats)
+            for k_key in ("K_1", "K_4", "K_8", "K_16", "K_32"):
+                self.assertIn(k_key, q4_stats["probe_horizon_ablation"])
             self.assertIn("R4_strict_underpowered_use_diag491", q4_stats["gate_audit"]["contingencies"])
 
             tex = (tmp_out / "paper_tables.tex").read_text()
@@ -286,6 +294,9 @@ class TestPhases4To7(unittest.TestCase):
             )
             mlp_res = json.loads((q4_dir / "prefill_mlp_summary.json").read_text())
             self.assertIn("macro_acc", mlp_res["eval_table"])
+            self.assertIn("gate1_semantic_probe", mlp_res)
+            self.assertIn("ifevalpp_paraphrase_stress", mlp_res)
+            self.assertTrue((q4_dir / "prefill_hidden_mock.npz").exists())
 
             # 6b. Experiment logger records stage timings, training params, per-loop tables, and upserts cleanly
             timings_file = tmp_out / "timings_test.jsonl"
@@ -883,6 +894,251 @@ class TestPhases4To7(unittest.TestCase):
             self.assertAlmostEqual(canon["Qwen/Qwen3.5-4B"]["report"]["training_params"]["temperature"], 0.0)
             all_b = discover_bundles(tmp_out, include_sampled=True)
             self.assertAlmostEqual(all_b["Qwen/Qwen3.5-4B"]["report"]["training_params"]["temperature"], 0.6)
+
+    def test_stateful_kv_continuation_and_horizon_probes(self) -> None:
+        """Verifies Stage-1->Stage-2 KV/DeltaNet continuation parity and K in {1,4,8,16,32} metrics."""
+        from transformers import BatchEncoding
+        from transformers.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+        from src.engine import CBARRDualModeEngine
+
+        class _ByteTok:
+            eos_token_id = 2
+            pad_token_id = 0
+            unk_token_id = 1
+
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                suffix = "<think>\n" if enable_thinking else ""
+                return "|".join(f"{m['role']}:{m['content']}" for m in msgs) + "|" + suffix
+
+            def convert_tokens_to_ids(self, tok: str) -> int:
+                return 2 if tok == "<|im_end|>" else 1
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                return [10 + (b % 40) for b in text.encode("utf-8")] or [10]
+
+            def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+                return " ".join(f"t{t}" for t in token_ids if not skip_special_tokens or t != 2)
+
+            def __call__(self, text: str, return_tensors: str = "pt") -> Any:
+                ids = torch.tensor([self.encode(text)], dtype=torch.long)
+                return BatchEncoding({"input_ids": ids, "attention_mask": torch.ones_like(ids)})
+
+        torch.manual_seed(7)
+        cfg = Qwen3_5TextConfig(
+            vocab_size=80,
+            hidden_size=48,
+            intermediate_size=96,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=12,
+            linear_num_value_heads=4,
+            linear_num_key_heads=2,
+            linear_key_head_dim=12,
+            linear_value_head_dim=12,
+        )
+        eng = CBARRDualModeEngine.__new__(CBARRDualModeEngine)
+        eng.model_id = "Qwen/Qwen3.5-Tiny"
+        eng.is_smollm3 = False
+        eng.freeze_smollm3_date = "01 November 2026"
+        eng.device = "cpu"
+        eng.temperature = 0.0
+        eng.top_p = 1.0
+        eng.presence_penalty = 0.0
+        eng.sampling_seed = 42
+        eng.tok = _ByteTok()
+        eng.model = Qwen3_5ForCausalLM(cfg).eval()
+        eng.eos_ids = {2}
+
+        prompt = "Explain why the sky appears blue."
+        probe = eng.run_gate2_fast_probe(prompt, probe_tokens=4)
+        self.assertIsNotNone(probe.get("_kv_state"))
+        for k_field in ("H_1", "H_4_mean", "H_4_max", "H_8_mean", "H_16_mean", "I_inertia_4", "I_inertia_8", "I_inertia_16"):
+            self.assertIn(k_field, probe)
+
+        fast_done = eng.complete_fast_probe(probe, max_ans_tokens=10)
+        self.assertNotIn("_kv_state", probe)
+        one_shot = eng.run_direct_non_thinking(prompt, max_new_tokens=10)
+        self.assertEqual(fast_done["a_final"], one_shot["a_final"])
+        self.assertEqual(fast_done["T_total"], one_shot["T_total"])
+
+        # Live capped think+anchor works cleanly with Stage-1 KV continuation
+        capped = eng.run_capped_think_and_anchor(
+            "Write a short summary without using the letter e.", budget_b=4, anchor_clause="Do not use the letter e.", max_ans_tokens=6
+        )
+        self.assertTrue(capped["truncated"])
+        self.assertGreaterEqual(capped["T_final"], 1)
+
+    def test_t12_conv_blend_and_kv_eviction_on_qwen35_and_llama(self) -> None:
+        """Verifies T1.2 conv_states blending & full-attention <think> KV eviction on hybrid & dense GQA."""
+        from transformers import BatchEncoding
+        from transformers.models.llama import LlamaConfig, LlamaForCausalLM
+        from transformers.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+        from scripts.ext_deltanet_blend import generate_with_blended_deltanet, run_mock_blend_check
+
+        class _SimpleTok:
+            eos_token_id = 2
+
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                return " ".join(m["content"] for m in msgs) + (" <think>\n" if enable_thinking else "")
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                return [10 + (sum(ord(c) for c in w) % 45) for w in text.split()] or [10]
+
+            def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+                return " ".join(f"w{t}" for t in token_ids if not skip_special_tokens or t != 2)
+
+            def __call__(self, text: str, return_tensors: str = "pt") -> Any:
+                ids = torch.tensor([self.encode(text)], dtype=torch.long)
+                return BatchEncoding({"input_ids": ids, "attention_mask": torch.ones_like(ids)})
+
+        mock_sweep = run_mock_blend_check([0.0, 0.5, 1.0], blend_conv=True, evict_think_kv=True)
+        self.assertEqual(mock_sweep["sweep"]["alpha_0.50"]["n_blended_layers"], 1)
+        self.assertEqual(mock_sweep["sweep"]["alpha_0.50"]["n_blended_conv"], 1)
+        self.assertEqual(mock_sweep["sweep"]["alpha_0.50"]["n_evicted_kv"], 1)
+        self.assertEqual(mock_sweep["sweep"]["alpha_0.50"]["evicted_kv_seq_len"], 4)
+        self.assertAlmostEqual(mock_sweep["sweep"]["alpha_0.50"]["conv_mean_val"], 1.0, places=4)
+
+        tok = _SimpleTok()
+        q_cfg = Qwen3_5TextConfig(
+            vocab_size=96,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=8,
+            linear_num_value_heads=4,
+            linear_num_key_heads=2,
+            linear_key_head_dim=8,
+            linear_value_head_dim=8,
+        )
+        out_q = generate_with_blended_deltanet(
+            Qwen3_5ForCausalLM(q_cfg).eval(),
+            tok,
+            eos_ids={2},
+            prompt_str="Answer briefly.",
+            t_think="Let me think about constraints.",
+            alpha=0.5,
+            max_ans_tokens=3,
+            blend_conv=True,
+            evict_think_kv=True,
+        )
+        self.assertEqual((out_q["n_blended_layers"], out_q["n_blended_conv"], out_q["n_evicted_kv"]), (3, 3, 1))
+
+        l_cfg = LlamaConfig(
+            vocab_size=96,
+            hidden_size=32,
+            intermediate_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+        )
+        out_l = generate_with_blended_deltanet(
+            LlamaForCausalLM(l_cfg).eval(),
+            tok,
+            eos_ids={2},
+            prompt_str="Answer briefly.",
+            t_think="Let me think about constraints.",
+            alpha=1.0,
+            max_ans_tokens=3,
+            blend_conv=False,
+            evict_think_kv=True,
+        )
+        self.assertEqual((out_l["n_blended_layers"], out_l["n_evicted_kv"]), (0, 2))
+
+    def test_t13_prefill_multihead_npz_cache_and_paraphrase_stress(self) -> None:
+        """Verifies T1.3 .npz feature disk cache reuse and IFEval++ paraphrase stress metrics."""
+        import numpy as np
+        from scripts.ext_prefill_mlp import (
+            _load_or_extract_cached_features,
+            _mock_prefill_features,
+            paraphrase_ifeval_prompt,
+            train_and_evaluate_prefill_mlp,
+        )
+
+        orig = "Your response must include at least 200 words in all capital letters with no commas and without using JSON."
+        para = paraphrase_ifeval_prompt(orig)
+        self.assertNotEqual(para, orig)
+        self.assertIn("200 words", para)
+
+        def _fake_rows(n: int, prefix: str) -> list[dict]:
+            out = []
+            for i in range(n):
+                is_plan = (i % 2 == 0)
+                is_prec = (i % 3 == 0)
+                p = "Write at least 300 words " if is_plan else "Solve 2 + 2 "
+                if is_prec:
+                    p += "with all capital letters and no commas."
+                inst_ids = []
+                if is_plan:
+                    inst_ids.append("length_constraints:number_words")
+                if is_prec:
+                    inst_ids.append("change_case:english_capital")
+                out.append({
+                    "item": {"uid": f"{prefix}_{i}", "prompt": p, "slice": "ifeval_conflict" if (is_plan and is_prec) else ("ifeval_planning" if is_plan else ("ifeval_precision" if is_prec else "csqa")), "instruction_id_list": inst_ids},
+                    "b0": {"z": 1, "T_total": 40, "calls": 1, "truncated": False, "think_exhausted": False},
+                    "fast_done": {"z": 0 if is_plan else 1, "T_total": 45, "calls": 1, "truncated": False, "think_exhausted": False},
+                    "probe": {"I_inertia": int(is_plan), "H_mean": 0.6, "T_probe": 12},
+                    "m2_b64": {"z": 1, "T_total": 90, "calls": 1, "truncated": False, "think_exhausted": False},
+                    "m2_b128": {"z": 1, "T_total": 120, "calls": 1, "truncated": False, "think_exhausted": False},
+                    "m2_b250": {"z": 1, "T_total": 140, "calls": 1, "truncated": False, "think_exhausted": False},
+                })
+            return out
+
+        seed_rows = _fake_rows(12, "s")
+        dev_rows = _fake_rows(12, "d")
+        eval_rows = _fake_rows(12, "e")
+        para_rows = [{"item": {**r["item"], "prompt": paraphrase_ifeval_prompt(r["item"]["prompt"])}} for r in eval_rows]
+
+        with tempfile.TemporaryDirectory() as td:
+            cache_p = pathlib.Path(td) / "feats.npz"
+            calls = [0]
+
+            def _extract(splits: dict) -> dict[str, np.ndarray]:
+                calls[0] += 1
+                return {
+                    "seed": _mock_prefill_features(splits["seed"], dim=16),
+                    "dev": _mock_prefill_features(splits["dev"], dim=16),
+                    "eval": _mock_prefill_features(splits["eval"], dim=16),
+                    "eval_para": _mock_prefill_features(splits["eval_para"], dim=16, semantic_rows=splits["eval"]),
+                }
+
+            splits = {"seed": seed_rows, "dev": dev_rows, "eval": eval_rows, "eval_para": para_rows}
+            f1 = _load_or_extract_cached_features(cache_p, splits, _extract, use_cache=True)
+            f2 = _load_or_extract_cached_features(cache_p, splits, _extract, use_cache=True)
+            self.assertEqual(calls[0], 1)
+            self.assertTrue(np.allclose(f1["eval"], f2["eval"]))
+
+            res = train_and_evaluate_prefill_mlp(
+                seed_rows,
+                dev_rows,
+                eval_rows,
+                f2["seed"],
+                f2["dev"],
+                f2["eval"],
+                tau_h_high=0.85,
+                epochs=40,
+                x_eval_para=f2["eval_para"],
+                train_multihead=True,
+            )
+            self.assertIn("gate1_semantic_probe", res)
+            self.assertIn("ifevalpp_paraphrase_stress", res)
+            self.assertIn("mlp_para", res["ifevalpp_paraphrase_stress"])
 
 
 if __name__ == "__main__":
