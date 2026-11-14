@@ -422,8 +422,18 @@ class TestPhases4To7(unittest.TestCase):
                 "SYNC_INCLUDE_LEDGER = False",
                 "HuggingFaceTB/SmolLM3-3B",
             ),
-            "C_BARR_3_Worker_Scale.ipynb": (
-                "PIPELINE_MODE = 'worker3_scale'",
+            "C_BARR_3_Worker_Qwen2B.ipynb": (
+                "PIPELINE_MODE = 'worker3_2b'",
+                "RUN_CALIBRATE_ONLY = False",
+                "RUN_PRIMARY_MATRIX = False",
+                "RUN_SCALE_SWEEP = True",
+                "RUN_PHASE7_ANALYSIS = False",
+                "UNPACK_SYNCED_RESULTS_ON_START = False",
+                "SYNC_INCLUDE_LEDGER = False",
+                "Qwen/Qwen3.5-2B",
+            ),
+            "C_BARR_4_Worker_Qwen08B.ipynb": (
+                "PIPELINE_MODE = 'worker4_08b'",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = False",
                 "RUN_SCALE_SWEEP = True",
@@ -431,9 +441,8 @@ class TestPhases4To7(unittest.TestCase):
                 "UNPACK_SYNCED_RESULTS_ON_START = False",
                 "SYNC_INCLUDE_LEDGER = False",
                 "Qwen/Qwen3.5-0.8B",
-                "Qwen/Qwen3.5-2B",
             ),
-            "C_BARR_4_Combine_Analyze.ipynb": (
+            "C_BARR_5_Combine_Analyze.ipynb": (
                 "PIPELINE_MODE = 'combine_analyze'",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = False",
@@ -441,6 +450,7 @@ class TestPhases4To7(unittest.TestCase):
                 "RUN_PHASE7_ANALYSIS = True",
                 "UNPACK_SYNCED_RESULTS_ON_START = True",
                 "SYNC_INCLUDE_LEDGER = True",
+                "No finished worker matrix summaries found",
             ),
         }
         actual_nbs = sorted(p.name for p in (ROOT / "notebooks").glob("*.ipynb"))
@@ -2231,7 +2241,7 @@ class TestPhases4To7(unittest.TestCase):
             self.assertNotEqual(strict_proc.returncode, 0)
 
     def test_four_part_shell_scripts_workflow(self) -> None:
-        """Runs Part 1/2/3 worker bash scripts in parallel in --mock mode, then Part 4 combiner."""
+        """Runs Parts 1/2/3/4 1-model worker bash scripts concurrently in --mock mode, then Part 5 combiner."""
         import os
 
         from scripts.versioning import read_repo_version
@@ -2239,8 +2249,9 @@ class TestPhases4To7(unittest.TestCase):
         scripts_expected = (
             "run_part1_worker_qwen4b.sh",
             "run_part2_worker_smollm3.sh",
-            "run_part3_worker_scale.sh",
-            "run_part4_combine_analyze.sh",
+            "run_part3_worker_qwen2b.sh",
+            "run_part4_worker_qwen08b.sh",
+            "run_part5_combine_analyze.sh",
         )
         for s_name in scripts_expected:
             sp = ROOT / "scripts" / s_name
@@ -2268,13 +2279,13 @@ class TestPhases4To7(unittest.TestCase):
                     "--out-dir",
                     str(tmp_out),
                 ]
-                for s_name in scripts_expected[:3]
+                for s_name in scripts_expected[:4]
             ]
             procs = [
                 subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 for cmd in worker_cmds
             ]
-            for s_name, proc in zip(scripts_expected[:3], procs):
+            for s_name, proc in zip(scripts_expected[:4], procs):
                 out_s, err_s = proc.communicate(timeout=180)
                 self.assertEqual(proc.returncode, 0, f"{s_name} failed:\nSTDOUT:\n{out_s}\nSTDERR:\n{err_s}")
 
@@ -2282,18 +2293,18 @@ class TestPhases4To7(unittest.TestCase):
             for slug in (
                 "Qwen__Qwen3.5-4B",
                 "HuggingFaceTB__SmolLM3-3B",
-                "Qwen__Qwen3.5-0.8B",
                 "Qwen__Qwen3.5-2B",
+                "Qwen__Qwen3.5-0.8B",
             ):
                 self.assertTrue(
                     (tmp_out / slug / "matrix_summary_strict341.json").is_file(),
                     f"Missing strict341 summary for {slug}",
                 )
 
-            part4 = subprocess.run(
+            part5 = subprocess.run(
                 [
                     "bash",
-                    str(ROOT / "scripts" / "run_part4_combine_analyze.sh"),
+                    str(ROOT / "scripts" / "run_part5_combine_analyze.sh"),
                     "--mock",
                     "--skip-preflight",
                     "--no-unpack",
@@ -2312,7 +2323,7 @@ class TestPhases4To7(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(part4.returncode, 0, f"Part 4 failed:\n{part4.stdout}\n{part4.stderr}")
+            self.assertEqual(part5.returncode, 0, f"Part 5 failed:\n{part5.stdout}\n{part5.stderr}")
             stats = json.loads((tmp_out / "stats_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 sorted(stats["models"].keys()),

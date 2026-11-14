@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates the 5 C-BARR Colab/Kaggle notebooks (All-In-One + 3 parallel GPU workers + 1 combiner)."""
+"""Generates the 6 C-BARR Colab/Kaggle notebooks (All-In-One + 4 parallel 1-model GPU workers + 1 combiner)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ NOTEBOOKS_DIR = REPO_ROOT / "notebooks"
 @dataclass(frozen=True)
 class NotebookSpec:
     filename: str
-    mode: str  # "all_in_one" | "worker1_4b" | "worker2_smollm3" | "worker3_scale" | "combine_analyze"
+    mode: str  # "all_in_one" | "worker1_4b" | "worker2_smollm3" | "worker3_2b" | "worker4_08b" | "combine_analyze"
     title: str
     summary_bullets: tuple[str, ...]
     models_primary: tuple[str, ...]
@@ -47,7 +47,7 @@ SPECS: tuple[NotebookSpec, ...] = (
     NotebookSpec(
         filename="C_BARR_All_In_One.ipynb",
         mode="all_in_one",
-        title="C-BARR All-In-One: Complete End-to-End Pipeline (Parts 1 + 2 + 3 + 4)",
+        title="C-BARR All-In-One: Complete End-to-End Pipeline (Parts 1 + 2 + 3 + 4 + Phase 7)",
         summary_bullets=(
             "**Combined Single-Session Runner**: Executes the full C-BARR pipeline end-to-end (Gate 0 -> Step 0a Smoke -> Step 0b Calibrate -> `4B` + `SmolLM3-3B` -> Scale `0.8B`/`2B` [`+9B` if `>=22 GB`] -> Phase 7 Analysis) in one session.",
             "**Intra-Model `N`-GPU Auto-Sharding (`MAX_SHARDS_PER_MODEL = 4`)**: Automatically shards each model across all local GPUs (`min(GPU_COUNT, MAX_SHARDS_PER_MODEL)`) and merges deterministically before scoring.",
@@ -72,12 +72,12 @@ SPECS: tuple[NotebookSpec, ...] = (
     NotebookSpec(
         filename="C_BARR_1_Worker_Qwen4B.ipynb",
         mode="worker1_4b",
-        title="C-BARR Worker 1/3 (Parallel GPU): Gate 0 + Smoke + Calibrate + Qwen/Qwen3.5-4B",
+        title="C-BARR Worker 1/4 (Parallel GPU): Gate 0 + Smoke + Calibrate + Qwen/Qwen3.5-4B",
         summary_bullets=(
-            "**Parallel GPU Worker 1 of 3**: Launch at the same time as `C_BARR_2_Worker_SmolLM3.ipynb` and `C_BARR_3_Worker_Scale.ipynb`.",
+            "**Parallel GPU Worker 1 of 4 (Independent)**: Launch at the same time as `C_BARR_2_Worker_SmolLM3.ipynb`, `C_BARR_3_Worker_Qwen2B.ipynb`, and `C_BARR_4_Worker_Qwen08B.ipynb` — does not wait on any other notebook.",
             "**Scope**: Runs Gate 0 (`unittest`), Step 0a Live Smoke, Step 0b Zero-Leakage Calibration, and `Qwen/Qwen3.5-4B` (`strict341 -> diag491`).",
             "**Intra-Model `N`-GPU Auto-Sharding**: Automatically shards items across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs (`T4 x2` -> ~1.5–2h, `4× GPU` -> ~45–60 min), bit-for-bit identical to 1 GPU.",
-            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-4B/*` + versioned `run_manifest.json` so all 3 GPU workers push with zero merge conflicts before running `C_BARR_4_Combine_Analyze.ipynb`.",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-4B/*` + versioned `run_manifest.json` so all 4 GPU workers push with zero merge conflicts before running `C_BARR_5_Combine_Analyze.ipynb`.",
         ),
         models_primary=("Qwen/Qwen3.5-4B",),
         models_scale=(),
@@ -98,9 +98,9 @@ SPECS: tuple[NotebookSpec, ...] = (
     NotebookSpec(
         filename="C_BARR_2_Worker_SmolLM3.ipynb",
         mode="worker2_smollm3",
-        title="C-BARR Worker 2/3 (Parallel GPU): HuggingFaceTB/SmolLM3-3B (Primary)",
+        title="C-BARR Worker 2/4 (Parallel GPU): HuggingFaceTB/SmolLM3-3B (Primary)",
         summary_bullets=(
-            "**Parallel GPU Worker 2 of 3**: Launch at the same time as `C_BARR_1_Worker_Qwen4B.ipynb` and `C_BARR_3_Worker_Scale.ipynb`.",
+            "**Parallel GPU Worker 2 of 4 (Independent)**: Launch at the same time as Workers 1, 3, and 4 — does not wait on any other notebook.",
             "**Scope**: Dedicated runner for `HuggingFaceTB/SmolLM3-3B` (`strict341 -> diag491`, ~45–60 min on `T4 x2` or ~25 min on `4× GPU`).",
             "**Intra-Model `N`-GPU Auto-Sharding**: Splits items across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs and merges deterministically.",
             "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/HuggingFaceTB__SmolLM3-3B/*` + versioned `run_manifest.json` with zero git conflicts.",
@@ -122,17 +122,43 @@ SPECS: tuple[NotebookSpec, ...] = (
         bundle_filename="cbarr_worker2_smollm3_bundle.zip",
     ),
     NotebookSpec(
-        filename="C_BARR_3_Worker_Scale.ipynb",
-        mode="worker3_scale",
-        title="C-BARR Worker 3/3 (Parallel GPU): Scale Sweep (Qwen3.5-0.8B & 2B [+9B if >=22 GB])",
+        filename="C_BARR_3_Worker_Qwen2B.ipynb",
+        mode="worker3_2b",
+        title="C-BARR Worker 3/4 (Parallel GPU): Phase 6 Scale Sweep (Qwen/Qwen3.5-2B)",
         summary_bullets=(
-            "**Parallel GPU Worker 3 of 3**: Launch at the same time as `C_BARR_1_Worker_Qwen4B.ipynb` and `C_BARR_2_Worker_SmolLM3.ipynb`.",
-            "**Scope**: Dedicated runner for Phase 6 Scale Sweep (`Qwen/Qwen3.5-0.8B` & `Qwen/Qwen3.5-2B` with `strict341`, plus `Qwen/Qwen3.5-9B` automatically if `VRAM >= 22 GB`).",
-            "**Intra-Model `N`-GPU Auto-Sharding**: Splits each scale model cleanly across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs (~45 min combined on `T4 x2`).",
-            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-{0.8B,2B,9B}/*` + versioned `run_manifest.json` immediately after each model completes.",
+            "**Parallel GPU Worker 3 of 4 (Independent)**: Launch at the same time as Workers 1, 2, and 4 — does not wait on any other notebook.",
+            "**Scope**: Dedicated runner for `Qwen/Qwen3.5-2B` (`strict341` Phase 6 Scale Sweep).",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Splits items cleanly across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs.",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-2B/*` + versioned `run_manifest.json` with zero git conflicts.",
         ),
         models_primary=(),
-        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        models_scale=("Qwen/Qwen3.5-2B",),
+        auto_include_9b=False,
+        run_preflight_tests=False,
+        run_live_smoke_expr="False",
+        run_calibrate_only=False,
+        run_primary_matrix=False,
+        run_scale_sweep=True,
+        run_w7_extensions=False,
+        run_phase7_analysis=False,
+        unpack_synced_on_start=False,
+        sync_include_ledger=False,
+        expected_models_check=(),
+        sync_label_prefix="worker3-2b",
+        bundle_filename="cbarr_worker3_qwen2b_bundle.zip",
+    ),
+    NotebookSpec(
+        filename="C_BARR_4_Worker_Qwen08B.ipynb",
+        mode="worker4_08b",
+        title="C-BARR Worker 4/4 (Parallel GPU): Phase 6 Scale Sweep (Qwen/Qwen3.5-0.8B [+9B if >=22 GB])",
+        summary_bullets=(
+            "**Parallel GPU Worker 4 of 4 (Independent)**: Launch at the same time as Workers 1, 2, and 3 — does not wait on any other notebook.",
+            "**Scope**: Dedicated runner for `Qwen/Qwen3.5-0.8B` (`strict341`), plus `Qwen/Qwen3.5-9B` automatically if `VRAM >= 22 GB`.",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Splits items cleanly across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs.",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-0.8B/*` (+ `9B` if run) + versioned `run_manifest.json` immediately after completion.",
+        ),
+        models_primary=(),
+        models_scale=("Qwen/Qwen3.5-0.8B",),
         auto_include_9b=True,
         run_preflight_tests=False,
         run_live_smoke_expr="False",
@@ -144,16 +170,16 @@ SPECS: tuple[NotebookSpec, ...] = (
         unpack_synced_on_start=False,
         sync_include_ledger=False,
         expected_models_check=(),
-        sync_label_prefix="worker3-scale",
-        bundle_filename="cbarr_worker3_scale_bundle.zip",
+        sync_label_prefix="worker4-08b",
+        bundle_filename="cbarr_worker4_qwen08b_bundle.zip",
     ),
     NotebookSpec(
-        filename="C_BARR_4_Combine_Analyze.ipynb",
+        filename="C_BARR_5_Combine_Analyze.ipynb",
         mode="combine_analyze",
-        title="C-BARR Step 4 Combiner: Unpack Workers 1–3 + Optional W7 + Combined Phase 7",
+        title="C-BARR Step 5 Combiner: Unpack Workers 1–4 + Optional W7 + Combined Phase 7",
         summary_bullets=(
-            "**Final Combiner (Run After Workers 1–3 Finish)**: Pulls `dolong2110/C-BARR`, unpacks all worker models (`Qwen3.5-4B`, `SmolLM3-3B`, `Qwen3.5-0.8B`, `Qwen3.5-2B`, `+9B` if present) via `scripts/sync_results.py --mode unpack`, verifies `VERSION` match across workers, optionally runs **W7** (`RUN_W7_EXTENSIONS = True`), and runs **Combined Phase 7**.",
-            "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Does not use GPU quota unless you enable W7 extensions.",
+            "**Final Combiner (Run After Workers 1–4 Finish)**: Pulls `dolong2110/C-BARR`, unpacks all worker models (`Qwen3.5-4B`, `SmolLM3-3B`, `Qwen3.5-2B`, `Qwen3.5-0.8B`, `+9B` if present) via `scripts/sync_results.py --mode unpack`, verifies `VERSION` match across workers, optionally runs **W7** (`RUN_W7_EXTENSIONS = True`), and runs **Combined Phase 7**.",
+            "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Fails fast in Cell 5 before running Gate 0 if no worker summaries exist yet.",
             "**Unified Paper Outputs & Push**: Generates `outputs/stats_summary.json` (with `version_audit`), `outputs/paper_tables.tex`, anonymized `paper/figures/*.pdf`, `outputs/RESULTS_VERSION`, and unified `EXPERIMENT_LOG.md`, then pushes everything cleanly to GitHub.",
         ),
         models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
@@ -169,7 +195,7 @@ SPECS: tuple[NotebookSpec, ...] = (
         unpack_synced_on_start=True,
         sync_include_ledger=True,
         expected_models_check=ALL_4_CORE_MODELS,
-        sync_label_prefix="step4-combined",
+        sync_label_prefix="step5-combined",
         bundle_filename="cbarr_results_bundle.zip",
     ),
 )
@@ -870,6 +896,23 @@ if UNPACK_SYNCED_RESULTS_ON_START:
             f"[WARN] Version mismatch detected across unpacked models vs repo v{REPO_CODE_VERSION}: "
             f"versions_seen={_vsum['versions_seen']}"
         )
+    if PIPELINE_MODE == "combine_analyze":
+        ready_summaries = sorted(
+            d.name
+            for d in OUT_DIR.iterdir()
+            if d.is_dir()
+            and d.name not in {"logs", "__pycache__"}
+            and any(
+                (d / f).is_file()
+                for f in ("matrix_summary.json", "matrix_summary_strict341.json", "matrix_summary_diag491.json")
+            )
+        )
+        if not ready_summaries:
+            raise RuntimeError(
+                f"No finished worker matrix summaries found in {OUT_DIR}. "
+                "Wait until at least one GPU Worker notebook (C_BARR_1..4) pushes results to GitHub, "
+                "or run C_BARR_All_In_One.ipynb to execute models in a single session."
+            )
 
 # 5. Pre-download Hugging Face tokenizers (and optionally full checkpoints)
 for m_id in ALL_ACTIVE_MODELS:

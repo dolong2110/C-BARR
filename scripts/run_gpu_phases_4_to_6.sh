@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phases 4-7 GPU Orchestration for C-BARR (all-in-one or 4-part concurrent split, per-step ledger, optional push)
+# Phases 4-7 GPU Orchestration for C-BARR (all-in-one or 4 independent GPU workers + Step 5 combiner)
 #
 # Common usage:
 #   CBARR_COLOR=1 bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --push --with-9b --with-w7
 #   bash scripts/run_part1_worker_qwen4b.sh --shards auto --push
 #   bash scripts/run_part2_worker_smollm3.sh --shards auto --push
-#   bash scripts/run_part3_worker_scale.sh --shards auto --push
-#   bash scripts/run_part4_combine_analyze.sh --push --strict-version-match
+#   bash scripts/run_part3_worker_qwen2b.sh --shards auto --push
+#   bash scripts/run_part4_worker_qwen08b.sh --shards auto --push
+#   bash scripts/run_part5_combine_analyze.sh --push --strict-version-match
 #   bash scripts/run_gpu_phases_4_to_6.sh --mock --out-dir /tmp/mock_out --exp-log /tmp/mock_log.md
 #
 # Key flags:
-#   --part <all|1|2|3|4>    Select full pipeline or Part 1/2/3 parallel GPU worker / Part 4 combiner (default: all)
+#   --part <all|1|2|3|4|5|combine>  Select full pipeline, Parts 1-4 parallel GPU workers, or Part 5 combiner (default: all)
 #   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, 4) when >=2 GPUs visible (default: 1)
 #   --gpu <id>              Pin CUDA_VISIBLE_DEVICES (default: auto)
 #   --device <dev>          Compute device override: auto, cuda, mps, cpu (default: auto)
@@ -203,12 +204,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PART_MODE" in
-  all|1|2|3|4) ;;
-  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, or 4)" >&2; exit 1 ;;
+  all|1|2|3|4|5|combine) ;;
+  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, 4, 5, or combine)" >&2; exit 1 ;;
 esac
 
 WORKER_MODE=0
-if [ "$PART_MODE" = "1" ] || [ "$PART_MODE" = "2" ] || [ "$PART_MODE" = "3" ]; then
+if [ "$PART_MODE" = "1" ] || [ "$PART_MODE" = "2" ] || [ "$PART_MODE" = "3" ] || [ "$PART_MODE" = "4" ]; then
   # Parallel workers must never mutate shared root EXPERIMENT_LOG.md during execution
   WORKER_MODE=1
 fi
@@ -254,7 +255,7 @@ if [ "$NO_EXP_LOG" -eq 0 ] && [ -z "$EXP_LOG" ]; then
   if [ "$WORKER_MODE" -eq 1 ]; then
     EXP_LOG="${LOG_DIR}/worker_p${PART_MODE}_${RUN_ID}.md"
   elif [ "$IS_MOCK" -eq 0 ] && [ "$OUT_DIR" = "outputs" ]; then
-    # Only auto-append to shared repo-tracked EXPERIMENT_LOG.md on all-in-one or Part 4 combiner runs
+    # Only auto-append to shared repo-tracked EXPERIMENT_LOG.md on all-in-one or Part 5 combiner runs
     EXP_LOG="EXPERIMENT_LOG.md"
   else
     EXP_LOG="${OUT_DIR}/experiment_log.md"
@@ -617,18 +618,35 @@ case "$PART_MODE" in
 
   3)
     run_hw_probe_and_smoke 0
-    SCALE_MODELS=(Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B)
-    if [ "$WITH_9B" -eq 1 ]; then
-      SCALE_MODELS+=(Qwen/Qwen3.5-9B)
+    if [ "$CALIBRATE_ONLY" -eq 1 ]; then
+      run_matrix_sharded "Calibrate: Qwen/Qwen3.5-2B" Qwen/Qwen3.5-2B --calibrate-only
+    else
+      run_matrix_sharded "Phase 6 / W6: Qwen/Qwen3.5-2B (strict341)" Qwen/Qwen3.5-2B --strict-diag
+      sync_part_results "script-part3-2b" 0 Qwen/Qwen3.5-2B
     fi
-    for _sm in "${SCALE_MODELS[@]}"; do
-      run_matrix_sharded "Phase 6 / W6: ${_sm} (strict341)" "$_sm" --strict-diag
-    done
-    sync_part_results "script-part3-scale" 0 "${SCALE_MODELS[@]}"
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     ;;
 
   4)
+    run_hw_probe_and_smoke 0
+    SCALE4_MODELS=(Qwen/Qwen3.5-0.8B)
+    if [ "$WITH_9B" -eq 1 ]; then
+      SCALE4_MODELS+=(Qwen/Qwen3.5-9B)
+    fi
+    if [ "$CALIBRATE_ONLY" -eq 1 ]; then
+      for _sm in "${SCALE4_MODELS[@]}"; do
+        run_matrix_sharded "Calibrate: ${_sm}" "$_sm" --calibrate-only
+      done
+    else
+      for _sm in "${SCALE4_MODELS[@]}"; do
+        run_matrix_sharded "Phase 6 / W6: ${_sm} (strict341)" "$_sm" --strict-diag
+      done
+      sync_part_results "script-part4-08b" 0 "${SCALE4_MODELS[@]}"
+    fi
+    run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    ;;
+
+  5|combine)
     if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
       run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
     fi
@@ -638,7 +656,7 @@ case "$PART_MODE" in
     run_w7_stage Qwen/Qwen3.5-4B
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
-    sync_part_results "script-part4-combined" 1
+    sync_part_results "script-part5-combined" 1
     ;;
 
   all)
