@@ -391,35 +391,36 @@ class TestPhases4To7(unittest.TestCase):
             resolve_device_and_dtype("cpu", "fp8")
 
     def test_colab_kaggle_notebook_valid_json_and_python_syntax(self) -> None:
-        """Generated Colab/Kaggle notebook is valid nbformat 4 JSON with pure AST-valid Python cells."""
-        nb_path = ROOT / "notebooks" / "C_BARR_Colab_Kaggle.ipynb"
-        self.assertTrue(nb_path.exists(), f"Missing notebook: {nb_path}")
-        nb = json.loads(nb_path.read_text(encoding="utf-8"))
-        self.assertEqual(nb.get("nbformat"), 4)
-        cells = nb.get("cells", [])
-        self.assertGreaterEqual(len(cells), 8)
-
-        combined_code = []
-        for idx, cell in enumerate(cells):
-            src = "".join(cell.get("source", [])) if isinstance(cell.get("source"), list) else str(cell.get("source", ""))
-            self.assertTrue(src.strip(), f"Empty cell at index {idx}")
-            if cell.get("cell_type") == "code":
-                for line in src.splitlines():
-                    stripped = line.lstrip()
-                    self.assertFalse(
-                        stripped.startswith("!") or stripped.startswith("%"),
-                        f"Cell {idx} uses shell magic instead of pure Python: {line}",
-                    )
-                ast.parse(src, filename=f"cell_{idx}.py")
-                combined_code.append(src)
-
-        all_src = "\n".join(combined_code)
-        for token in (
+        """All generated Colab/Kaggle notebooks are valid nbformat 4 JSON with AST-valid Python cells."""
+        notebook_expectations = {
+            "C_BARR_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'full'",
+                "RUN_PRIMARY_MATRIX = True",
+                "RUN_SCALE_SWEEP = True",
+                "RUN_PHASE7_ANALYSIS = True",
+            ),
+            "C_BARR_Part1_Primary_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part1'",
+                "RUN_PRIMARY_MATRIX = True",
+                "RUN_SCALE_SWEEP = False",
+                "RUN_PHASE7_ANALYSIS = False",
+                "UNPACK_SYNCED_RESULTS_ON_START = False",
+            ),
+            "C_BARR_Part2_Scale_Analyze_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part2'",
+                "RUN_PRIMARY_MATRIX = False",
+                "RUN_SCALE_SWEEP = True",
+                "RUN_PHASE7_ANALYSIS = True",
+                "UNPACK_SYNCED_RESULTS_ON_START = True",
+            ),
+        }
+        shared_tokens = (
             "dolong2110/C-BARR",
             "verify_manifest_integrity",
             "scripts/run_matrix.py",
             "scripts/analyze_and_plot.py",
             "scripts/log_experiment.py",
+            "scripts/sync_results.py",
             "record_loop_checkpoint",
             "run_and_tee",
             "RUN_LOG_FILE",
@@ -427,8 +428,37 @@ class TestPhases4To7(unittest.TestCase):
             "--step-checkpoint-every",
             "MATRIX_PARAM_ARGS",
             "AUTO_PUSH_RESULTS_TO_GITHUB",
-        ):
-            self.assertIn(token, all_src)
+            "AUTO_PARALLEL_MULTI_GPU",
+        )
+        for nb_name, extra_tokens in notebook_expectations.items():
+            nb_path = ROOT / "notebooks" / nb_name
+            self.assertTrue(nb_path.exists(), f"Missing notebook: {nb_path}")
+            nb = json.loads(nb_path.read_text(encoding="utf-8"))
+            self.assertEqual(nb.get("nbformat"), 4)
+            cells = nb.get("cells", [])
+            self.assertGreaterEqual(len(cells), 8)
+
+            combined_code = []
+            for idx, cell in enumerate(cells):
+                src = (
+                    "".join(cell.get("source", []))
+                    if isinstance(cell.get("source"), list)
+                    else str(cell.get("source", ""))
+                )
+                self.assertTrue(src.strip(), f"Empty cell at index {idx} in {nb_name}")
+                if cell.get("cell_type") == "code":
+                    for line in src.splitlines():
+                        stripped = line.lstrip()
+                        self.assertFalse(
+                            stripped.startswith("!") or stripped.startswith("%"),
+                            f"{nb_name} cell {idx} uses shell magic instead of pure Python: {line}",
+                        )
+                    ast.parse(src, filename=f"{nb_name}:cell_{idx}.py")
+                    combined_code.append(src)
+
+            all_src = "\n".join(combined_code)
+            for token in (*shared_tokens, *extra_tokens):
+                self.assertIn(token, all_src, f"Missing token {token!r} in {nb_name}")
 
     def test_stage1_slicing_and_stage2_memo_parity(self) -> None:
         """Stage-1 B1b token slicing and Stage-2 memoization match uncached greedy outputs bitwise."""
@@ -1511,6 +1541,154 @@ class TestPhases4To7(unittest.TestCase):
             qwen_mod.causal_conv1d_fn = orig_conv_fn
             qwen_mod.causal_conv1d_update = orig_conv_upd
             ensure_qwen35_device_safe_kernels()
+
+    def test_sync_results_split_part1_part2_git_combine(self) -> None:
+        """End-to-end simulation of Part 1 push -> Part 2 pull/unpack -> combined Phase 7 push."""
+        import shutil
+        from scripts.log_experiment import _upsert_run_block
+        from scripts.sync_results import sync_and_push_results, unpack_repo_caches
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            bare_repo = root_tmp / "origin.git"
+            seed_repo = root_tmp / "seed_repo"
+            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(bare_repo), str(seed_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "checkout", "-B", "master"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "config", "user.name", "tester"], check=True)
+            subprocess.run(["git", "-C", str(seed_repo), "config", "user.email", "tester@example.org"], check=True)
+
+            shutil.copy2(ROOT / ".gitignore", seed_repo / ".gitignore")
+            (seed_repo / "scripts").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / "check_anonymity.sh", seed_repo / "scripts" / "check_anonymity.sh")
+            (seed_repo / "paper" / "figures").mkdir(parents=True, exist_ok=True)
+            (seed_repo / "paper" / "main.tex").write_text("\\author{Anonymous Authors}\n", encoding="utf-8")
+            (seed_repo / "EXPERIMENT_LOG.md").write_text("# C-BARR Log\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(seed_repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(seed_repo), "commit", "-m", "seed"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "push", "-u", "origin", "master"], check=True, capture_output=True)
+
+            # Part 1 session (separate OUT_DIR simulating Colab Drive or working dir)
+            p1_repo = root_tmp / "p1_repo"
+            p1_out = root_tmp / "p1_drive_out"
+            subprocess.run(["git", "clone", "-b", "master", str(bare_repo), str(p1_repo)], check=True, capture_output=True)
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/run_matrix.py"), "--model", "Qwen/Qwen3.5-4B", "--data-dir", str(tmp_data), "--out-dir", str(p1_out), "--strict-diag", "--mock"],
+                check=True,
+                cwd=str(ROOT),
+            )
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/run_matrix.py"), "--model", "Qwen/Qwen3.5-4B", "--data-dir", str(tmp_data), "--out-dir", str(p1_out), "--mock"],
+                check=True,
+                cwd=str(ROOT),
+            )
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/run_matrix.py"), "--model", "HuggingFaceTB/SmolLM3-3B", "--data-dir", str(tmp_data), "--out-dir", str(p1_out), "--strict-diag", "--mock"],
+                check=True,
+                cwd=str(ROOT),
+            )
+            _upsert_run_block(
+                p1_repo / "EXPERIMENT_LOG.md",
+                "r_p1",
+                "<!-- CBARR_RUN_START:r_p1 -->\n### Run `r_p1` — **PASSED (PART1)**\n<!-- CBARR_RUN_END:r_p1 -->",
+                upsert=True,
+            )
+            ok1, msg1 = sync_and_push_results(
+                repo_root=p1_repo,
+                out_dir=p1_out,
+                label="part1-primary",
+                models=["Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"],
+                include_phase7=False,
+                remote="origin",
+                branch="master",
+                git_push=True,
+            )
+            self.assertTrue(ok1, msg1)
+
+            # Part 2 session (fresh Kaggle-style clone where OUT_DIR == p2_repo/outputs)
+            p2_repo = root_tmp / "p2_repo"
+            p2_out = p2_repo / "outputs"
+            subprocess.run(["git", "clone", "-b", "master", str(bare_repo), str(p2_repo)], check=True, capture_output=True)
+            unpacked = unpack_repo_caches(repo_root=p2_repo, out_dir=p2_out)
+            self.assertGreaterEqual(unpacked["caches_unpacked"], 6)
+            self.assertEqual(
+                (p2_out / "Qwen__Qwen3.5-4B" / "eval_450_cache.jsonl").read_bytes(),
+                (p1_out / "Qwen__Qwen3.5-4B" / "eval_450_cache.jsonl").read_bytes(),
+            )
+            self.assertTrue((p2_out / "Qwen__Qwen3.5-4B" / "diag_ehurt_cache.jsonl").exists())
+            # Unpacked raw *.jsonl must remain ignored by git
+            st = subprocess.check_output(["git", "-C", str(p2_repo), "status", "--short"], text=True).strip()
+            self.assertEqual(st, "")
+
+            for m_scale in ("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"):
+                subprocess.run(
+                    [sys.executable, str(ROOT / "scripts/run_matrix.py"), "--model", m_scale, "--data-dir", str(tmp_data), "--out-dir", str(p2_out), "--strict-diag", "--mock"],
+                    check=True,
+                    cwd=str(ROOT),
+                )
+
+            p2_figs = p2_repo / "paper" / "figures"
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/analyze_and_plot.py"), "--out-dir", str(p2_out), "--fig-dir", str(p2_figs)],
+                check=True,
+                cwd=str(ROOT),
+            )
+            stats = json.loads((p2_out / "stats_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(stats["models"].keys()),
+                {
+                    "Qwen/Qwen3.5-4B",
+                    "HuggingFaceTB/SmolLM3-3B",
+                    "Qwen/Qwen3.5-0.8B",
+                    "Qwen/Qwen3.5-2B",
+                },
+            )
+            _upsert_run_block(
+                p2_repo / "EXPERIMENT_LOG.md",
+                "r_p2",
+                "<!-- CBARR_RUN_START:r_p2 -->\n### Run `r_p2` — **PASSED**\n<!-- CBARR_RUN_END:r_p2 -->",
+                upsert=True,
+            )
+            ok2, msg2 = sync_and_push_results(
+                repo_root=p2_repo,
+                out_dir=p2_out,
+                label="part2-combined",
+                include_phase7=True,
+                remote="origin",
+                branch="master",
+                git_push=True,
+            )
+            self.assertTrue(ok2, msg2)
+
+            remote_files = set(
+                subprocess.check_output(
+                    ["git", "--git-dir", str(bare_repo), "ls-tree", "-r", "--name-only", "master"],
+                    text=True,
+                ).splitlines()
+            )
+            self.assertIn("outputs/stats_summary.json", remote_files)
+            self.assertIn("outputs/paper_tables.tex", remote_files)
+            for slug in (
+                "Qwen__Qwen3.5-4B",
+                "HuggingFaceTB__SmolLM3-3B",
+                "Qwen__Qwen3.5-0.8B",
+                "Qwen__Qwen3.5-2B",
+            ):
+                self.assertIn(f"outputs/{slug}/eval_450_cache.jsonl.gz", remote_files)
+                self.assertIn(f"outputs/{slug}/matrix_summary_strict341.json", remote_files)
+            self.assertFalse(any(p.endswith("_cache.jsonl") for p in remote_files))
+            self.assertGreaterEqual(len([p for p in remote_files if p.startswith("paper/figures/") and p.endswith(".pdf")]), 3)
+
+            remote_md = subprocess.check_output(
+                ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
+                text=True,
+            )
+            self.assertIn("CBARR_RUN_START:r_p1", remote_md)
+            self.assertIn("CBARR_RUN_START:r_p2", remote_md)
 
 
 if __name__ == "__main__":
