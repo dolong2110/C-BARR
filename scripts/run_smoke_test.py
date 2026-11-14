@@ -261,6 +261,9 @@ def verify_gate_3_on_engine(
             assert "Constraint check:" not in a_fin, (
                 f"Leaked 'Constraint check:' wrapper in {k} a_final for {r['item']['uid']}"
             )
+            assert "Now provide the complete final response to my first message above" not in a_fin, (
+                f"Leaked Turn-2 user bridge in {k} a_final for {r['item']['uid']}: {a_fin!r}"
+            )
         # Verify Patch D13: T_probe + T_think <= 250 on m2_b256 and m2_b256_direct
         assert int(r["probe"]["T_probe"]) + int(r["m2_b256"]["T_think"]) <= 250
         assert int(r["m2_b256_direct"]["T_think"]) <= 250
@@ -303,32 +306,52 @@ def main() -> None:
         help="Models to test",
     )
     parser.add_argument(
+        "--out-dir",
+        type=str,
+        default="outputs",
+        help="Output directory for smoke caches and gate3 report",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Target device ('auto', 'cuda', 'mps', 'cpu', or 'cuda:N')",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="auto",
+        help="Floating dtype ('auto', 'bfloat16', 'float16', 'float32')",
+    )
+    parser.add_argument(
         "--live-gpu",
         action="store_true",
         help="Load full HuggingFace model checkpoints instead of deterministic smoke harness",
     )
     args = parser.parse_args()
 
+    out_dir = pathlib.Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     eval_path = pathlib.Path(args.eval_path)
     out_smoke_paths = [
         pathlib.Path("/tmp/smoke_12.jsonl"),
-        pathlib.Path("outputs/smoke_12.jsonl"),
+        out_dir / "smoke_12.jsonl",
     ]
     smoke_items = build_smoke_12(eval_path, out_smoke_paths)
 
     results = []
     for model_id in args.models:
         tag = model_id.replace("/", "__")
-        cache_out = pathlib.Path("outputs") / f"smoke_12_{tag}.jsonl"
+        cache_out = out_dir / f"smoke_12_{tag}.jsonl"
         if args.live_gpu:
-            device, dtype = resolve_device_and_dtype("auto", "auto")
+            device, dtype = resolve_device_and_dtype(args.device, args.dtype)
             engine = CBARRDualModeEngine(model_id, device=device, dtype=dtype)
         else:
             engine = MockDualModeEngine(model_id)
         res = verify_gate_3_on_engine(engine, smoke_items, cache_out)
         results.append(res)
 
-    summary_path = pathlib.Path("outputs/smoke_test_gate3_report.json")
+    summary_path = out_dir / "smoke_test_gate3_report.json"
     summary_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(banner(f"Phase 3 (W3) 12-Example Pipeline Smoke Test: {hl('PASSED', 'green')}", "green"))
     print(json.dumps(results, indent=2), flush=True)

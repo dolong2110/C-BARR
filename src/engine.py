@@ -367,9 +367,11 @@ class CBARRDualModeEngine:
         if sentinel_a not in rendered or sentinel_u not in rendered:
             return None
         bridge = rendered.split(sentinel_a, 1)[1]
+        # Use natural Turn-2 imperative wording (without bracket tags or negative "do not repeat" priming)
+        # so small models never echo wrapper tokens or mistake the reminder for repeat_prompt's target.
         reminder_msg = (
-            f"[Reminder: strictly follow: {anchor_clause}]\n"
-            "Apply to the original request above cleanly; do not repeat this note."
+            "Now provide the complete final response to my first message above while "
+            f"strictly following: {anchor_clause}"
         )
         return bridge.replace(sentinel_u, reminder_msg, 1)
 
@@ -667,10 +669,11 @@ class CBARRDualModeEngine:
     ) -> dict[str, Any]:
         """Runs <=32-token non-thinking uncertainty probe with sub-trajectory GlimpRouter horizons."""
         g1 = g1 or run_gate1_lexical(prompt)
-        # Only prepend format prefixes on clear MC / math queries; empty prefix keeps IFEval clean
+        # Only flag concise_probe for I_inertia; leave ans_prefix empty so math/MC outputs
+        # are not corrupted by Markdown '#### ' H4 headers or forced 'Answer: 1.' numbering.
         is_mc = "(A)" in prompt and "(B)" in prompt
         is_pure_math = bool(g1.phi_sym and not g1.phi_prec and not g1.phi_plan)
-        ans_prefix = "Answer: " if is_mc else ("#### " if is_pure_math else "")
+        ans_prefix = ""
 
         base_pref = self.build_prompt_prefix(prompt, enable_thinking=False) + ans_prefix
         use_stateful = type(self)._decode_raw is CBARRDualModeEngine._decode_raw

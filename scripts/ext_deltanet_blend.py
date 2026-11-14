@@ -115,21 +115,26 @@ def generate_with_blended_deltanet(
     )
     if not think_prefix.rstrip().endswith("<think>"):
         think_prefix += "<think>\n"
-    prompt_with_think = f"{think_prefix}{t_think}\n</think>\n"
+    post_close_ws = "\n\n" if prompt_no_think.endswith("</think>\n\n") else "\n"
+    prompt_with_think = f"{think_prefix}{t_think}\n</think>{post_close_ws}"
 
     device = next(model.parameters()).device
     ids_p = tok.encode(prompt_no_think, add_special_tokens=False)
     ids_f = tok.encode(prompt_with_think, add_special_tokens=False)
-    if len(ids_f) < 2:
+    if len(ids_f) < 2 or not ids_p:
         raise ValueError("Full think prefix unexpectedly shorter than 2 tokens")
 
-    # Prefill two parallel passes: prompt-only (S_prompt) and prompt + <think>...</think> (S_think).
-    # Pass config=model.config so transformers initializes LinearAttentionLayer for Qwen3.5 DeltaNet layers.
-    # Note: we stop inp_f_prefix one token before the end so the final step runs AFTER state blending,
-    # ensuring the very first generated answer logits reflect the interpolated DeltaNet memory.
-    inp_p = torch.tensor([ids_p], dtype=torch.long, device=device)
+    # Stop both parallel prefills right before the final post-</think> separator token so
+    # recurrent, conv, and full-attention KV caches align at the exact </think> boundary before step 0.
+    if len(ids_p) >= 2:
+        inp_p = torch.tensor([ids_p[:-1]], dtype=torch.long, device=device)
+        evict_start_pos = len(ids_p) - 1
+        evict_last_id = ids_p[-1]
+    else:
+        inp_p = torch.tensor([ids_p], dtype=torch.long, device=device)
+        evict_start_pos = len(ids_p)
+        evict_last_id = ids_f[-1]
     inp_f_prefix = torch.tensor([ids_f[:-1]], dtype=torch.long, device=device)
-    last_tok = torch.tensor([[ids_f[-1]]], dtype=torch.long, device=device)
 
     with torch.no_grad():
         cache_p = DynamicCache(config=model.config)
@@ -147,9 +152,15 @@ def generate_with_blended_deltanet(
         )
         n_blended = mem_stats["n_blended_layers"]
 
-        # When full-attention KV caches were evicted back to the clean prompt cache (length ids_p),
-        # resume cache_position at len(ids_p); otherwise continue after the think prefix (len(ids_f) - 1).
-        start_pos = len(ids_p) if mem_stats["n_evicted_kv"] > 0 else (len(ids_f) - 1)
+        # When full-attention KV caches were evicted back to the clean prompt cache (length inp_p),
+        # resume cache_position at evict_start_pos with evict_last_id; otherwise use ids_f[-1].
+        if mem_stats["n_evicted_kv"] > 0:
+            start_pos = evict_start_pos
+            last_tok_id = evict_last_id
+        else:
+            start_pos = len(ids_f) - 1
+            last_tok_id = ids_f[-1]
+        last_tok = torch.tensor([[last_tok_id]], dtype=torch.long, device=device)
         pos = torch.tensor([start_pos], dtype=torch.long, device=device)
         out = model(
             input_ids=last_tok,

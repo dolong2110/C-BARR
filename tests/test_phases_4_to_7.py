@@ -1027,8 +1027,9 @@ class TestPhases4To7(unittest.TestCase):
             linear_key_head_dim=8,
             linear_value_head_dim=8,
         )
+        q_model = Qwen3_5ForCausalLM(q_cfg).eval()
         out_q = generate_with_blended_deltanet(
-            Qwen3_5ForCausalLM(q_cfg).eval(),
+            q_model,
             tok,
             eos_ids={2},
             prompt_str="Answer briefly.",
@@ -1039,6 +1040,44 @@ class TestPhases4To7(unittest.TestCase):
             evict_think_kv=True,
         )
         self.assertEqual((out_q["n_blended_layers"], out_q["n_blended_conv"], out_q["n_evicted_kv"]), (3, 3, 1))
+
+        # Qwen3.5 style </think>\n\n suffix alignment: alpha=1.0 + conv + KV eviction matches no-think pass
+        class _QwenBoundaryTok(_SimpleTok):
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                base = " ".join(m["content"] for m in msgs)
+                return f"{base} <think>\n" if enable_thinking else f"{base} </think>\n\n"
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                parts = text.split(" ")
+                return [10 + (sum(ord(c) for c in w) % 45) for w in parts if w != ""]
+
+        q_tok = _QwenBoundaryTok()
+        out_q1 = generate_with_blended_deltanet(
+            q_model,
+            q_tok,
+            eos_ids={2},
+            prompt_str="Answer briefly.",
+            t_think="Long reasoning tokens.",
+            alpha=1.0,
+            max_ans_tokens=3,
+            blend_conv=True,
+            evict_think_kv=True,
+        )
+        ids_ref = q_tok.encode(q_tok.apply_chat_template([{"role": "user", "content": "Answer briefly."}], False, True, False))
+        with torch.no_grad():
+            ref_gen = q_model.generate(
+                torch.tensor([ids_ref], dtype=torch.long),
+                max_new_tokens=3,
+                do_sample=False,
+                pad_token_id=0,
+            )[0, len(ids_ref):].tolist()
+        self.assertEqual(out_q1["a_final"], q_tok.decode(ref_gen, skip_special_tokens=True).strip())
 
         l_cfg = LlamaConfig(
             vocab_size=96,
