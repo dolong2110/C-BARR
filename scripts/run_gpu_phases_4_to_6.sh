@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phases 4-7 GPU Orchestration for C-BARR (with persistent logging, phase timers, and experiment ledger)
+# Phases 4-7 GPU Orchestration for C-BARR (per-loop ledger updates, phase timers, optional GitHub push)
 # Usage:
 #   bash scripts/run_gpu_phases_4_to_6.sh                 # Step 0 + 4B + SmolLM3-3B + 0.8B/2B + W8
-#   bash scripts/run_gpu_phases_4_to_6.sh --gpu 0         # Pin CUDA_VISIBLE_DEVICES=0 on multi-GPU lab servers
+#   bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --push  # Pin GPU 0 and commit/push EXPERIMENT_LOG.md per loop
 #   bash scripts/run_gpu_phases_4_to_6.sh --with-9b       # Also run Qwen3.5-9B scale sweep
 #   bash scripts/run_gpu_phases_4_to_6.sh --with-w7       # Also run optional W7 DeltaNet blend & prefill MLP
 #   bash scripts/run_gpu_phases_4_to_6.sh --include-b512  # Also run Contingency R3 B=512 sweep
@@ -17,13 +17,22 @@ WITH_9B=0
 WITH_W7=0
 IS_MOCK=0
 SKIP_SMOKE=0
+AUTO_PUSH="${CBARR_AUTO_PUSH:-0}"
 OUT_DIR="outputs"
 FIG_DIR="paper/figures"
 LOG_DIR=""
 EXP_LOG=""
 NO_EXP_LOG=0
+RUN_ID_ARG=""
 DTYPE="auto"
 GPU_ID=""
+SEED=42
+LAM_UTILITY="0.05"
+NORM_TOKENS="250.0"
+REG_C="1.0"
+TAU_MIN="0.15"
+TAU_MAX="0.85"
+TAU_STEPS=29
 EXTRA_FLAGS=()
 RAW_CMD="$0 $*"
 
@@ -33,8 +42,14 @@ while [ "$#" -gt 0 ]; do
     --with-w7) WITH_W7=1 ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --no-exp-log) NO_EXP_LOG=1 ;;
+    --push) AUTO_PUSH=1 ;;
     --include-b512) EXTRA_FLAGS+=("$1") ;;
     --mock) IS_MOCK=1; EXTRA_FLAGS+=("$1") ;;
+    --run-id)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      RUN_ID_ARG="$1"
+      ;;
     --out-dir)
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
@@ -64,6 +79,41 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
       GPU_ID="$1"
+      ;;
+    --seed)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      SEED="$1"
+      ;;
+    --lam-utility)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      LAM_UTILITY="$1"
+      ;;
+    --norm-tokens)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      NORM_TOKENS="$1"
+      ;;
+    --reg-c)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      REG_C="$1"
+      ;;
+    --tau-min)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      TAU_MIN="$1"
+      ;;
+    --tau-max)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      TAU_MAX="$1"
+      ;;
+    --tau-steps)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      TAU_STEPS="$1"
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -96,12 +146,44 @@ if [ -x ".venv/bin/python" ] && [ -z "${PYTHON_BIN:-}" ]; then
   PY_BIN=".venv/bin/python"
 fi
 
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+if [ -n "$RUN_ID_ARG" ]; then
+  RUN_ID="$RUN_ID_ARG"
+else
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
 RUN_LOG="${LOG_DIR}/cbarr_${RUN_ID}.log"
 TIMINGS_FILE="${LOG_DIR}/timings_${RUN_ID}.jsonl"
+PARAMS_FILE="${LOG_DIR}/params_${RUN_ID}.json"
 PIPELINE_START_EPOCH="$(date -u +%s)"
 CURRENT_STAGE="Init"
 FINALIZED=0
+
+MATRIX_PARAM_FLAGS=(
+  --seed "$SEED"
+  --lam-utility "$LAM_UTILITY"
+  --norm-tokens "$NORM_TOKENS"
+  --reg-c "$REG_C"
+  --tau-min "$TAU_MIN"
+  --tau-max "$TAU_MAX"
+  --tau-steps "$TAU_STEPS"
+)
+
+"$PY_BIN" -c "
+import json, pathlib, sys
+payload = {
+    'dtype': sys.argv[1],
+    'seed': int(sys.argv[2]),
+    'lam_utility': float(sys.argv[3]),
+    'norm_tokens': float(sys.argv[4]),
+    'logreg_C': float(sys.argv[5]),
+    'tau_grid': [float(sys.argv[6]), float(sys.argv[7]), int(sys.argv[8])],
+    'with_9b': bool(int(sys.argv[9])),
+    'with_w7': bool(int(sys.argv[10])),
+    'is_mock': bool(int(sys.argv[11])),
+    'auto_push': bool(int(sys.argv[12])),
+}
+pathlib.Path(sys.argv[13]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_PUSH" "$PARAMS_FILE"
 
 log_banner() {
   local ts
@@ -121,6 +203,37 @@ with pathlib.Path(sys.argv[4]).open('a', encoding='utf-8') as f:
 " "$stage_name" "$status_str" "$dur_sec" "$TIMINGS_FILE"
 }
 
+checkpoint_exp_log() {
+  local loop_label="$1"
+  local run_status="$2"
+  local now_end total_sec md_args=() push_args=() smoke_args=()
+  now_end="$(date -u +%s)"
+  total_sec=$((now_end - PIPELINE_START_EPOCH))
+  if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
+    md_args=(--md-log "$EXP_LOG")
+  fi
+  if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
+    push_args=(--git-push)
+  fi
+  if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ] && [ -f "outputs/smoke_test_gate3_report.json" ]; then
+    smoke_args=(--smoke-report "outputs/smoke_test_gate3_report.json")
+  fi
+  "$PY_BIN" scripts/log_experiment.py \
+    --run-id "$RUN_ID" \
+    --status "$run_status" \
+    --loop-name "$loop_label" \
+    --command "$RAW_CMD" \
+    --out-dir "$OUT_DIR" \
+    --timings-file "$TIMINGS_FILE" \
+    --log-file "$RUN_LOG" \
+    --params-json "@${PARAMS_FILE}" \
+    --total-sec "$total_sec" \
+    --upsert \
+    ${smoke_args[@]+"${smoke_args[@]}"} \
+    ${md_args[@]+"${md_args[@]}"} \
+    ${push_args[@]+"${push_args[@]}"} 2>&1 | tee -a "$RUN_LOG" || true
+}
+
 run_stage() {
   local stage_name="$1"
   shift
@@ -137,6 +250,7 @@ run_stage() {
   if [ "$rc" -eq 0 ]; then
     record_stage_timing "$stage_name" "PASS" "$dur"
     log_banner "=== [$stage_name] DONE (${dur}s) ==="
+    checkpoint_exp_log "$stage_name" "RUNNING (after ${stage_name})"
   else
     record_stage_timing "$stage_name" "FAIL(exit=${rc})" "$dur"
     log_banner "=== [$stage_name] FAILED (exit=${rc}, ${dur}s) ==="
@@ -150,7 +264,7 @@ finalize_run() {
     return
   fi
   FINALIZED=1
-  local t_end total_sec status_str md_args=()
+  local t_end total_sec status_str
   t_end="$(date -u +%s)"
   total_sec=$((t_end - PIPELINE_START_EPOCH))
   if [ "$rc" -eq 0 ]; then
@@ -158,18 +272,7 @@ finalize_run() {
   else
     status_str="FAILED (exit=${rc} at ${CURRENT_STAGE})"
   fi
-  if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
-    md_args=(--md-log "$EXP_LOG")
-  fi
-  "$PY_BIN" scripts/log_experiment.py \
-    --run-id "$RUN_ID" \
-    --status "$status_str" \
-    --command "$RAW_CMD" \
-    --out-dir "$OUT_DIR" \
-    --timings-file "$TIMINGS_FILE" \
-    --log-file "$RUN_LOG" \
-    --total-sec "$total_sec" \
-    ${md_args[@]+"${md_args[@]}"} 2>&1 | tee -a "$RUN_LOG" || true
+  checkpoint_exp_log "$CURRENT_STAGE" "$status_str"
   log_banner "Run ${RUN_ID} finished with status=${status_str} (total=${total_sec}s). Full log: ${RUN_LOG}"
 }
 trap finalize_run EXIT
@@ -216,27 +319,27 @@ for pkg in ('fla', 'causal_conv1d'):
 fi
 
 run_stage "Step 0b: Primary 4B Gate-2 Calibration" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --calibrate-only ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --calibrate-only "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 # Run strict341 first so its cached diag_ehurt/controls entries are reused during diag491
 run_stage "Phase 4 / W4: Qwen3.5-4B (strict341)" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 run_stage "Phase 4 / W4: Qwen3.5-4B (diag491)" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 run_stage "Phase 5 / W5: SmolLM3-3B (strict341)" \
-  "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 run_stage "Phase 5 / W5: SmolLM3-3B (diag491)" \
-  "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 run_stage "Phase 6 / W6: Qwen3.5-0.8B (strict341)" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-0.8B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-0.8B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 run_stage "Phase 6 / W6: Qwen3.5-2B (strict341)" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-2B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-2B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 if [ "$WITH_9B" -eq 1 ]; then
   run_stage "Phase 6 / W6: Qwen3.5-9B (strict341)" \
-    "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-9B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+    "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-9B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 fi
 
 if [ "$WITH_W7" -eq 1 ]; then

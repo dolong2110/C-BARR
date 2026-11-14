@@ -163,8 +163,14 @@ class TestPhases4To7(unittest.TestCase):
                 check=True,
                 cwd=str(ROOT),
             )
+            calib_data = json.loads(calib_path.read_text())
+            self.assertIn("training_params", calib_data)
+            self.assertEqual(calib_data["training_params"]["lam_utility"], 0.05)
+
             strict_path = q4_dir / "matrix_summary_strict341.json"
             self.assertTrue(strict_path.exists())
+            strict_rep = json.loads(strict_path.read_text())
+            self.assertIn("training_params", strict_rep)
             strict_mtime_before = strict_path.stat().st_mtime_ns
 
             # 3. full diag491 + --include-b512 must NOT clobber matrix_summary_strict341.json
@@ -281,12 +287,13 @@ class TestPhases4To7(unittest.TestCase):
             mlp_res = json.loads((q4_dir / "prefill_mlp_summary.json").read_text())
             self.assertIn("macro_acc", mlp_res["eval_table"])
 
-            # 6b. Experiment logger records stage timings and stats cleanly into JSONL + Markdown
+            # 6b. Experiment logger records stage timings, training params, per-loop tables, and upserts cleanly
             timings_file = tmp_out / "timings_test.jsonl"
             timings_file.write_text(
                 json.dumps({"stage": "Gate 0", "status": "PASS", "duration_sec": 1.25}) + "\n",
                 encoding="utf-8",
             )
+            params_payload = json.dumps({"seed": 42, "lam_utility": 0.05, "logreg_C": 1.0})
             md_log = tmp_out / "test_exp_log.md"
             subprocess.run(
                 [
@@ -295,13 +302,17 @@ class TestPhases4To7(unittest.TestCase):
                     "--run-id",
                     "test_run_001",
                     "--status",
-                    "PASSED",
+                    "RUNNING (after Qwen3.5-4B)",
+                    "--loop-name",
+                    "Phase 4: Qwen/Qwen3.5-4B (strict341)",
                     "--command",
                     "mock test",
                     "--out-dir",
                     str(tmp_out),
                     "--timings-file",
                     str(timings_file),
+                    "--params-json",
+                    params_payload,
                     "--md-log",
                     str(md_log),
                     "--total-sec",
@@ -310,11 +321,46 @@ class TestPhases4To7(unittest.TestCase):
                 check=True,
                 cwd=str(ROOT),
             )
+            # Second call with same run-id should upsert in-place instead of duplicating headings
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/log_experiment.py"),
+                    "--run-id",
+                    "test_run_001",
+                    "--status",
+                    "PASSED",
+                    "--loop-name",
+                    "Phase 7: Analysis",
+                    "--command",
+                    "mock test",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--timings-file",
+                    str(timings_file),
+                    "--params-json",
+                    params_payload,
+                    "--md-log",
+                    str(md_log),
+                    "--total-sec",
+                    "2.50",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
             hist_rows = _read_jsonl(tmp_out / "experiment_history.jsonl")
-            self.assertEqual(len(hist_rows), 1)
-            self.assertEqual(hist_rows[0]["run_id"], "test_run_001")
+            self.assertEqual(len(hist_rows), 2)
+            self.assertEqual(hist_rows[-1]["status"], "PASSED")
             md_txt = md_log.read_text(encoding="utf-8")
-            self.assertIn("test_run_001", md_txt)
+            self.assertEqual(md_txt.count("### Run `test_run_001`"), 1)
+            self.assertIn("PASSED", md_txt)
+            self.assertIn("Training & Experiment Parameters", md_txt)
+            self.assertIn("Calibration & Gate-2 Classifier Results", md_txt)
+            self.assertIn("Evaluation Matrix & Section 6 Diagnostics", md_txt)
+            self.assertIn("Oracle_UB", md_txt)
+            self.assertIn("DeltaNetBlend", md_txt)
+            self.assertIn("PrefillMLP", md_txt)
+            self.assertIn("Phase 7 Statistical Audit", md_txt)
             self.assertIn("Qwen/Qwen3.5-4B", md_txt)
 
         # 7. Anonymity linter passes on real repo paper/
@@ -362,6 +408,10 @@ class TestPhases4To7(unittest.TestCase):
             "verify_manifest_integrity",
             "scripts/run_matrix.py",
             "scripts/analyze_and_plot.py",
+            "scripts/log_experiment.py",
+            "record_loop_checkpoint",
+            "MATRIX_PARAM_ARGS",
+            "AUTO_PUSH_RESULTS_TO_GITHUB",
         ):
             self.assertIn(token, all_src)
 
@@ -555,6 +605,44 @@ class TestPhases4To7(unittest.TestCase):
                 os.environ.pop("NO_COLOR", None)
             else:
                 os.environ["NO_COLOR"] = prev_n
+
+    def test_log_experiment_git_push_to_bare_remote(self) -> None:
+        """Experiment logger commits and pushes EXPERIMENT_LOG.md cleanly without leaving dirty git state."""
+        from scripts.log_experiment import _git_commit_and_push_ledger, _upsert_run_block
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            bare_repo = root_tmp / "origin.git"
+            work_repo = root_tmp / "work"
+            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(bare_repo), str(work_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "checkout", "-B", "master"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "config", "user.name", "tester"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "config", "user.email", "tester@example.org"], check=True)
+
+            exp_md = work_repo / "EXPERIMENT_LOG.md"
+            exp_md.write_text("# C-BARR Log\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(work_repo), "add", "EXPERIMENT_LOG.md"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "commit", "-m", "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "push", "-u", "origin", "master"], check=True, capture_output=True)
+
+            block = "<!-- CBARR_RUN_START:r1 -->\n### Run `r1` — **PASSED**\n<!-- CBARR_RUN_END:r1 -->"
+            _upsert_run_block(exp_md, "r1", block, upsert=True)
+            ok, msg = _git_commit_and_push_ledger(
+                repo_root=work_repo,
+                md_path=exp_md,
+                run_id="r1",
+                loop_name="Phase 4: 4B",
+                remote="origin",
+                branch="master",
+                token_env="GITHUB_TOKEN",
+            )
+            self.assertTrue(ok, msg)
+            remote_show = subprocess.check_output(
+                ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
+                text=True,
+            )
+            self.assertIn("CBARR_RUN_START:r1", remote_show)
 
 
 if __name__ == "__main__":

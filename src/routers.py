@@ -128,10 +128,23 @@ def _binary_clf_metrics(
 class CBARRCalibrator:
     """Two-stage zero-leakage calibrator using seed_60 for weights and dev_60 for tau*."""
 
-    def __init__(self, lam_utility: float = 0.05, norm_tokens: float = 250.0, seed: int = 42):
+    def __init__(
+        self,
+        lam_utility: float = 0.05,
+        norm_tokens: float = 250.0,
+        seed: int = 42,
+        reg_c: float = 1.0,
+        tau_min: float = 0.15,
+        tau_max: float = 0.85,
+        tau_steps: int = 29,
+    ):
         self.lam_utility = lam_utility
         self.norm_tokens = norm_tokens
         self.seed = seed
+        self.reg_c = float(reg_c)
+        self.tau_min = float(tau_min)
+        self.tau_max = float(tau_max)
+        self.tau_steps = max(2, int(tau_steps))
         self.last_tau_sweep_: list[dict[str, float]] = []
 
     def fit(
@@ -159,7 +172,7 @@ class CBARRCalibrator:
             coef = [0.6, 0.8, 0.4, 1.0, 0.5]
             intercept = -1.0
         else:
-            clf = LogisticRegression(C=1.0, class_weight="balanced", random_state=self.seed)
+            clf = LogisticRegression(C=self.reg_c, class_weight="balanced", random_state=self.seed)
             clf.fit(X_arr, y_arr)
             coef = [float(c) for c in clf.coef_[0]]
             intercept = float(clf.intercept_[0])
@@ -174,9 +187,9 @@ class CBARRCalibrator:
         best_esc_rate = 0.35
         tau_sweep: list[dict[str, float]] = []
 
-        # Grid-search Gate-2 escalation threshold tau in [0.15, 0.85] to maximize utility on dev_60
+        # Grid-search Gate-2 escalation threshold tau across configured range to maximize utility on dev_60
         w_vec = np.asarray(coef, dtype=np.float64)
-        for tau in np.linspace(0.15, 0.85, 29):
+        for tau in np.linspace(self.tau_min, self.tau_max, self.tau_steps):
             utilities: list[float] = []
             escalations: list[int] = []
             for rec in dev_records:

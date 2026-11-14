@@ -226,6 +226,8 @@ def compute_4regime_and_oracle(
     b0_runs: list[dict[str, Any]],
     b1b_runs: list[dict[str, Any]],
     candidate_run_lists: list[list[dict[str, Any]]],
+    lam_utility: float = 0.05,
+    norm_tokens: float = 250.0,
 ) -> dict[str, Any]:
     """Computes Helped/Hurt/Tie-Pass/Tie-Fail counts and minimal-token Oracle_UB."""
     z_b0 = [int(r["z"]) for r in b0_runs]
@@ -249,7 +251,9 @@ def compute_4regime_and_oracle(
             fallback["calls"] = 1
             oracle_synthesized.append(fallback)
 
-    oracle_table = evaluate_system_table(items, oracle_synthesized)
+    oracle_table = evaluate_system_table(
+        items, oracle_synthesized, lam_utility=lam_utility, norm_tokens=norm_tokens
+    )
     n = max(1, len(z_b0))
     return {
         "helped_rate": helped / n,

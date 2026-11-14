@@ -589,6 +589,8 @@ def _build_calibration_summary(
     dev_rows: list[dict[str, Any]],
     params: CalibratedRouterParams,
     tau_sweep: list[dict[str, float]] | None = None,
+    lam_utility: float = 0.05,
+    norm_tokens: float = 250.0,
 ) -> dict[str, Any]:
     """Summarizes Stage-0/1 calibration, Gate 2 classification metrics, and Contingency R1 status."""
     dev_items = [r["item"] for r in dev_rows]
@@ -626,9 +628,15 @@ def _build_calibration_summary(
         else:
             dev_m2_runs.append(row["fast_done"])
 
-    dev_m2_table = evaluate_system_table(dev_items, dev_m2_runs)
-    dev_b1b_table = evaluate_system_table(dev_items, dev_b1b_runs)
-    dev_b0_table = evaluate_system_table(dev_items, dev_b0_runs)
+    dev_m2_table = evaluate_system_table(
+        dev_items, dev_m2_runs, lam_utility=lam_utility, norm_tokens=norm_tokens
+    )
+    dev_b1b_table = evaluate_system_table(
+        dev_items, dev_b1b_runs, lam_utility=lam_utility, norm_tokens=norm_tokens
+    )
+    dev_b0_table = evaluate_system_table(
+        dev_items, dev_b0_runs, lam_utility=lam_utility, norm_tokens=norm_tokens
+    )
     clf_diag = compute_calibration_diagnostics(seed_rows, dev_rows, params, tau_sweep=tau_sweep)
 
     r1_in_range = 0.20 <= params.m2_escalation_rate_dev <= 0.85
@@ -750,6 +758,19 @@ def main() -> None:
         action="store_true",
         help="Also cache/evaluate auxiliary M2_B512 sweep point (Contingency R3).",
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for calibrator and B2b.")
+    parser.add_argument(
+        "--lam-utility", type=float, default=0.05, help="Utility token penalty lambda (U_0.05)."
+    )
+    parser.add_argument(
+        "--norm-tokens", type=float, default=250.0, help="Utility normalization token denominator."
+    )
+    parser.add_argument(
+        "--reg-c", type=float, default=1.0, help="Inverse L2 regularization C for Gate-2 LogReg."
+    )
+    parser.add_argument("--tau-min", type=float, default=0.15, help="Minimum tau_prob search grid.")
+    parser.add_argument("--tau-max", type=float, default=0.85, help="Maximum tau_prob search grid.")
+    parser.add_argument("--tau-steps", type=int, default=29, help="Number of tau_prob grid points.")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -772,12 +793,35 @@ def main() -> None:
         if args.mock
         else resolve_device_and_dtype(device_arg=args.device, dtype_arg=args.dtype)
     )
+    training_params = {
+        "model": args.model,
+        "diag_pool": diag_tag,
+        "device": str(resolved_runtime[0]),
+        "dtype": str(resolved_runtime[1]),
+        "seed": int(args.seed),
+        "lam_utility": float(args.lam_utility),
+        "norm_tokens": float(args.norm_tokens),
+        "logreg_C": float(args.reg_c),
+        "class_weight": "balanced",
+        "tau_grid": [float(args.tau_min), float(args.tau_max), int(args.tau_steps)],
+        "gate2_probe_tokens": 32,
+        "tiered_budgets": [64, 128, 250] + ([512] if args.include_b512 else []),
+        "include_b512": bool(args.include_b512),
+        "b0_max_new_tokens": 1024,
+        "b1b_max_new_tokens": 2048,
+    }
     print(
         banner(
             f"RUN MATRIX: {args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
             f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}",
             "cyan",
         ),
+        flush=True,
+    )
+    print(
+        f"[params] seed={training_params['seed']} lam={training_params['lam_utility']} "
+        f"norm={training_params['norm_tokens']:.0f} C={training_params['logreg_C']} "
+        f"tau_grid={training_params['tau_grid']} budgets={training_params['tiered_budgets']}",
         flush=True,
     )
 
@@ -795,14 +839,29 @@ def main() -> None:
     for r in seed_rows + dev_rows:
         r["g1"] = run_gate1_lexical(r["item"]["prompt"])
 
-    calibrator = CBARRCalibrator()
+    calibrator = CBARRCalibrator(
+        lam_utility=args.lam_utility,
+        norm_tokens=args.norm_tokens,
+        seed=args.seed,
+        reg_c=args.reg_c,
+        tau_min=args.tau_min,
+        tau_max=args.tau_max,
+        tau_steps=args.tau_steps,
+    )
     params = calibrator.fit(seed_rows, dev_rows)
     t_calib_sec = round(time.perf_counter() - t_calib_start, 2)
     calib_summary = _build_calibration_summary(
-        args.model, seed_rows, dev_rows, params, tau_sweep=calibrator.last_tau_sweep_
+        args.model,
+        seed_rows,
+        dev_rows,
+        params,
+        tau_sweep=calibrator.last_tau_sweep_,
+        lam_utility=args.lam_utility,
+        norm_tokens=args.norm_tokens,
     )
     calib_summary["wall_time_sec"] = t_calib_sec
     calib_summary["runtime"] = {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])}
+    calib_summary["training_params"] = training_params
     calib_path = out_dir / "calibration_summary.json"
     calib_path.write_text(json.dumps(calib_summary, indent=2) + "\n", encoding="utf-8")
     _print_calibration_report(calib_summary)
@@ -832,7 +891,7 @@ def main() -> None:
         include_b512=args.include_b512,
     )
     t_eval_sec = round(time.perf_counter() - t_eval_start, 2)
-    rng_b2b = np.random.default_rng(42)
+    rng_b2b = np.random.default_rng(args.seed)
 
     variant_names = (
         "B0",
@@ -859,7 +918,13 @@ def main() -> None:
             per_system_runs[k].append(resolved[k])
 
     tables: dict[str, Any] = {
-        k: evaluate_system_table(eval_items, per_system_runs[k]) for k in variant_names
+        k: evaluate_system_table(
+            eval_items,
+            per_system_runs[k],
+            lam_utility=args.lam_utility,
+            norm_tokens=args.norm_tokens,
+        )
+        for k in variant_names
     }
 
     comp_keys = [k for k in variant_names if k != "B1b"]
@@ -888,7 +953,12 @@ def main() -> None:
     aux_systems: dict[str, Any] = {}
     if args.include_b512:
         m2_b512_runs = [_resolve_m2_b512(r, params) for r in eval_rows]
-        m2_b512_table = evaluate_system_table(eval_items, m2_b512_runs)
+        m2_b512_table = evaluate_system_table(
+            eval_items,
+            m2_b512_runs,
+            lam_utility=args.lam_utility,
+            norm_tokens=args.norm_tokens,
+        )
         m2_b512_table["mcnemar_vs_b1b"] = exact_and_midp_mcnemar(
             tables["B1b"]["z_vec"], m2_b512_table["z_vec"]
         )
@@ -911,6 +981,8 @@ def main() -> None:
         per_system_runs["B0"],
         per_system_runs["B1b"],
         oracle_candidates,
+        lam_utility=args.lam_utility,
+        norm_tokens=args.norm_tokens,
     )
 
     t_diag_start = time.perf_counter()
@@ -924,6 +996,7 @@ def main() -> None:
         "diag_pool": diag_tag,
         "diag_n_items": len(diag_items),
         "runtime": {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])},
+        "training_params": training_params,
         "timing_sec": {
             "calibration": t_calib_sec,
             "eval_matrix": t_eval_sec,
