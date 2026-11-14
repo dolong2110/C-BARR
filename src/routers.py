@@ -248,6 +248,7 @@ class CBARRCalibrator:
 def score_gate2_probability(
     g1: Gate1Output, probe: dict[str, Any], params: CalibratedRouterParams
 ) -> float:
+    """Computes calibrated Gate-2 escalation probability P(escalate | gate1, probe)."""
     feat = _build_gate2_feature_vec(g1, probe)
     logit = float(np.dot(np.asarray(params.coef), feat) + params.intercept)
     return float(1.0 / (1.0 + np.exp(-logit)))

@@ -1,4 +1,4 @@
-"""Records structured training params, Gate-2/Eval-450/Section-6 loop results, and pushes EXPERIMENT_LOG.md."""
+"""Records training params, live in-flight progress, and per-step/per-loop results to EXPERIMENT_LOG.md."""
 from __future__ import annotations
 
 import argparse
@@ -366,6 +366,7 @@ def _render_run_markdown(
     model_rows: list[dict[str, Any]],
     live_progress: list[dict[str, Any]] | None = None,
 ) -> str:
+    """Renders an upserted Markdown block summarizing params, live progress, timings, calibration, and matrix results."""
     hw_desc = (
         f"{hw['gpu_count']}x {hw['gpu_name']} ({hw['vram_gb']} GB, SM {hw['sm_cap']}, "
         f"CUDA {hw['cuda_version']}, BF16={hw['bf16_native']})"
@@ -571,6 +572,7 @@ def _render_run_markdown(
 
 
 def _upsert_run_block(md_path: pathlib.Path, run_id: str, block: str, upsert: bool) -> None:
+    """Replaces an existing <!-- CBARR_RUN_START/END --> section in place, or appends a new run block."""
     if not md_path.exists():
         md_path.write_text("# C-BARR Experiment & Runtime Log\n\n---\n\n## Run History\n", encoding="utf-8")
     existing = md_path.read_text(encoding="utf-8")
@@ -606,6 +608,7 @@ def _ensure_git_identity(repo_root: pathlib.Path) -> None:
 def _run_git_with_askpass(
     args: list[str], repo_root: pathlib.Path, token: str
 ) -> subprocess.CompletedProcess[str]:
+    """Runs git non-interactively using an ephemeral GIT_ASKPASS script deleted immediately in finally."""
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     askpass_path: pathlib.Path | None = None

@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phases 4-7 GPU Orchestration for C-BARR (per-loop ledger updates, phase timers, optional GitHub push)
-# Usage:
-#   bash scripts/run_gpu_phases_4_to_6.sh                 # Step 0 + 4B + SmolLM3-3B + 0.8B/2B + W8
-#   bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --push  # Pin GPU 0 and commit/push EXPERIMENT_LOG.md per loop
-#   bash scripts/run_gpu_phases_4_to_6.sh --with-9b       # Also run Qwen3.5-9B scale sweep
-#   bash scripts/run_gpu_phases_4_to_6.sh --with-w7       # Also run optional W7 DeltaNet blend & prefill MLP
-#   bash scripts/run_gpu_phases_4_to_6.sh --include-b512  # Also run Contingency R3 B=512 sweep
-#   bash scripts/run_gpu_phases_4_to_6.sh --mock          # Full offline CPU orchestration dry-run
+# Phases 4-7 GPU Orchestration for C-BARR (per-step & per-loop ledger updates, phase timers, optional push)
+#
+# Common usage:
+#   CBARR_COLOR=1 bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --push --with-9b --with-w7
+#   bash scripts/run_gpu_phases_4_to_6.sh --mock --out-dir /tmp/mock_out --exp-log /tmp/mock_log.md
+#
+# Key flags:
+#   --gpu <id>              Pin CUDA_VISIBLE_DEVICES (default: auto)
+#   --dtype <auto|bf16|fp16|fp32>  Model precision override (default: auto -> bf16 on sm>=80, fp16 on T4/P100)
+#   --push                  Commit & push EXPERIMENT_LOG.md at every internal step and outer loop
+#   --checkpoint-every <N>  Mid-eval_450 checkpoint cadence in new items (default: 150 live, 0 mock)
+#   --with-9b / --with-w7   Enable Qwen3.5-9B scale sweep / optional W7 extensions
+#   --include-b512          Include Contingency R3 B=512 sweep
+#   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
+#   --run-id / --out-dir / --fig-dir / --log-dir / --exp-log / --no-exp-log
+#   --seed / --lam-utility / --norm-tokens / --reg-c / --tau-min / --tau-max / --tau-steps
+#   --mock                  Run full offline CPU orchestration dry-run without overwriting repo ledger
 
 export PYTHONUNBUFFERED=1
 export CBARR_COLOR="${CBARR_COLOR:-0}"
@@ -172,6 +181,7 @@ if [ -z "$CHECKPOINT_EVERY" ]; then
   fi
 fi
 
+# Shared hyperparameters and per-step checkpoint flags forwarded into every scripts/run_matrix.py invocation
 MATRIX_PARAM_FLAGS=(
   --seed "$SEED"
   --lam-utility "$LAM_UTILITY"
@@ -300,6 +310,7 @@ finalize_run() {
   checkpoint_exp_log "$CURRENT_STAGE" "$status_str"
   log_banner "Run ${RUN_ID} finished with status=${status_str} (total=${total_sec}s). Full log: ${RUN_LOG}"
 }
+# Persist final PASSED/FAILED status, hardware diagnostics, and total wall time even on unexpected abort
 trap finalize_run EXIT
 
 # Log environment snapshot upfront for debugging & reproducibility

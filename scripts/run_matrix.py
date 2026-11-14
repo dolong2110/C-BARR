@@ -1,4 +1,9 @@
-"""End-to-end cached execution matrix for Cascaded Budgeted Adaptive Reasoning Routing (C-BARR)."""
+"""End-to-end cached execution matrix for Cascaded Budgeted Adaptive Reasoning Routing (C-BARR).
+
+Handles dataset SHA-256 verification, hardware dtype resolution, Stage-1/Stage-2 deterministic greedy
+decode reuse, zero-leakage Gate-2 calibration diagnostics, Section 6 causal controls, and per-step
+ledger checkpointing via scripts/log_experiment.py.
+"""
 from __future__ import annotations
 
 import argparse
@@ -1146,7 +1151,7 @@ def main() -> None:
         (out_dir / f"tables_rows_{diag_tag}.tex").write_text(tex_payload, encoding="utf-8")
         (out_dir / "tables_rows.tex").write_text(tex_payload, encoding="utf-8")
 
-    # Persist & push full Eval-450 table immediately before starting Section 6 controls
+    # Persist & push full Eval-450 table immediately so long Section 6 runs never risk losing main results
     _write_matrix_artifacts("eval450_complete", {}, 0.0)
     _emit_step_checkpoint(args, f"Eval-450: {args.model} ({diag_tag})", time.perf_counter() - t_run_start)
 
@@ -1154,6 +1159,7 @@ def main() -> None:
     gsm_seed = [x for x in seed_items if x["dataset"] == "gsm8k"]
 
     def _on_diag_mode_done(mode_name: str, partial_diag: dict[str, Any]) -> None:
+        """Flushes cumulative Section 6 causal metrics and triggers a step ledger checkpoint after each control."""
         _write_matrix_artifacts(
             f"section6_{mode_name}",
             partial_diag,

@@ -1,9 +1,9 @@
 # C-BARR Experiment & Runtime Log
 
-Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock duration per stage, hardware configuration, command flags, raw log pointers, and headline metrics).
+Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock duration per stage, hardware configuration, hyperparameters, raw log pointers, live progress, and headline metrics).
 
-- Live runs via `bash scripts/run_gpu_phases_4_to_6.sh` automatically stream output to `outputs/logs/cbarr_<RUN_ID>.log`, save per-stage JSONL telemetry (`outputs/logs/timings_<RUN_ID>.jsonl` & `outputs/experiment_history.jsonl`), and append an anonymized summary entry below (even on failure, via `EXIT` trap in `scripts/log_experiment.py`).
-- Keep entries free of local usernames, email addresses, or private paths outside the repository.
+- Live runs via `bash scripts/run_gpu_phases_4_to_6.sh` or `notebooks/C_BARR_Colab_Kaggle.ipynb` stream output to `outputs/logs/cbarr_<RUN_ID>.log`, save per-stage JSONL telemetry (`outputs/logs/timings_<RUN_ID>.jsonl` & `outputs/experiment_history.jsonl`), and upsert an anonymized run entry in place (`<!-- CBARR_RUN_START/END -->`) at every internal step (Calibration, every N items in `eval_450`, Eval-450 completion, each Section 6 control mode) and outer loop — including failure status via the `EXIT` trap (`finalize_run`) in `scripts/run_gpu_phases_4_to_6.sh` or exception handlers in `notebooks/C_BARR_Colab_Kaggle.ipynb`.
+- Keep entries free of local usernames, email addresses, tokens, or private paths outside the repository.
 
 ---
 

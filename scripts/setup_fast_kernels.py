@@ -48,7 +48,7 @@ def _write_pip_constraints(path: pathlib.Path) -> pathlib.Path:
     for pkg in ("torch", "transformers"):
         try:
             ver = importlib.metadata.version(pkg)
-            # Strip local CUDA suffix (+cu124) only if exact pin fails? pip matches local version tags directly.
+            # Keep the full installed version (including local +cuXXX tags) so pip resolves compatible wheels.
             lines.append(f"{pkg}=={ver}\n")
         except importlib.metadata.PackageNotFoundError:
             pass
@@ -205,6 +205,7 @@ def setup_and_verify_kernels(
             if res_cc.returncode == 0:
                 report["actions"].append("install_causal_conv1d_wheel=ok")
             elif has_nvcc and (allow_source_build or n_cpus >= 8):
+                # Source builds invoke nvcc C++/CUDA extensions (~15-20 min on 2-vCPU VMs), so gate on 8+ CPUs or --allow-source-build.
                 res_src = _pip_cmd(
                     "install",
                     "-q",
