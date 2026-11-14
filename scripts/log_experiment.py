@@ -486,9 +486,16 @@ def _render_run_markdown(
             b3 = s6.get("B3_early_cut_no_anchor", {})
             rep_status = rep.get("status", "completed")
             st_badge = f" | status=`{rep_status}`" if rep_status != "completed" else ""
+            tp = rep.get("training_params", {})
+            samp_badge = (
+                f" | sample(T={float(tp['temperature']):g}, top_p={float(tp.get('top_p', 1.0)):g}, "
+                f"pp={float(tp.get('presence_penalty', 0.0)):g}, seed={int(tp.get('seed', 42))})"
+                if float(tp.get("temperature", 0.0) or 0.0) > 0.0
+                else ""
+            )
             lines.append(
                 f"\n- **`{rep['model']}` (`{rep.get('diag_pool', 'unknown')}`**, n_diag={rep.get('diag_n_items', 0)}) — "
-                f"dtype=`{rt.get('dtype', 'n/a')}`{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
+                f"dtype=`{rt.get('dtype', 'n/a')}`{samp_badge}{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
                 f"(calib={tsec.get('calibration', 0):.1f}s, eval={tsec.get('eval_matrix', 0):.1f}s, diag={tsec.get('section6_diagnostics', 0):.1f}s) | "
                 f"tau={cp.get('tau_prob', 0):.3f}, esc={100*cp.get('m2_escalation_rate_dev', 0):.1f}%"
             )

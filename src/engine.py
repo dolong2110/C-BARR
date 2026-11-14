@@ -3,12 +3,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import hashlib
 import re
 import time
 from typing import Any
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    LogitsProcessor,
+    LogitsProcessorList,
+)
 
 from src.graders import strip_special_end_tokens
 
@@ -140,6 +146,25 @@ def _build_reanchor_block(
     raise ValueError(f"Unsupported anchor_locus: {anchor_locus}")
 
 
+class PresencePenaltyLogitsProcessor(LogitsProcessor):
+    """Applies flat additive OpenAI/vLLM-style presence penalty to tokens generated after prompt_len."""
+
+    def __init__(self, prompt_len: int, penalty: float):
+        self.prompt_len = int(prompt_len)
+        self.penalty = float(penalty)
+
+    def __call__(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        if self.penalty == 0.0 or input_ids.shape[1] <= self.prompt_len:
+            return scores
+        gen_slice = input_ids[:, self.prompt_len :]
+        for b_idx in range(gen_slice.shape[0]):
+            seen = torch.unique(gen_slice[b_idx])
+            scores[b_idx, seen] = scores[b_idx, seen] - self.penalty
+        return scores
+
+
 class CBARRDualModeEngine:
     """Normalized text-only inference wrapper for Qwen3.5 (0.8B-9B) and SmolLM3-3B."""
 
@@ -149,11 +174,23 @@ class CBARRDualModeEngine:
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
         freeze_smollm3_date: str = "01 November 2026",
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        presence_penalty: float = 0.0,
+        sampling_seed: int = 42,
     ):
+        if temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0, got {temperature}")
+        if not (0.0 < top_p <= 1.0):
+            raise ValueError(f"top_p must lie in (0.0, 1.0], got {top_p}")
         self.model_id = model_id
         self.is_smollm3 = "smollm3" in model_id.lower()
         self.freeze_smollm3_date = freeze_smollm3_date
         self.device = device
+        self.temperature = float(temperature)
+        self.top_p = float(top_p)
+        self.presence_penalty = float(presence_penalty)
+        self.sampling_seed = int(sampling_seed)
         self.tok = AutoTokenizer.from_pretrained(model_id)
         # AutoModelForCausalLM loads Qwen3_5ForCausalLM on Qwen/Qwen3.5-* checkpoints,
         # dropping the ViT vision tower and MTP heads to save GPU memory.
@@ -264,17 +301,35 @@ class CBARRDualModeEngine:
     ) -> dict[str, Any]:
         t0 = time.perf_counter()
         inp = self.tok(prompt_str, return_tensors="pt").to(self.device)
-        out = self.model.generate(
-            **inp,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            eos_token_id=sorted(self.eos_ids) if self.eos_ids else None,
-            pad_token_id=self.tok.pad_token_id or next(iter(self.eos_ids), 0),
-            return_dict_in_generate=True,
-            output_scores=log_entropies,
-        )
+        prompt_len = int(inp["input_ids"].shape[1])
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_new_tokens,
+            "eos_token_id": sorted(self.eos_ids) if self.eos_ids else None,
+            "pad_token_id": self.tok.pad_token_id or next(iter(self.eos_ids), 0),
+            "return_dict_in_generate": True,
+            "output_scores": log_entropies,
+        }
+        temperature = float(getattr(self, "temperature", 0.0))
+        top_p = float(getattr(self, "top_p", 1.0))
+        presence_penalty = float(getattr(self, "presence_penalty", 0.0))
+        sampling_seed = int(getattr(self, "sampling_seed", 42))
+        if temperature > 0.0:
+            # Hash (sampling_seed, prompt_str) without max_new_tokens so resume and S1 slicing match bit-for-bit.
+            digest = hashlib.sha256(f"{sampling_seed}:{prompt_str}".encode("utf-8")).digest()
+            torch.manual_seed(int.from_bytes(digest[:8], "little") & ((1 << 63) - 1))
+            gen_kwargs["do_sample"] = True
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+            if presence_penalty != 0.0:
+                gen_kwargs["logits_processor"] = LogitsProcessorList(
+                    [PresencePenaltyLogitsProcessor(prompt_len, presence_penalty)]
+                )
+        else:
+            gen_kwargs["do_sample"] = False
+
+        out = self.model.generate(**inp, **gen_kwargs)
         latency_ms = (time.perf_counter() - t0) * 1000.0
-        gen_ids = out.sequences[0, inp.input_ids.shape[1] :].tolist()
+        gen_ids = out.sequences[0, prompt_len:].tolist()
         hit_eos = bool(gen_ids and gen_ids[-1] in self.eos_ids)
 
         # Measure entropy only across non-EOS content tokens so stopping punctuation doesn't skew stats

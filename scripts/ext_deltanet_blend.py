@@ -71,12 +71,12 @@ def generate_with_blended_deltanet(
     prompt_no_think = tok.apply_chat_template(
         prompt_msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
-    prompt_with_think = (
-        tok.apply_chat_template(
-            prompt_msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True
-        )
-        + f"{t_think}\n</think>\n"
+    think_prefix = tok.apply_chat_template(
+        prompt_msgs, tokenize=False, add_generation_prompt=True, enable_thinking=True
     )
+    if not think_prefix.rstrip().endswith("<think>"):
+        think_prefix += "<think>\n"
+    prompt_with_think = f"{think_prefix}{t_think}\n</think>\n"
 
     device = next(model.parameters()).device
     ids_p = tok.encode(prompt_no_think, add_special_tokens=False)
@@ -85,6 +85,7 @@ def generate_with_blended_deltanet(
         raise ValueError("Full think prefix unexpectedly shorter than 2 tokens")
 
     # Prefill two parallel passes: prompt-only (S_prompt) and prompt + <think>...</think> (S_think).
+    # Pass config=model.config so transformers initializes LinearAttentionLayer for Qwen3.5 DeltaNet layers.
     # Note: we stop inp_f_prefix one token before the end so the final step runs AFTER state blending,
     # ensuring the very first generated answer logits reflect the interpolated DeltaNet memory.
     inp_p = torch.tensor([ids_p], dtype=torch.long, device=device)
@@ -92,10 +93,10 @@ def generate_with_blended_deltanet(
     last_tok = torch.tensor([[ids_f[-1]]], dtype=torch.long, device=device)
 
     with torch.no_grad():
-        cache_p = DynamicCache()
+        cache_p = DynamicCache(config=model.config)
         _ = model(input_ids=inp_p, past_key_values=cache_p, use_cache=True)
 
-        cache_t = DynamicCache()
+        cache_t = DynamicCache(config=model.config)
         _ = model(input_ids=inp_f_prefix, past_key_values=cache_t, use_cache=True)
 
         _, n_blended = blend_deltanet_states(cache_t, cache_p, alpha=alpha)
@@ -140,13 +141,16 @@ def generate_with_blended_deltanet(
 
 
 def run_mock_blend_check(alphas: list[float]) -> dict[str, Any]:
-    """Exercises exact DynamicCache(LinearAttentionAndFullAttentionLayer) blending on CPU."""
-    from transformers.cache_utils import LinearAttentionAndFullAttentionLayer
+    """Exercises exact DynamicCache LinearAttentionLayer recurrent-state blending on CPU."""
+    try:
+        from transformers.cache_utils import LinearAttentionLayer as _RecurrentLayerCls
+    except ImportError:
+        from transformers.cache_utils import LinearAttentionAndFullAttentionLayer as _RecurrentLayerCls
 
     cache_p = DynamicCache()
     cache_t = DynamicCache()
-    layer_p = LinearAttentionAndFullAttentionLayer()
-    layer_t = LinearAttentionAndFullAttentionLayer()
+    layer_p = _RecurrentLayerCls()
+    layer_t = _RecurrentLayerCls()
     layer_p.update_recurrent_state(torch.zeros((1, 4, 8, 8)))
     layer_t.update_recurrent_state(torch.ones((1, 4, 8, 8)) * 2.0)
     cache_p.layers.append(layer_p)
@@ -156,7 +160,7 @@ def run_mock_blend_check(alphas: list[float]) -> dict[str, Any]:
     for a in alphas:
         # Clone state for clean sweep test
         ct_copy = DynamicCache()
-        lt_copy = LinearAttentionAndFullAttentionLayer()
+        lt_copy = _RecurrentLayerCls()
         lt_copy.update_recurrent_state(layer_t.recurrent_states[0].clone())
         ct_copy.layers.append(lt_copy)
         _, n_blended = blend_deltanet_states(ct_copy, cache_p, alpha=a)
@@ -229,6 +233,11 @@ def main() -> None:
                 str_pass.append(int(g["structural_strict_all"]))
 
         _, lo, hi = wilson_ci(sum(all_pass), len(all_pass))
+        if e_hurt and n_blended == 0:
+            print(
+                f"[WARN] alpha={a:.2f}: blended 0 recurrent layers (model may lack Gated DeltaNet cache layers).",
+                flush=True,
+            )
         alpha_summary[f"{a:.2f}"] = {
             "alpha": a,
             "n_ehurt": len(e_hurt),

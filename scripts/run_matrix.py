@@ -574,14 +574,35 @@ def _format_latex_row(label: str, t: dict[str, Any], sig: str = "") -> str:
 
 
 def _build_engine(
-    model_id: str, device_arg: str, use_mock: bool, dtype_arg: str = "auto"
+    model_id: str,
+    device_arg: str,
+    use_mock: bool,
+    dtype_arg: str = "auto",
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    presence_penalty: float = 0.0,
+    sampling_seed: int = 42,
 ) -> Any:
     if use_mock:
         from scripts.run_smoke_test import MockDualModeEngine
 
-        return MockDualModeEngine(model_id)
+        return MockDualModeEngine(
+            model_id,
+            temperature=temperature,
+            top_p=top_p,
+            presence_penalty=presence_penalty,
+            sampling_seed=sampling_seed,
+        )
     dev, dtype = resolve_device_and_dtype(device_arg, dtype_arg)
-    return CBARRDualModeEngine(model_id, device=dev, dtype=dtype)
+    return CBARRDualModeEngine(
+        model_id,
+        device=dev,
+        dtype=dtype,
+        temperature=temperature,
+        top_p=top_p,
+        presence_penalty=presence_penalty,
+        sampling_seed=sampling_seed,
+    )
 
 
 def _resolve_m2_b512(
@@ -831,7 +852,25 @@ def main() -> None:
         action="store_true",
         help="Also cache/evaluate auxiliary M2_B512 sweep point (Contingency R3).",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for calibrator and B2b.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for calibrator, B2b, and sampling.")
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature (0.0 = greedy; >0 enables stochastic R6 validation).",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="Nucleus sampling top-p used when --temperature > 0 (R6 uses 0.95).",
+    )
+    parser.add_argument(
+        "--presence-penalty",
+        type=float,
+        default=0.0,
+        help="Additive presence penalty for generated tokens when --temperature > 0 (R6 uses 1.5).",
+    )
     parser.add_argument(
         "--lam-utility", type=float, default=0.05, help="Utility token penalty lambda (U_0.05)."
     )
@@ -863,6 +902,9 @@ def main() -> None:
     verify_manifest_integrity(data_dir)
 
     tag = args.model.replace("/", "__")
+    # Isolate Contingency R6 sampled runs into their own folder so greedy primary caches stay untouched.
+    if args.temperature > 0.0:
+        tag = f"{tag}__T{args.temperature:g}_tp{args.top_p:g}_pp{args.presence_penalty:g}_s{args.seed}"
     out_dir = pathlib.Path(args.out_dir) / tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -885,6 +927,10 @@ def main() -> None:
         "device": str(resolved_runtime[0]),
         "dtype": str(resolved_runtime[1]),
         "seed": int(args.seed),
+        "do_sample": bool(args.temperature > 0.0),
+        "temperature": float(args.temperature),
+        "top_p": float(args.top_p),
+        "presence_penalty": float(args.presence_penalty),
         "lam_utility": float(args.lam_utility),
         "norm_tokens": float(args.norm_tokens),
         "logreg_C": float(args.reg_c),
@@ -905,14 +951,23 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"[params] seed={training_params['seed']} lam={training_params['lam_utility']} "
+        f"[params] seed={training_params['seed']} do_sample={training_params['do_sample']} "
+        f"T={training_params['temperature']} top_p={training_params['top_p']} "
+        f"pp={training_params['presence_penalty']} lam={training_params['lam_utility']} "
         f"norm={training_params['norm_tokens']:.0f} C={training_params['logreg_C']} "
         f"tau_grid={training_params['tau_grid']} budgets={training_params['tiered_budgets']}",
         flush=True,
     )
 
     engine = _build_engine(
-        args.model, device_arg=args.device, use_mock=args.mock, dtype_arg=args.dtype
+        args.model,
+        device_arg=args.device,
+        use_mock=args.mock,
+        dtype_arg=args.dtype,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        presence_penalty=args.presence_penalty,
+        sampling_seed=args.seed,
     )
 
     t_calib_start = time.perf_counter()
@@ -1143,7 +1198,8 @@ def main() -> None:
         tex_lines: list[str] = []
         for k in variant_names:
             sig = r"$^\dagger$" if tables[k].get("p_holm_vs_b1b", 1.0) < 0.05 else ""
-            tex_lines.append(_format_latex_row(k, tables[k], sig=sig))
+            disp_k = "M2_B250" if k == "M2_B256" else k
+            tex_lines.append(_format_latex_row(disp_k, tables[k], sig=sig))
         if "M2_B512" in aux_systems:
             tex_lines.append(_format_latex_row(r"M2\_B512 (R3)", aux_systems["M2_B512"]))
         tex_lines.append(_format_latex_row(r"\textit{Oracle\_UB}", oracle_info["oracle_summary"]))

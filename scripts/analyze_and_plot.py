@@ -54,7 +54,7 @@ VARIANT_LATEX_LABELS: dict[str, str] = {
     "M1c": r"M1c: Dual-Signal Cascade (Gate 1 + Gate 2)",
     "M2_B64": r"M2-64: C-BARR Fixed Cap ($B=64$ + Post-Anc.)",
     "M2_B128": r"M2-128: C-BARR Fixed Cap ($B=128$ + Post-Anc.)",
-    "M2_B256": r"M2-256: C-BARR Fixed Cap ($B=250$ + Post-Anc.)",
+    "M2_B256": r"M2-250: C-BARR Fixed Cap ($B=250$ + Post-Anc.)",
     "M2_Pre": r"M2-Pre: Tiered $\{64,128,250\}$ + Pre-Anc.",
     "M2": r"\textbf{M2: Full C-BARR ($\{64,128,250\}$ + Post-Anc.)}",
 }
@@ -530,7 +530,8 @@ def plot_fig1_pareto_frontier(
         ys = [100.0 * float(sys_d[k]["macro_acc"]) for k in keys]
         ax_l.scatter(xs, ys, color=col, marker=mk, s=55, label=grp_lbl, zorder=3)
         for k, x, y in zip(keys, xs, ys):
-            ax_l.annotate(k, (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7.5)
+            ann_k = "M2-250" if k == "M2_B256" else k
+            ax_l.annotate(ann_k, (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7.5)
 
     ax_l.scatter(
         [float(sys_d["M2"]["mean_t_tot"])],
@@ -706,7 +707,9 @@ def plot_fig3_ehurt_recovery(
     plt.close(fig)
 
 
-def discover_bundles(out_dir: pathlib.Path) -> dict[str, dict[str, Any]]:
+def discover_bundles(
+    out_dir: pathlib.Path, include_sampled: bool = False
+) -> dict[str, dict[str, Any]]:
     bundles: dict[str, dict[str, Any]] = {}
     if not out_dir.exists():
         return bundles
@@ -714,9 +717,14 @@ def discover_bundles(out_dir: pathlib.Path) -> dict[str, dict[str, Any]]:
         if not sub.is_dir():
             continue
         bundle = load_model_bundle(sub)
-        if bundle is not None:
-            model_name = bundle["report"]["model"]
-            bundles[model_name] = bundle
+        if bundle is None:
+            continue
+        tp = bundle["report"].get("training_params", {})
+        if not include_sampled and float(tp.get("temperature", 0.0) or 0.0) > 0.0:
+            # Keep greedy (do_sample=False) bundles canonical in primary Phase 7 tables/figures.
+            continue
+        model_name = bundle["report"]["model"]
+        bundles[model_name] = bundle
     return bundles
 
 

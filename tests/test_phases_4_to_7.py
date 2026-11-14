@@ -732,6 +732,158 @@ class TestPhases4To7(unittest.TestCase):
             self.assertEqual(len(live_rows), 1)
             self.assertEqual(live_rows[0]["done"], 5)
 
+    def test_deltanet_blend_qwen35_dynamic_cache_and_r6_sampling(self) -> None:
+        """Exercises real tiny Qwen3_5ForCausalLM DynamicCache blending + R6 sampling & bundle isolation."""
+        from transformers.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+        from scripts.analyze_and_plot import discover_bundles
+        from scripts.ext_deltanet_blend import generate_with_blended_deltanet
+        from src.engine import CBARRDualModeEngine, PresencePenaltyLogitsProcessor
+
+        class _TinyTok:
+            eos_token_id = 2
+            pad_token_id = 0
+            unk_token_id = 1
+
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                suffix = "<think>\n" if enable_thinking else ""
+                return " ".join(m["content"] for m in msgs) + " " + suffix
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                toks = [10 + (sum(ord(ch) for ch in w) % 50) for w in text.split()]
+                return toks or [10, 11]
+
+            def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+                return " ".join(f"w{t}" for t in token_ids if not skip_special_tokens or t != 2)
+
+            def __call__(self, text: str, return_tensors: str = "pt") -> Any:
+                from transformers import BatchEncoding
+
+                ids = torch.tensor([self.encode(text)], dtype=torch.long)
+                return BatchEncoding({"input_ids": ids, "attention_mask": torch.ones_like(ids)})
+
+        cfg = Qwen3_5TextConfig(
+            vocab_size=128,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=4,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            linear_num_value_heads=4,
+            linear_num_key_heads=2,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+        )
+        tiny_qwen = Qwen3_5ForCausalLM(cfg).eval()
+        tiny_tok = _TinyTok()
+
+        out_blend = generate_with_blended_deltanet(
+            tiny_qwen,
+            tiny_tok,
+            eos_ids={2},
+            prompt_str="Write in lowercase.",
+            t_think="Checking constraint step by step.",
+            alpha=0.5,
+            max_ans_tokens=4,
+        )
+        self.assertEqual(out_blend["n_blended_layers"], 3)
+        self.assertGreaterEqual(out_blend["gen_tokens"], 1)
+        self.assertLessEqual(out_blend["gen_tokens"], 4)
+
+        # Verify PresencePenaltyLogitsProcessor subtracts penalty strictly from seen post-prompt tokens
+        proc = PresencePenaltyLogitsProcessor(prompt_len=2, penalty=1.5)
+        scores = torch.zeros((1, 10), dtype=torch.float32)
+        in_ids = torch.tensor([[4, 5, 7, 7]], dtype=torch.long)
+        adj = proc(in_ids, scores.clone())
+        self.assertAlmostEqual(float(adj[0, 7].item()), -1.5, places=5)
+        self.assertAlmostEqual(float(adj[0, 4].item()), 0.0, places=5)
+
+        # Verify stochastic sampling engine path reproduces identically under same seed + isolates output dir
+        eng = CBARRDualModeEngine.__new__(CBARRDualModeEngine)
+        eng.model_id = "Qwen/Qwen3.5-Tiny"
+        eng.is_smollm3 = False
+        eng.freeze_smollm3_date = "01 November 2026"
+        eng.device = "cpu"
+        eng.temperature = 0.6
+        eng.top_p = 0.95
+        eng.presence_penalty = 1.5
+        eng.sampling_seed = 43
+        eng.tok = tiny_tok
+        eng.model = tiny_qwen
+        eng.eos_ids = {2}
+        r1 = eng._decode_raw("Test prompt", max_new_tokens=5, log_entropies=True)
+        r2 = eng._decode_raw("Test prompt", max_new_tokens=5, log_entropies=True)
+        self.assertEqual(r1["gen_ids"], r2["gen_ids"])
+        self.assertEqual(len(r1["step_entropies"]), r1["content_tokens"])
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = pathlib.Path(td)
+            tmp_data = tmp_root / "data"
+            tmp_data.mkdir(parents=True, exist_ok=True)
+            tmp_out = tmp_root / "outputs"
+            _build_mini_frozen_dir(tmp_data)
+
+            # Run greedy baseline first, then sampled R6 run in the same --out-dir
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--mock",
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--mock",
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--temperature",
+                    "0.6",
+                    "--top-p",
+                    "0.95",
+                    "--presence-penalty",
+                    "1.5",
+                    "--seed",
+                    "43",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            greedy_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            sampled_dir = tmp_out / "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s43"
+            self.assertTrue((greedy_dir / "matrix_summary_strict341.json").exists())
+            self.assertTrue((sampled_dir / "matrix_summary_strict341.json").exists())
+
+            # discover_bundles keeps greedy canonical by default unless include_sampled=True
+            canon = discover_bundles(tmp_out)
+            self.assertAlmostEqual(canon["Qwen/Qwen3.5-4B"]["report"]["training_params"]["temperature"], 0.0)
+            all_b = discover_bundles(tmp_out, include_sampled=True)
+            self.assertAlmostEqual(all_b["Qwen/Qwen3.5-4B"]["report"]["training_params"]["temperature"], 0.6)
+
 
 if __name__ == "__main__":
     unittest.main()

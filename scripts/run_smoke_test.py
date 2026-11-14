@@ -70,10 +70,22 @@ class MockTokenizer:
 class MockDualModeEngine(CBARRDualModeEngine):
     """Subclasses CBARRDualModeEngine to exercise exact pipeline logic without 16GB GPU weights."""
 
-    def __init__(self, model_id: str, freeze_smollm3_date: str = "01 November 2026"):
+    def __init__(
+        self,
+        model_id: str,
+        freeze_smollm3_date: str = "01 November 2026",
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        presence_penalty: float = 0.0,
+        sampling_seed: int = 42,
+    ):
         self.model_id = model_id
         self.is_smollm3 = "smollm3" in model_id.lower()
         self.freeze_smollm3_date = freeze_smollm3_date
+        self.temperature = float(temperature)
+        self.top_p = float(top_p)
+        self.presence_penalty = float(presence_penalty)
+        self.sampling_seed = int(sampling_seed)
         self.device = "cpu"
         self.tok = MockTokenizer(is_smollm3=self.is_smollm3)
         self.eos_ids = {2, 128001, 248044, 248046}
