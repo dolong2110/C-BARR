@@ -281,6 +281,20 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
     return items
 
 
+def _extract_live_progress(out_dir: pathlib.Path) -> list[dict[str, Any]]:
+    """Loads any active mid-split progress_checkpoint.json files for in-flight GPU visibility."""
+    if not out_dir.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for sub in sorted(out_dir.iterdir()):
+        if not sub.is_dir():
+            continue
+        data = _load_json_safe(sub / "progress_checkpoint.json")
+        if isinstance(data, dict) and "done" in data:
+            items.append(data)
+    return items
+
+
 def _collect_training_params(
     cli_params: dict[str, Any],
     calibrations: list[dict[str, Any]],
@@ -350,6 +364,7 @@ def _render_run_markdown(
     matrix_loops: list[dict[str, Any]],
     w7_items: list[dict[str, Any]],
     model_rows: list[dict[str, Any]],
+    live_progress: list[dict[str, Any]] | None = None,
 ) -> str:
     hw_desc = (
         f"{hw['gpu_count']}x {hw['gpu_name']} ({hw['vram_gb']} GB, SM {hw['sm_cap']}, "
@@ -369,6 +384,16 @@ def _render_run_markdown(
         lines.append(f"- **Raw Log**: `{rel_log}`")
     if notes_clean:
         lines.append(f"- **Notes**: {notes_clean}")
+
+    if live_progress:
+        lines.append("\n#### Live Step Checkpoints (In-Flight Split)")
+        for lp in live_progress:
+            sl_str = f" | slices: `{lp['slices']}`" if lp.get("slices") else ""
+            lines.append(
+                f"- **`{lp.get('model', 'unknown')}`** (`{lp.get('diag_pool', '')}`, "
+                f"`{lp.get('split', 'eval_450')}` **{lp.get('done', 0)}/{lp.get('total', 0)}**): "
+                f"`{lp.get('metrics', '')}`{sl_str}"
+            )
 
     if training_params:
         lines.append("\n#### 1. Training & Experiment Parameters")
@@ -458,9 +483,11 @@ def _render_run_markdown(
             b2b = s6.get("B2b_post_raw", {})
             a2 = s6.get("A2_math_swap", {})
             b3 = s6.get("B3_early_cut_no_anchor", {})
+            rep_status = rep.get("status", "completed")
+            st_badge = f" | status=`{rep_status}`" if rep_status != "completed" else ""
             lines.append(
                 f"\n- **`{rep['model']}` (`{rep.get('diag_pool', 'unknown')}`**, n_diag={rep.get('diag_n_items', 0)}) — "
-                f"dtype=`{rt.get('dtype', 'n/a')}` | wall=`{tsec.get('total_wall', 0):.1f}s` "
+                f"dtype=`{rt.get('dtype', 'n/a')}`{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
                 f"(calib={tsec.get('calibration', 0):.1f}s, eval={tsec.get('eval_matrix', 0):.1f}s, diag={tsec.get('section6_diagnostics', 0):.1f}s) | "
                 f"tau={cp.get('tau_prob', 0):.3f}, esc={100*cp.get('m2_escalation_rate_dev', 0):.1f}%"
             )
@@ -734,6 +761,7 @@ def main() -> None:
     matrix_loops = _extract_matrix_loops(out_dir)
     w7_items = _extract_w7_extensions(out_dir)
     model_rows = _extract_model_summaries(out_dir)
+    live_progress = _extract_live_progress(out_dir)
     training_params = _collect_training_params(cli_params, calibrations, matrix_loops)
 
     rel_log = _sanitize_text(args.log_file, root, token_val) if args.log_file else ""
@@ -803,6 +831,7 @@ def main() -> None:
         matrix_loops=matrix_loops,
         w7_items=w7_items,
         model_rows=model_rows,
+        live_progress=live_progress,
     )
     _upsert_run_block(md_path, args.run_id, block, upsert=args.upsert)
     loop_msg = f" [{args.loop_name}]" if args.loop_name else ""

@@ -410,6 +410,10 @@ class TestPhases4To7(unittest.TestCase):
             "scripts/analyze_and_plot.py",
             "scripts/log_experiment.py",
             "record_loop_checkpoint",
+            "run_and_tee",
+            "RUN_LOG_FILE",
+            "matrix_step_flags",
+            "--step-checkpoint-every",
             "MATRIX_PARAM_ARGS",
             "AUTO_PUSH_RESULTS_TO_GITHUB",
         ):
@@ -643,6 +647,90 @@ class TestPhases4To7(unittest.TestCase):
                 text=True,
             )
             self.assertIn("CBARR_RUN_START:r1", remote_show)
+
+    def test_run_matrix_per_step_checkpoints(self) -> None:
+        """run_matrix.py updates progress_checkpoint, timings JSONL, and EXPERIMENT_LOG.md at every internal step."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = pathlib.Path(td)
+            tmp_data = tmp_root / "data"
+            tmp_data.mkdir(parents=True, exist_ok=True)
+            tmp_out = tmp_root / "outputs"
+            tmp_md = tmp_root / "EXPERIMENT_LOG.md"
+            tmp_timings = tmp_root / "timings.jsonl"
+            tmp_params = tmp_root / "params.json"
+            tmp_log = tmp_root / "run.log"
+            _build_mini_frozen_dir(tmp_data)
+            tmp_md.write_text("# Test Ledger\n", encoding="utf-8")
+            tmp_params.write_text(json.dumps({"seed": 42, "step_checkpoint_every": 5}), encoding="utf-8")
+            tmp_log.write_text("Mock run log start\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(ROOT / "scripts" / "run_matrix.py"),
+                "--mock",
+                "--model",
+                "Qwen/Qwen3.5-4B",
+                "--data-dir",
+                str(tmp_data),
+                "--out-dir",
+                str(tmp_out),
+                "--strict-diag",
+                "--run-id",
+                "step_test",
+                "--exp-log",
+                str(tmp_md),
+                "--timings-file",
+                str(tmp_timings),
+                "--log-file",
+                str(tmp_log),
+                "--params-json",
+                f"@{tmp_params}",
+                "--step-checkpoint-every",
+                "5",
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+            model_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            self.assertTrue((model_dir / "calibration_summary.json").exists())
+            # In-flight progress_checkpoint.json is cleaned up once eval_450 completes
+            self.assertFalse((model_dir / "progress_checkpoint.json").exists())
+            summary = json.loads((model_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.get("status"), "completed")
+
+            md_text = tmp_md.read_text(encoding="utf-8")
+            self.assertIn("CBARR_RUN_START:step_test", md_text)
+            self.assertIn("step_checkpoint_every", md_text)
+            self.assertIn("Qwen/Qwen3.5-4B", md_text)
+
+            history_path = tmp_out / "experiment_history.jsonl"
+            self.assertTrue(history_path.exists())
+            history_rows = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines() if line]
+            loop_names = [r.get("loop_name", "") for r in history_rows]
+            self.assertTrue(any("Calibration:" in s for s in loop_names), loop_names)
+            self.assertTrue(any("Eval-450 progress (" in s for s in loop_names), loop_names)
+            self.assertTrue(any("Eval-450:" in s for s in loop_names), loop_names)
+            self.assertTrue(any("Section 6 & Matrix Complete:" in s for s in loop_names), loop_names)
+
+            # Verify mid-split live progress rendering when progress_checkpoint.json is active
+            from scripts.log_experiment import _extract_live_progress
+
+            (model_dir / "progress_checkpoint.json").write_text(
+                json.dumps(
+                    {
+                        "model": "Qwen/Qwen3.5-4B",
+                        "diag_pool": "strict341",
+                        "split": "eval_450",
+                        "done": 5,
+                        "total": 18,
+                        "metrics": "Acc B0=0.0% Fast=0.0%",
+                        "slices": "gsm8k_easy(3): 0/0/0%",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            live_rows = _extract_live_progress(tmp_out)
+            self.assertEqual(len(live_rows), 1)
+            self.assertEqual(live_rows[0]["done"], 5)
 
 
 if __name__ == "__main__":

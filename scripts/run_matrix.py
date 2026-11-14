@@ -5,9 +5,10 @@ import argparse
 import hashlib
 import json
 import pathlib
+import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 import numpy as np
 import torch
 
@@ -185,6 +186,8 @@ def cache_split_primitives(
     full_eval_modes: bool = True,
     run_calib_tiers: bool = True,
     include_b512: bool = False,
+    checkpoint_every: int = 0,
+    checkpoint_cb: Callable[[int, int, str, str], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Executes and incrementally caches atomic primitives per item to prevent GPU re-runs (with D13-D16)."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -398,6 +401,19 @@ def cache_split_primitives(
                         flush=True,
                     )
                     t_last_log = now
+                if (
+                    checkpoint_cb is not None
+                    and checkpoint_every > 0
+                    and is_new_item
+                    and idx < total_items
+                    and (n_new % checkpoint_every == 0)
+                ):
+                    checkpoint_cb(
+                        idx,
+                        total_items,
+                        _format_running_metrics(rows_out),
+                        _format_slice_breakdown(rows_out),
+                    )
             except Exception as exc:
                 print(
                     hl(
@@ -439,6 +455,7 @@ def run_section6_diagnostics(
     diag_items: list[dict[str, Any]],
     gsm_seed_items: list[dict[str, Any]],
     out_dir: pathlib.Path,
+    mode_cb: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Runs Causal Diagnostic Controls (Trace Stripping vs. Post-Think Re-Anchoring) on E_hurt."""
     filler_text = " ".join(x.get("rationale_gold", "") for x in gsm_seed_items)
@@ -523,6 +540,8 @@ def run_section6_diagnostics(
                 f"({summary[m]['overall_pass_count']}/{len(e_hurt)}) in {time.perf_counter() - t_mode:.1f}s",
                 flush=True,
             )
+            if mode_cb is not None and len(e_hurt) > 0:
+                mode_cb(m, dict(summary))
 
     ca = compute_causal_decomposition(
         z_strip=per_mode_z["A1_strip"],
@@ -725,6 +744,55 @@ def _print_calibration_report(calib_summary: dict[str, Any]) -> None:
             print(hl(line, "green") if name == "M2" else line, flush=True)
 
 
+def _emit_step_checkpoint(
+    args: argparse.Namespace,
+    step_label: str,
+    run_wall_sec: float,
+    note: str = "",
+) -> None:
+    """Updates EXPERIMENT_LOG.md / telemetry JSONL (and optionally pushes) at each training step."""
+    if not (args.exp_log or args.run_id):
+        return
+    run_id = args.run_id.strip() or f"matrix_{args.model.replace('/', '__')}"
+    cmd = [
+        sys.executable,
+        str(ROOT / "scripts" / "log_experiment.py"),
+        "--run-id",
+        run_id,
+        "--status",
+        f"RUNNING ({step_label})",
+        "--loop-name",
+        step_label,
+        "--command",
+        "scripts/run_matrix.py",
+        "--out-dir",
+        str(args.out_dir),
+        "--total-sec",
+        f"{max(0.0, run_wall_sec):.2f}",
+        "--upsert",
+    ]
+    if args.timings_file:
+        cmd.extend(["--timings-file", args.timings_file])
+    if args.log_file:
+        cmd.extend(["--log-file", args.log_file])
+    if args.params_json:
+        cmd.extend(["--params-json", args.params_json])
+    if args.exp_log:
+        cmd.extend(["--md-log", args.exp_log])
+    if note:
+        cmd.extend(["--notes", note])
+    if args.git_push and args.exp_log:
+        cmd.append("--git-push")
+        if args.git_branch:
+            cmd.extend(["--git-branch", args.git_branch])
+    proc = subprocess.run(cmd, cwd=str(ROOT), check=False)
+    if proc.returncode != 0:
+        print(
+            hl(f"[WARN] Step checkpoint failed at '{step_label}' (exit={proc.returncode})", "yellow"),
+            flush=True,
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run full C-BARR evaluation matrix.")
     parser.add_argument("--model", type=str, default="Qwen/Qwen3.5-4B")
@@ -771,6 +839,19 @@ def main() -> None:
     parser.add_argument("--tau-min", type=float, default=0.15, help="Minimum tau_prob search grid.")
     parser.add_argument("--tau-max", type=float, default=0.85, help="Maximum tau_prob search grid.")
     parser.add_argument("--tau-steps", type=int, default=29, help="Number of tau_prob grid points.")
+    parser.add_argument("--run-id", type=str, default="", help="Optional run ID for step ledger checkpoints.")
+    parser.add_argument("--exp-log", type=str, default="", help="Markdown ledger path for per-step updates.")
+    parser.add_argument("--timings-file", type=str, default="", help="Optional timings JSONL path.")
+    parser.add_argument("--log-file", type=str, default="", help="Optional raw log file path.")
+    parser.add_argument("--params-json", type=str, default="", help="Optional global params JSON or @path.")
+    parser.add_argument("--git-push", action="store_true", help="Commit & push --exp-log after each step.")
+    parser.add_argument("--git-branch", type=str, default="", help="Target branch for --git-push.")
+    parser.add_argument(
+        "--step-checkpoint-every",
+        type=int,
+        default=0,
+        help="Checkpoint eval_450 progress into ledger every N newly computed items (0 disables mid-split push).",
+    )
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -865,6 +946,7 @@ def main() -> None:
     calib_path = out_dir / "calibration_summary.json"
     calib_path.write_text(json.dumps(calib_summary, indent=2) + "\n", encoding="utf-8")
     _print_calibration_report(calib_summary)
+    _emit_step_checkpoint(args, f"Calibration: {args.model}", time.perf_counter() - t_run_start)
 
     if not calib_summary["contingency_r1_ok"]:
         print(
@@ -881,6 +963,32 @@ def main() -> None:
         print(json.dumps(calib_summary["calibrated_params"], indent=2))
         return
 
+    progress_ckpt_path = out_dir / "progress_checkpoint.json"
+
+    def _on_eval_progress(done_cnt: int, total_cnt: int, m_line: str, s_line: str) -> None:
+        progress_ckpt_path.write_text(
+            json.dumps(
+                {
+                    "model": args.model,
+                    "diag_pool": diag_tag,
+                    "split": "eval_450",
+                    "done": done_cnt,
+                    "total": total_cnt,
+                    "metrics": m_line,
+                    "slices": s_line,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        _emit_step_checkpoint(
+            args,
+            f"Eval-450 progress ({done_cnt}/{total_cnt}): {args.model}",
+            time.perf_counter() - t_run_start,
+            note=f"{args.model} eval_450 {done_cnt}/{total_cnt}: {m_line}",
+        )
+
     t_eval_start = time.perf_counter()
     eval_rows = cache_split_primitives(
         engine,
@@ -889,7 +997,11 @@ def main() -> None:
         True,
         True,
         include_b512=args.include_b512,
+        checkpoint_every=args.step_checkpoint_every,
+        checkpoint_cb=_on_eval_progress if (args.exp_log or args.run_id) else None,
     )
+    if progress_ckpt_path.exists():
+        progress_ckpt_path.unlink()
     t_eval_sec = round(time.perf_counter() - t_eval_start, 2)
     rng_b2b = np.random.default_rng(args.seed)
 
@@ -985,55 +1097,89 @@ def main() -> None:
         norm_tokens=args.norm_tokens,
     )
 
+    def _write_matrix_artifacts(
+        status_tag: str, diag_payload: dict[str, Any], diag_sec_val: float
+    ) -> None:
+        total_now = round(time.perf_counter() - t_run_start, 2)
+        report = {
+            "model": args.model,
+            "diag_pool": diag_tag,
+            "diag_n_items": len(diag_items),
+            "status": status_tag,
+            "runtime": {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])},
+            "training_params": training_params,
+            "timing_sec": {
+                "calibration": t_calib_sec,
+                "eval_matrix": t_eval_sec,
+                "section6_diagnostics": diag_sec_val,
+                "total_wall": total_now,
+            },
+            "calibrated_params": params.__dict__,
+            "systems": {
+                k: {mk: mv for mk, mv in v.items() if mk not in ("z_vec", "u_vec")}
+                for k, v in tables.items()
+            },
+            "auxiliary_systems": aux_systems,
+            "oracle_and_4regime": {
+                k: (
+                    {mk: mv for mk, mv in v.items() if mk not in ("z_vec", "u_vec")}
+                    if k == "oracle_summary"
+                    else v
+                )
+                for k, v in oracle_info.items()
+            },
+            "section6_diagnostics": diag_payload,
+        }
+        # Write both pool-specific (non-clobbering) outputs and canonical latest aliases
+        report_json = json.dumps(report, indent=2) + "\n"
+        (out_dir / f"matrix_summary_{diag_tag}.json").write_text(report_json, encoding="utf-8")
+        (out_dir / "matrix_summary.json").write_text(report_json, encoding="utf-8")
+
+        tex_lines: list[str] = []
+        for k in variant_names:
+            sig = r"$^\dagger$" if tables[k].get("p_holm_vs_b1b", 1.0) < 0.05 else ""
+            tex_lines.append(_format_latex_row(k, tables[k], sig=sig))
+        if "M2_B512" in aux_systems:
+            tex_lines.append(_format_latex_row(r"M2\_B512 (R3)", aux_systems["M2_B512"]))
+        tex_lines.append(_format_latex_row(r"\textit{Oracle\_UB}", oracle_info["oracle_summary"]))
+        tex_payload = "\n".join(tex_lines) + "\n"
+        (out_dir / f"tables_rows_{diag_tag}.tex").write_text(tex_payload, encoding="utf-8")
+        (out_dir / "tables_rows.tex").write_text(tex_payload, encoding="utf-8")
+
+    # Persist & push full Eval-450 table immediately before starting Section 6 controls
+    _write_matrix_artifacts("eval450_complete", {}, 0.0)
+    _emit_step_checkpoint(args, f"Eval-450: {args.model} ({diag_tag})", time.perf_counter() - t_run_start)
+
     t_diag_start = time.perf_counter()
     gsm_seed = [x for x in seed_items if x["dataset"] == "gsm8k"]
-    diag_summary = run_section6_diagnostics(engine, diag_items, gsm_seed, out_dir)
+
+    def _on_diag_mode_done(mode_name: str, partial_diag: dict[str, Any]) -> None:
+        _write_matrix_artifacts(
+            f"section6_{mode_name}",
+            partial_diag,
+            round(time.perf_counter() - t_diag_start, 2),
+        )
+        _emit_step_checkpoint(
+            args,
+            f"Section 6 ({mode_name}): {args.model} ({diag_tag})",
+            time.perf_counter() - t_run_start,
+        )
+
+    diag_summary = run_section6_diagnostics(
+        engine,
+        diag_items,
+        gsm_seed,
+        out_dir,
+        mode_cb=_on_diag_mode_done if (args.exp_log or args.run_id) else None,
+    )
     t_diag_sec = round(time.perf_counter() - t_diag_start, 2)
     t_total_sec = round(time.perf_counter() - t_run_start, 2)
-
-    report = {
-        "model": args.model,
-        "diag_pool": diag_tag,
-        "diag_n_items": len(diag_items),
-        "runtime": {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])},
-        "training_params": training_params,
-        "timing_sec": {
-            "calibration": t_calib_sec,
-            "eval_matrix": t_eval_sec,
-            "section6_diagnostics": t_diag_sec,
-            "total_wall": t_total_sec,
-        },
-        "calibrated_params": params.__dict__,
-        "systems": {
-            k: {mk: mv for mk, mv in v.items() if mk not in ("z_vec", "u_vec")}
-            for k, v in tables.items()
-        },
-        "auxiliary_systems": aux_systems,
-        "oracle_and_4regime": {
-            k: (
-                {mk: mv for mk, mv in v.items() if mk not in ("z_vec", "u_vec")}
-                if k == "oracle_summary"
-                else v
-            )
-            for k, v in oracle_info.items()
-        },
-        "section6_diagnostics": diag_summary,
-    }
-    # Write both pool-specific (non-clobbering) outputs and canonical latest aliases
-    report_json = json.dumps(report, indent=2) + "\n"
-    (out_dir / f"matrix_summary_{diag_tag}.json").write_text(report_json, encoding="utf-8")
-    (out_dir / "matrix_summary.json").write_text(report_json, encoding="utf-8")
-
-    tex_lines: list[str] = []
-    for k in variant_names:
-        sig = r"$^\dagger$" if tables[k].get("p_holm_vs_b1b", 1.0) < 0.05 else ""
-        tex_lines.append(_format_latex_row(k, tables[k], sig=sig))
-    if "M2_B512" in aux_systems:
-        tex_lines.append(_format_latex_row(r"M2\_B512 (R3)", aux_systems["M2_B512"]))
-    tex_lines.append(_format_latex_row(r"\textit{Oracle\_UB}", oracle_info["oracle_summary"]))
-    tex_payload = "\n".join(tex_lines) + "\n"
-    (out_dir / f"tables_rows_{diag_tag}.tex").write_text(tex_payload, encoding="utf-8")
-    (out_dir / "tables_rows.tex").write_text(tex_payload, encoding="utf-8")
+    _write_matrix_artifacts("completed", diag_summary, t_diag_sec)
+    _emit_step_checkpoint(
+        args,
+        f"Section 6 & Matrix Complete: {args.model} ({diag_tag})",
+        time.perf_counter() - t_run_start,
+    )
     print(
         banner(
             f"COMPLETED MATRIX RUN: {args.model} ({diag_tag}) in {t_total_sec:.1f}s -> "

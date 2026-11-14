@@ -33,6 +33,7 @@ REG_C="1.0"
 TAU_MIN="0.15"
 TAU_MAX="0.85"
 TAU_STEPS=29
+CHECKPOINT_EVERY=""
 EXTRA_FLAGS=()
 RAW_CMD="$0 $*"
 
@@ -115,6 +116,11 @@ while [ "$#" -gt 0 ]; do
       shift
       TAU_STEPS="$1"
       ;;
+    --checkpoint-every)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      CHECKPOINT_EVERY="$1"
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -158,6 +164,14 @@ PIPELINE_START_EPOCH="$(date -u +%s)"
 CURRENT_STAGE="Init"
 FINALIZED=0
 
+if [ -z "$CHECKPOINT_EVERY" ]; then
+  if [ "$IS_MOCK" -eq 1 ]; then
+    CHECKPOINT_EVERY=0
+  else
+    CHECKPOINT_EVERY=150
+  fi
+fi
+
 MATRIX_PARAM_FLAGS=(
   --seed "$SEED"
   --lam-utility "$LAM_UTILITY"
@@ -166,7 +180,18 @@ MATRIX_PARAM_FLAGS=(
   --tau-min "$TAU_MIN"
   --tau-max "$TAU_MAX"
   --tau-steps "$TAU_STEPS"
+  --run-id "$RUN_ID"
+  --timings-file "$TIMINGS_FILE"
+  --log-file "$RUN_LOG"
+  --params-json "@${PARAMS_FILE}"
+  --step-checkpoint-every "$CHECKPOINT_EVERY"
 )
+if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
+  MATRIX_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
+  if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ]; then
+    MATRIX_PARAM_FLAGS+=(--git-push)
+  fi
+fi
 
 "$PY_BIN" -c "
 import json, pathlib, sys
