@@ -18,6 +18,7 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from scripts.versioning import read_repo_version, read_results_seq
 from src.logfmt import hl
 from src.metrics import SLICE_ORDER
 
@@ -206,6 +207,7 @@ def _extract_model_summaries(out_dir: pathlib.Path) -> list[dict[str, Any]]:
     stats = _load_json_safe(out_dir / "stats_summary.json")
     if not isinstance(stats, dict):
         return []
+    ver_audit = stats.get("version_audit", {}).get("models", {})
     rows: list[dict[str, Any]] = []
     for model_name, m_data in stats.get("models", {}).items():
         g4 = m_data.get("gate_audit", {}).get("gate4_primary", {})
@@ -217,9 +219,13 @@ def _extract_model_summaries(out_dir: pathlib.Path) -> list[dict[str, Any]]:
         m2 = sys_tbl.get("M2", {})
         b1b = sys_tbl.get("B1b", {})
         oaa_ci = boot.get("oaa_250", {})
+        m_ver = ver_audit.get(model_name, {})
+        mf = _load_json_safe(out_dir / model_name.replace("/", "__") / "run_manifest.json") or {}
+        ver_str = str(m_ver.get("result_version") or mf.get("result_version") or (f"v{m_ver['code_version']}" if m_ver.get("code_version") else "n/a"))
         rows.append(
             {
                 "model": model_name,
+                "version_tag": ver_str,
                 "n_clean_446": clean.get("n_clean_items"),
                 "clean_max_delta_pp": clean.get("max_abs_macro_delta_pp"),
                 "m2_macro": m2.get("macro_acc"),
@@ -390,6 +396,9 @@ def _render_run_markdown(
     w7_items: list[dict[str, Any]],
     model_rows: list[dict[str, Any]],
     live_progress: list[dict[str, Any]] | None = None,
+    code_version: str = "unknown",
+    results_seq: int = 0,
+    version_audit: dict[str, Any] | None = None,
 ) -> str:
     """Renders an upserted Markdown block summarizing params, live progress, timings, calibration, and matrix results."""
     hw_desc = (
@@ -399,10 +408,11 @@ def _render_run_markdown(
         else f"{hw['gpu_name']} (CPU/MPS)"
     )
     kernels = f"fla={hw['fla_available']}, causal_conv1d={hw['causal_conv1d_available']}"
+    res_badge = f" | **Results Release**: `v{code_version}-res.{results_seq}`" if results_seq > 0 else ""
     lines: list[str] = [
         f"<!-- CBARR_RUN_START:{run_id} -->",
         f"### Run `{run_id}` — **{status}** (Updated {ts_utc})",
-        f"- **Git Commit**: `{git_rev}` | **Last Loop**: `{loop_name or 'Final'}` | **Wall Time**: `{_fmt_duration(total_sec)}` ({total_sec:.1f}s)",
+        f"- **Code Version**: `v{code_version}` | **Git Commit**: `{git_rev}`{res_badge} | **Last Loop**: `{loop_name or 'Final'}` | **Wall Time**: `{_fmt_duration(total_sec)}` ({total_sec:.1f}s)",
         f"- **Hardware**: {hw_desc} | PyTorch `{hw['torch']}` | Transformers `{hw['transformers']}` | Kernels: `{kernels}`",
         f"- **Command**: `{command_clean}`",
     ]
@@ -447,10 +457,10 @@ def _render_run_markdown(
     if calibrations:
         lines.append("\n#### 4. Calibration & Gate-2 Classifier Results (Per Model)")
         lines.append(
-            "| Model | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | "
+            "| Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | "
             "Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |"
         )
-        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
         for cal in calibrations:
             cp = cal["calibrated_params"]
             cm = cal.get("classifier_metrics", {})
@@ -487,8 +497,11 @@ def _render_run_markdown(
             )
             wsec = cal.get("wall_time_sec")
             t_str = _fmt_duration(float(wsec)) if wsec is not None else "n/a"
+            cal_ver = cal.get("code_version") or (cal.get("training_params") or {}).get("code_version") or code_version
+            cal_git = cal.get("git_rev") or (cal.get("training_params") or {}).get("git_rev") or ""
+            ver_cell = f"`v{cal_ver}`" + (f" (`{cal_git}`)" if cal_git else "")
             lines.append(
-                f"| `{cal['model']}` | {cp['tau_prob']:.3f} | {cp['tau_h_high']:.3f} | "
+                f"| `{cal['model']}` | {ver_cell} | {cp['tau_prob']:.3f} | {cp['tau_h_high']:.3f} | "
                 f"{100*cp['m2_escalation_rate_dev']:.1f}% ({r1_tag}) | "
                 f"{_fmt_pct(cal.get('dev_gate1_skip_rate'))} | {cp['intercept']:.2f} | "
                 f"[{coef_str}] | {tr_str} | {va_str} | {vg_str} | {dev_cmp} | {t_str} |"
@@ -512,6 +525,9 @@ def _render_run_markdown(
             rep_status = rep.get("status", "completed")
             st_badge = f" | status=`{rep_status}`" if rep_status != "completed" else ""
             tp = rep.get("training_params", {})
+            rep_ver = rep.get("code_version") or tp.get("code_version") or code_version
+            rep_git = rep.get("git_rev") or tp.get("git_rev") or ""
+            ver_badge = f"ver=`v{rep_ver}`" + (f" (`{rep_git}`)" if rep_git else "")
             samp_badge = (
                 f" | sample(T={float(tp['temperature']):g}, top_p={float(tp.get('top_p', 1.0)):g}, "
                 f"pp={float(tp.get('presence_penalty', 0.0)):g}, seed={int(tp.get('seed', 42))})"
@@ -520,7 +536,7 @@ def _render_run_markdown(
             )
             lines.append(
                 f"\n- **`{rep['model']}` (`{rep.get('diag_pool', 'unknown')}`**, n_diag={rep.get('diag_n_items', 0)}) — "
-                f"dtype=`{rt.get('dtype', 'n/a')}`{samp_badge}{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
+                f"{ver_badge} | dtype=`{rt.get('dtype', 'n/a')}`{samp_badge}{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
                 f"(calib={tsec.get('calibration', 0):.1f}s, eval={tsec.get('eval_matrix', 0):.1f}s, diag={tsec.get('section6_diagnostics', 0):.1f}s) | "
                 f"tau={cp.get('tau_prob', 0):.3f}, esc={100*cp.get('m2_escalation_rate_dev', 0):.1f}%"
             )
@@ -568,11 +584,17 @@ def _render_run_markdown(
 
     if model_rows:
         lines.append("\n#### 7. Phase 7 Statistical Audit & Gate-4 Summary")
+        if version_audit and not version_audit.get("matches_analyzer_version", True):
+            lines.append(
+                f"- **Version Mismatch Alert**: analyzer=`v{version_audit.get('analyzer_code_version')}` | "
+                f"versions seen across models=`{version_audit.get('versions_seen')}` | "
+                f"mismatched=`{version_audit.get('mismatched_models')}`"
+            )
         lines.append(
-            "| Model | Clean-446 (max delta) | M2 Macro | B1b Macro | M2 OAA_250 | Delta OAA_250 [95% CI] | "
+            "| Model | Version | Clean-446 (max delta) | M2 Macro | B1b Macro | M2 OAA_250 | Delta OAA_250 [95% CI] | "
             "Tok Red | p_holm vs B1b | p(M2 vs B0) | p(M2 vs Pre) | Gate 4 | R2 (rec / int) |"
         )
-        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
         for mr in model_rows:
             cl_str = (
                 f"{mr['n_clean_446']} ({mr['clean_max_delta_pp']:.1f} pp)"
@@ -594,7 +616,7 @@ def _render_run_markdown(
                 else "n/a"
             )
             lines.append(
-                f"| `{mr['model']}` | {cl_str} | {_fmt_pct(mr['m2_macro'])} | {_fmt_pct(mr['b1b_macro'])} | "
+                f"| `{mr['model']}` | `{mr.get('version_tag', 'n/a')}` | {cl_str} | {_fmt_pct(mr['m2_macro'])} | {_fmt_pct(mr['b1b_macro'])} | "
                 f"{_fmt_pct(mr['m2_oaa250'])} | {ci_str} | {tred} | {ph} | {pb0} | {ppre} | "
                 f"{'PASS' if mr['gate4_pass'] else 'CHECK'} | {r2_str} |"
             )
@@ -789,6 +811,8 @@ def main() -> None:
     cli_params = _parse_params_json(args.params_json) if args.params_json else {}
     hw = _detect_hardware()
     git_rev = _detect_git_rev(root)
+    code_version = read_repo_version(root)
+    results_seq = read_results_seq(root)
     ts_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     smoke_rows = _extract_smoke_report(root, out_dir, args.smoke_report)
@@ -797,6 +821,12 @@ def main() -> None:
     w7_items = _extract_w7_extensions(out_dir)
     model_rows = _extract_model_summaries(out_dir)
     live_progress = _extract_live_progress(out_dir)
+    stats_payload = _load_json_safe(out_dir / "stats_summary.json")
+    version_audit = (
+        stats_payload.get("version_audit")
+        if isinstance(stats_payload, dict) and isinstance(stats_payload.get("version_audit"), dict)
+        else None
+    )
     training_params = _collect_training_params(cli_params, calibrations, matrix_loops)
 
     rel_log = _sanitize_text(args.log_file, root, token_val) if args.log_file else ""
@@ -808,6 +838,8 @@ def main() -> None:
         "loop_name": args.loop_name,
         "timestamp_utc": ts_utc,
         "status": args.status,
+        "code_version": code_version,
+        "results_seq": results_seq,
         "git_rev": git_rev,
         "command": cmd_clean,
         "total_sec": round(total_sec, 2),
@@ -867,6 +899,9 @@ def main() -> None:
         w7_items=w7_items,
         model_rows=model_rows,
         live_progress=live_progress,
+        code_version=code_version,
+        results_seq=results_seq,
+        version_audit=version_audit,
     )
     _upsert_run_block(md_path, args.run_id, block, upsert=args.upsert)
     loop_msg = f" [{args.loop_name}]" if args.loop_name else ""

@@ -237,6 +237,7 @@ fi
 "$PY_BIN" -c "
 import json, pathlib, sys
 payload = {
+    'code_version': pathlib.Path('VERSION').read_text(encoding='utf-8').strip() if pathlib.Path('VERSION').is_file() else '0.0.0',
     'dtype': sys.argv[1],
     'seed': int(sys.argv[2]),
     'lam_utility': float(sys.argv[3]),
@@ -353,7 +354,7 @@ trap finalize_run EXIT
   echo "========================================================================"
   echo "C-BARR Run ID      : ${RUN_ID}"
   echo "UTC Start          : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "Git Revision       : $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "Code Version       : v$(cat VERSION 2>/dev/null || echo 0.0.0) (git=$(git rev-parse --short HEAD 2>/dev/null || echo unknown))"
   echo "Python Binary      : ${PY_BIN}"
   echo "OUT_DIR / FIG_DIR  : ${OUT_DIR} / ${FIG_DIR}"
   echo "DTYPE / CUDA_DEV   : ${DTYPE} / ${CUDA_VISIBLE_DEVICES:-auto}"

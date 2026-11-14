@@ -348,6 +348,8 @@ def _build_config_cell(spec: NotebookSpec) -> dict:
     primary_list = list(spec.models_primary)
     scale_list = list(spec.models_scale)
     expected_list = list(spec.expected_models_check)
+    ver_file = REPO_ROOT / "VERSION"
+    nb_code_ver = ver_file.read_text(encoding="utf-8").strip() if ver_file.is_file() else "0.0.0"
     code = f'''import datetime as dt
 import json
 import time
@@ -358,6 +360,7 @@ REPO_URL = "https://github.com/dolong2110/C-BARR.git"
 REPO_BRANCH = "master"
 NOTEBOOK_NAME = {spec.filename!r}
 PIPELINE_MODE = {spec.mode!r}
+NOTEBOOK_CODE_VERSION = {nb_code_ver!r}
 
 # Primary evaluation + causal diagnostic models (strict341 -> diag491)
 MODELS_PRIMARY = {primary_list!r}
@@ -487,6 +490,7 @@ NOTEBOOK_PARAMS = {{
     "platform": PLATFORM,
     "notebook": NOTEBOOK_NAME,
     "pipeline_mode": PIPELINE_MODE,
+    "notebook_code_version": NOTEBOOK_CODE_VERSION,
     "run_id": RUN_ID,
     "gpu_count": GPU_COUNT,
     "active_shards_per_model": N_ACTIVE_SHARDS,
@@ -558,6 +562,17 @@ else:
 os.chdir(REPO_DIR)
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
+
+from scripts.versioning import get_version_provenance
+
+_prov = get_version_provenance(REPO_DIR)
+REPO_CODE_VERSION = _prov["code_version"]
+REPO_GIT_REV = _prov["git_rev"]
+NOTEBOOK_PARAMS["code_version"] = REPO_CODE_VERSION
+NOTEBOOK_PARAMS["git_rev"] = REPO_GIT_REV
+print(f"Code Version : v{REPO_CODE_VERSION} (git={REPO_GIT_REV}) | notebook built for v{NOTEBOOK_CODE_VERSION}")
+if NOTEBOOK_CODE_VERSION != "0.0.0" and REPO_CODE_VERSION != NOTEBOOK_CODE_VERSION:
+    print(f"[WARN] Checked-out repo VERSION (v{REPO_CODE_VERSION}) differs from notebook build version (v{NOTEBOOK_CODE_VERSION}).")
 
 # Per-step & per-loop experiment ledger + thread-safe log-tee helpers
 LOG_DIR = OUT_DIR / "logs"
@@ -894,6 +909,14 @@ if UNPACK_SYNCED_RESULTS_ON_START:
         if d.is_dir() and d.name not in {"logs", "__pycache__"} and (d / "eval_450_cache.jsonl").exists()
     )
     print(f"Models currently ready in OUT_DIR: {unpacked_models}")
+    from scripts.sync_results import summarize_unpacked_versions
+
+    _vsum = summarize_unpacked_versions(OUT_DIR, expected_code_version=REPO_CODE_VERSION)
+    if not _vsum["consistent"] and _vsum["models"]:
+        print(
+            f"[WARN] Version mismatch detected across unpacked models vs repo v{REPO_CODE_VERSION}: "
+            f"versions_seen={_vsum['versions_seen']}"
+        )
 
 # 5. Pre-download Hugging Face tokenizers (and optionally full checkpoints)
 for m_id in ALL_ACTIVE_MODELS:
@@ -1262,10 +1285,11 @@ with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         if log_artifact.exists():
             zf.write(log_artifact, arcname=f"outputs/logs/{log_artifact.name}")
     if RUN_PHASE7_ANALYSIS:
-        for top_file in ("stats_summary.json", "paper_tables.tex"):
-            p = OUT_DIR / top_file
-            if p.exists():
-                zf.write(p, arcname=f"outputs/{top_file}")
+        for top_dir in (OUT_DIR, REPO_DIR / "outputs"):
+            for top_file in ("stats_summary.json", "paper_tables.tex", "results_manifest.json", "RESULTS_VERSION"):
+                p = top_dir / top_file
+                if p.exists() and f"outputs/{top_file}" not in zf.namelist():
+                    zf.write(p, arcname=f"outputs/{top_file}")
     for sub in sorted(OUT_DIR.iterdir()):
         if not sub.is_dir():
             continue
@@ -1281,6 +1305,7 @@ with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             "tables_rows_diag491.tex",
             "ext_deltanet_blend.json",
             "prefill_mlp_summary.json",
+            "run_manifest.json",
         ):
             fp = sub / fname
             if fp.exists():

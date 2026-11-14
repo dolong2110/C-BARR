@@ -17,6 +17,7 @@ from src.graders import grade_item, has_4gram_repetition_loop, has_cot_spillover
 from src.logfmt import banner, hl
 from src.metrics import SLICE_ORDER
 from scripts.run_matrix import cache_split_primitives, resolve_device_and_dtype
+from scripts.versioning import get_version_provenance
 
 
 class MockTokenizer:
@@ -279,8 +280,11 @@ def verify_gate_3_on_engine(
             f"Missing frozen Today Date in SmolLM3 non-thinking prompt: {rendered_nothink!r}"
         )
 
+    prov = get_version_provenance(ROOT)
     return {
         "model": engine.model_id,
+        "code_version": prov["code_version"],
+        "git_rev": prov["git_rev"],
         "n_items": len(cached_rows),
         "gate3_no_hash_prefix_on_ifeval": True,
         "gate3_no_32tok_truncation": True,

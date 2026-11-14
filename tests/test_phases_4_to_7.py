@@ -478,6 +478,11 @@ class TestPhases4To7(unittest.TestCase):
             "--num-shards",
             "--merge-shards",
             "--no-ledger",
+            "NOTEBOOK_CODE_VERSION",
+            "REPO_CODE_VERSION",
+            "scripts.versioning",
+            "run_manifest.json",
+            "results_manifest.json",
         )
         for nb_name, extra_tokens in notebook_expectations.items():
             nb_path = ROOT / "notebooks" / nb_name
@@ -1612,6 +1617,7 @@ class TestPhases4To7(unittest.TestCase):
             subprocess.run(["git", "-C", str(seed_repo), "config", "user.email", "tester@example.org"], check=True)
 
             shutil.copy2(ROOT / ".gitignore", seed_repo / ".gitignore")
+            shutil.copy2(ROOT / "VERSION", seed_repo / "VERSION")
             (seed_repo / "scripts").mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "scripts" / "check_anonymity.sh", seed_repo / "scripts" / "check_anonymity.sh")
             (seed_repo / "paper" / "figures").mkdir(parents=True, exist_ok=True)
@@ -1901,6 +1907,7 @@ class TestPhases4To7(unittest.TestCase):
             subprocess.run(["git", "-C", str(seed_repo), "config", "user.email", "tester@example.org"], check=True)
 
             shutil.copy2(ROOT / ".gitignore", seed_repo / ".gitignore")
+            shutil.copy2(ROOT / "VERSION", seed_repo / "VERSION")
             (seed_repo / "scripts").mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / "scripts" / "check_anonymity.sh", seed_repo / "scripts" / "check_anonymity.sh")
             (seed_repo / "paper" / "figures").mkdir(parents=True, exist_ok=True)
@@ -1962,12 +1969,28 @@ class TestPhases4To7(unittest.TestCase):
                 )
                 self.assertTrue(ok, f"{lbl} failed: {msg}")
 
-            # Verify remote EXPERIMENT_LOG.md remained completely untouched during concurrent worker pushes
+            # Verify remote EXPERIMENT_LOG.md & outputs/RESULTS_VERSION remained untouched during concurrent worker pushes
             mid_md = subprocess.check_output(
                 ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
                 text=True,
             )
             self.assertEqual(mid_md, "# C-BARR Log\n")
+            mid_files = set(
+                subprocess.check_output(
+                    ["git", "--git-dir", str(bare_repo), "ls-tree", "-r", "--name-only", "master"],
+                    text=True,
+                ).splitlines()
+            )
+            self.assertNotIn("outputs/RESULTS_VERSION", mid_files)
+            self.assertIn("outputs/Qwen__Qwen3.5-4B/run_manifest.json", mid_files)
+            q4_mf = json.loads(
+                subprocess.check_output(
+                    ["git", "--git-dir", str(bare_repo), "show", "master:outputs/Qwen__Qwen3.5-4B/run_manifest.json"],
+                    text=True,
+                )
+            )
+            self.assertEqual(q4_mf["sync_seq"], 1)
+            self.assertEqual(q4_mf["code_version"], (ROOT / "VERSION").read_text(encoding="utf-8").strip())
 
             # Combiner (Part 3) clones fresh, unpacks all 4 worker models, runs Phase 7 + ledger push
             comb_repo = root_tmp / "comb_repo"
@@ -2011,11 +2034,213 @@ class TestPhases4To7(unittest.TestCase):
                     "Qwen/Qwen3.5-2B",
                 },
             )
+            self.assertTrue(stats["version_audit"]["consistent_across_models"])
+            self.assertTrue(stats["version_audit"]["matches_analyzer_version"])
             final_md = subprocess.check_output(
                 ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
                 text=True,
             )
             self.assertIn("CBARR_RUN_START:r_comb", final_md)
+            res_ver_remote = subprocess.check_output(
+                ["git", "--git-dir", str(bare_repo), "show", "master:outputs/RESULTS_VERSION"],
+                text=True,
+            ).strip()
+            self.assertEqual(res_ver_remote, "1")
+            res_mf = json.loads(
+                subprocess.check_output(
+                    ["git", "--git-dir", str(bare_repo), "show", "master:outputs/results_manifest.json"],
+                    text=True,
+                )
+            )
+            self.assertEqual(res_mf["results_seq"], 1)
+            self.assertTrue(res_mf["consistent_code_versions"])
+            self.assertEqual(len(res_mf["models"]), 4)
+
+    def test_versioning_bump_hook_and_mismatch_audit(self) -> None:
+        """Verifies code VERSION checks/pre-push hook, per-model sync_seq increments, and mismatch detection."""
+        import shutil
+        from scripts.sync_results import pack_outputs_for_repo, summarize_unpacked_versions
+        from scripts.versioning import (
+            bump_repo_version,
+            bump_results_seq,
+            bump_semver,
+            check_version_increment,
+            install_git_hooks,
+            read_repo_version,
+            read_results_seq,
+        )
+
+        self.assertEqual(bump_semver("0.3.0", "patch"), "0.3.1")
+        self.assertEqual(bump_semver("0.3.9", "minor"), "0.4.0")
+        self.assertEqual(bump_semver("1.2.3", "major"), "2.0.0")
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            bare_repo = root_tmp / "origin.git"
+            work_repo = root_tmp / "work_repo"
+            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(bare_repo), str(work_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "checkout", "-B", "master"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "config", "user.name", "tester"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "config", "user.email", "tester@example.org"], check=True)
+
+            # Populate scripts/versioning.py and .githooks/pre-push in temp clone so real pre-push hook runs end-to-end
+            (work_repo / "scripts").mkdir(parents=True, exist_ok=True)
+            (work_repo / ".githooks").mkdir(parents=True, exist_ok=True)
+            (work_repo / "src").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / "versioning.py", work_repo / "scripts" / "versioning.py")
+            shutil.copy2(ROOT / ".githooks" / "pre-push", work_repo / ".githooks" / "pre-push")
+            (work_repo / "VERSION").write_text("0.3.0\n", encoding="utf-8")
+            (work_repo / "src" / "mod.py").write_text("X = 1\n", encoding="utf-8")
+            (work_repo / "EXPERIMENT_LOG.md").write_text("# Log\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(work_repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "commit", "-m", "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(work_repo), "push", "-u", "origin", "master"], check=True, capture_output=True)
+
+            install_git_hooks(work_repo)
+
+            # 1. Code edit WITHOUT VERSION bump must fail check & pre-push hook
+            (work_repo / "src" / "mod.py").write_text("X = 2\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(work_repo), "add", "src/mod.py"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "commit", "-m", "code change"], check=True, capture_output=True)
+            ok_chk, msg_chk = check_version_increment(work_repo, base_ref="origin/master", target_ref="HEAD")
+            self.assertFalse(ok_chk, msg_chk)
+            push_blocked = subprocess.run(
+                ["git", "-C", str(work_repo), "push", "origin", "master"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(push_blocked.returncode, 0)
+            self.assertIn("[version-check] FAIL", push_blocked.stdout + push_blocked.stderr)
+
+            # 2. Bump VERSION -> check passes and pre-push hook allows push
+            new_v = bump_repo_version(work_repo, part="patch")
+            self.assertEqual(new_v, "0.3.1")
+            self.assertEqual(read_repo_version(work_repo), "0.3.1")
+            subprocess.run(["git", "-C", str(work_repo), "add", "VERSION"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "commit", "-m", "bump version"], check=True, capture_output=True)
+            ok_chk2, msg_chk2 = check_version_increment(work_repo, base_ref="origin/master", target_ref="HEAD")
+            self.assertTrue(ok_chk2, msg_chk2)
+            push_ok = subprocess.run(
+                ["git", "-C", str(work_repo), "push", "origin", "master"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(push_ok.returncode, 0, push_ok.stderr)
+
+            # 3. Result-only push (RESULTS_VERSION + EXPERIMENT_LOG.md) must push cleanly WITHOUT bumping VERSION
+            self.assertEqual(read_results_seq(work_repo), 0)
+            self.assertEqual(bump_results_seq(work_repo), 1)
+            (work_repo / "EXPERIMENT_LOG.md").write_text("# Log\nUpdated\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(work_repo), "add", "outputs/RESULTS_VERSION", "EXPERIMENT_LOG.md"], check=True)
+            subprocess.run(["git", "-C", str(work_repo), "commit", "-m", "results sync"], check=True, capture_output=True)
+            push_res = subprocess.run(
+                ["git", "-C", str(work_repo), "push", "origin", "master"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(push_res.returncode, 0, push_res.stderr)
+
+            # 4. Separate-training differentiation & mismatch audit across two model versions
+            tmp_data = root_tmp / "data"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+            split_out = root_tmp / "split_out"
+            pack_repo = root_tmp / "pack_repo"
+            (pack_repo / "outputs").mkdir(parents=True, exist_ok=True)
+            (pack_repo / "VERSION").write_text((ROOT / "VERSION").read_text(encoding="utf-8"), encoding="utf-8")
+
+            for m_id in ("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"):
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/run_matrix.py"),
+                        "--model",
+                        m_id,
+                        "--data-dir",
+                        str(tmp_data),
+                        "--out-dir",
+                        str(split_out),
+                        "--strict-diag",
+                        "--mock",
+                    ],
+                    check=True,
+                    cwd=str(ROOT),
+                )
+
+            # First pack of 4B -> sync_seq=1
+            pack_outputs_for_repo(
+                out_dir=split_out,
+                repo_root=pack_repo,
+                models=["Qwen/Qwen3.5-4B"],
+                include_phase7=False,
+                include_ledger=False,
+                label="run1",
+            )
+            mf1 = json.loads((split_out / "Qwen__Qwen3.5-4B" / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(mf1["sync_seq"], 1)
+
+            # Modified 4B artifact -> re-pack must increment sync_seq=2
+            q4_sum_path = split_out / "Qwen__Qwen3.5-4B" / "matrix_summary_strict341.json"
+            q4_sum = json.loads(q4_sum_path.read_text(encoding="utf-8"))
+            q4_sum["run_id"] = "retrain_r2"
+            q4_sum_path.write_text(json.dumps(q4_sum, indent=2) + "\n", encoding="utf-8")
+            pack_outputs_for_repo(
+                out_dir=split_out,
+                repo_root=pack_repo,
+                models=["Qwen/Qwen3.5-4B"],
+                include_phase7=False,
+                include_ledger=False,
+                label="run2",
+            )
+            mf2 = json.loads((split_out / "Qwen__Qwen3.5-4B" / "run_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(mf2["sync_seq"], 2)
+            self.assertEqual(mf2["result_version"], f"v{read_repo_version(ROOT)}+m2")
+
+            # Simulate SmolLM3-3B trained against an updated code version (e.g., 9.9.9)
+            sm_sum_path = split_out / "HuggingFaceTB__SmolLM3-3B" / "matrix_summary_strict341.json"
+            sm_sum = json.loads(sm_sum_path.read_text(encoding="utf-8"))
+            sm_sum["code_version"] = "9.9.9"
+            sm_sum_path.write_text(json.dumps(sm_sum, indent=2) + "\n", encoding="utf-8")
+            pack_outputs_for_repo(
+                out_dir=split_out,
+                repo_root=pack_repo,
+                models=["HuggingFaceTB/SmolLM3-3B"],
+                include_phase7=False,
+                include_ledger=False,
+                label="smol_new_ver",
+            )
+
+            v_summary = summarize_unpacked_versions(split_out, expected_code_version=read_repo_version(ROOT))
+            self.assertFalse(v_summary["consistent"])
+            self.assertEqual(sorted(v_summary["versions_seen"]), sorted([read_repo_version(ROOT), "9.9.9"]))
+
+            # Non-strict Phase 7 runs and records mismatch; --strict-version-match exits non-zero
+            figs_dir = root_tmp / "figs"
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/analyze_and_plot.py"), "--out-dir", str(split_out), "--fig-dir", str(figs_dir)],
+                check=True,
+                cwd=str(ROOT),
+            )
+            stats_mm = json.loads((split_out / "stats_summary.json").read_text(encoding="utf-8"))
+            self.assertFalse(stats_mm["version_audit"]["consistent_across_models"])
+            self.assertIn("HuggingFaceTB/SmolLM3-3B", stats_mm["version_audit"]["mismatched_models"])
+
+            strict_proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/analyze_and_plot.py"),
+                    "--out-dir",
+                    str(split_out),
+                    "--fig-dir",
+                    str(figs_dir),
+                    "--strict-version-match",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(strict_proc.returncode, 0)
 
 
 if __name__ == "__main__":

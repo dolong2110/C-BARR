@@ -22,6 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.versioning import get_version_provenance
 from src.engine import CBARRDualModeEngine, run_gate1_lexical
 from src.graders import grade_item, has_4gram_repetition_loop, has_cot_spillover
 from src.logfmt import banner, hl
@@ -1235,7 +1236,11 @@ def main() -> None:
         if args.mock
         else resolve_device_and_dtype(device_arg=args.device, dtype_arg=args.dtype)
     )
+    prov = get_version_provenance(ROOT)
     training_params = {
+        "code_version": prov["code_version"],
+        "git_rev": prov["git_rev"],
+        "run_id": args.run_id,
         "model": args.model,
         "diag_pool": diag_tag,
         "device": str(resolved_runtime[0]),
@@ -1260,9 +1265,13 @@ def main() -> None:
     print(
         banner(
             f"RUN MATRIX: {args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
-            f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}{shard_banner}",
+            f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]} | v{prov['code_version']}{shard_banner}",
             "cyan",
         ),
+        flush=True,
+    )
+    print(
+        f"[version] code_version={prov['code_version']} git_rev={prov['git_rev']} run_id={args.run_id or 'none'}",
         flush=True,
     )
     print(
@@ -1393,6 +1402,9 @@ def main() -> None:
     )
     calib_summary["wall_time_sec"] = t_calib_sec
     calib_summary["runtime"] = {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])}
+    calib_summary["code_version"] = prov["code_version"]
+    calib_summary["git_rev"] = prov["git_rev"]
+    calib_summary["run_id"] = args.run_id
     calib_summary["training_params"] = training_params
     calib_path = out_dir / "calibration_summary.json"
     calib_path.write_text(json.dumps(calib_summary, indent=2) + "\n", encoding="utf-8")
@@ -1556,6 +1568,9 @@ def main() -> None:
         total_now = round(time.perf_counter() - t_run_start, 2)
         report = {
             "model": args.model,
+            "code_version": prov["code_version"],
+            "git_rev": prov["git_rev"],
+            "run_id": args.run_id,
             "diag_pool": diag_tag,
             "diag_n_items": len(diag_items),
             "status": status_tag,

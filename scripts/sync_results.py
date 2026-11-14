@@ -11,19 +11,30 @@ size limits or .gitignore exclusions.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import gzip
 import hashlib
+import json
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.log_experiment import _ensure_git_identity, _run_git_with_askpass, _sanitize_text
+from scripts.versioning import (
+    RESULTS_MANIFEST_REL,
+    RESULTS_VERSION_REL,
+    bump_results_seq,
+    get_version_provenance,
+    read_repo_version,
+    read_results_seq,
+)
 
 COMPACT_CACHE_NAMES: tuple[str, ...] = (
     "seed_60_cache.jsonl",
@@ -42,6 +53,7 @@ MODEL_SUMMARY_FILES: tuple[str, ...] = (
     "tables_rows_diag491.tex",
     "ext_deltanet_blend.json",
     "prefill_mlp_summary.json",
+    "run_manifest.json",
 )
 
 PHASE7_FILES: tuple[str, ...] = (
@@ -186,6 +198,263 @@ def _check_paper_anonymity(repo_root: pathlib.Path) -> None:
         raise RuntimeError(f"Anonymity audit failed; refusing to stage paper/figures: {detail}")
 
 
+def _read_json_safe(path: pathlib.Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _atomic_write_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _stamp_model_run_manifest(
+    src_dir: pathlib.Path,
+    dst_dir: pathlib.Path,
+    repo_root: pathlib.Path,
+    slug: str,
+    label: str = "",
+) -> pathlib.Path | None:
+    """Writes/increments per-model run_manifest.json with code_version + sync_seq for differentiation."""
+    artifact_sha: dict[str, str] = {}
+    for fname in sorted(set(MODEL_SUMMARY_FILES) - {"run_manifest.json"}):
+        fpath = dst_dir / fname
+        if fpath.is_file():
+            artifact_sha[fname] = _sha256_file(fpath)
+    for cname in COMPACT_CACHE_NAMES:
+        gz_path = dst_dir / f"{cname}.gz"
+        if gz_path.is_file():
+            artifact_sha[gz_path.name] = _sha256_file(gz_path)
+
+    if not artifact_sha:
+        return None
+
+    fallback_prov = get_version_provenance(repo_root)
+    diag_pools: dict[str, dict[str, Any]] = {}
+    model_name = slug.replace("__", "/")
+    latest_code_ver = ""
+    latest_git_rev = ""
+    latest_run_id = ""
+
+    for pool_name, fname in (
+        ("default", "matrix_summary.json"),
+        ("strict341", "matrix_summary_strict341.json"),
+        ("diag491", "matrix_summary_diag491.json"),
+    ):
+        rep = _read_json_safe(src_dir / fname) or _read_json_safe(dst_dir / fname)
+        if not rep:
+            continue
+        model_name = str(rep.get("model") or model_name)
+        tp = rep.get("training_params") if isinstance(rep.get("training_params"), dict) else {}
+        cver = str(rep.get("code_version") or tp.get("code_version") or fallback_prov["code_version"])
+        grev = str(rep.get("git_rev") or tp.get("git_rev") or fallback_prov["git_rev"])
+        rid = str(rep.get("run_id") or tp.get("run_id") or "")
+        diag_pools[pool_name] = {
+            "code_version": cver,
+            "git_rev": grev,
+            "run_id": rid,
+            "seed": tp.get("seed"),
+            "lam_utility": tp.get("lam_utility"),
+            "dtype": (rep.get("runtime") or {}).get("dtype"),
+        }
+        latest_code_ver = cver
+        latest_git_rev = grev
+        latest_run_id = rid
+
+    cal = _read_json_safe(src_dir / "calibration_summary.json") or _read_json_safe(
+        dst_dir / "calibration_summary.json"
+    )
+    cal_info: dict[str, Any] = {}
+    if cal:
+        model_name = str(cal.get("model") or model_name)
+        tp = cal.get("training_params") if isinstance(cal.get("training_params"), dict) else {}
+        cver = str(cal.get("code_version") or tp.get("code_version") or fallback_prov["code_version"])
+        grev = str(cal.get("git_rev") or tp.get("git_rev") or fallback_prov["git_rev"])
+        rid = str(cal.get("run_id") or tp.get("run_id") or "")
+        cal_info = {
+            "code_version": cver,
+            "git_rev": grev,
+            "run_id": rid,
+            "tau_prob": (cal.get("calibrated_params") or {}).get("tau_prob"),
+        }
+        if not latest_code_ver:
+            latest_code_ver = cver
+            latest_git_rev = grev
+            latest_run_id = rid
+
+    code_ver = latest_code_ver or fallback_prov["code_version"]
+    git_rev = latest_git_rev or fallback_prov["git_rev"]
+
+    prev_dst = _read_json_safe(dst_dir / "run_manifest.json") or {}
+    prev_src = _read_json_safe(src_dir / "run_manifest.json") or {}
+    prev_seq = max(int(prev_dst.get("sync_seq") or 0), int(prev_src.get("sync_seq") or 0))
+    prev_sha = prev_dst.get("artifact_sha256") if isinstance(prev_dst.get("artifact_sha256"), dict) else {}
+
+    if prev_seq == 0 or prev_sha != artifact_sha:
+        sync_seq = prev_seq + 1
+    else:
+        return dst_dir / "run_manifest.json"
+
+    result_ver = f"v{code_ver}+m{sync_seq}"
+    manifest = {
+        "model": model_name,
+        "slug": slug,
+        "code_version": code_ver,
+        "git_rev": git_rev,
+        "run_id": latest_run_id,
+        "sync_seq": sync_seq,
+        "result_version": result_ver,
+        "sync_label": label or "",
+        "updated_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "calibration": cal_info,
+        "diag_pools": diag_pools,
+        "artifact_sha256": artifact_sha,
+    }
+    dst_manifest = dst_dir / "run_manifest.json"
+    _atomic_write_json(dst_manifest, manifest)
+    if src_dir.is_dir() and src_dir.resolve() != dst_dir.resolve():
+        _atomic_write_json(src_dir / "run_manifest.json", manifest)
+    return dst_manifest
+
+
+def _update_results_release_manifest(
+    repo_root: pathlib.Path,
+    repo_outputs: pathlib.Path,
+    label: str = "",
+) -> list[pathlib.Path]:
+    """Updates outputs/RESULTS_VERSION + outputs/results_manifest.json on shared sync pushes."""
+    models_map: dict[str, dict[str, Any]] = {}
+    code_vers_seen: set[str] = set()
+    for entry in sorted(repo_outputs.iterdir()):
+        if not entry.is_dir() or entry.name in {"logs", "__pycache__"} or entry.name.startswith("."):
+            continue
+        mf = _read_json_safe(entry / "run_manifest.json")
+        if mf:
+            cver = str(mf.get("code_version") or "unknown")
+            if cver and cver != "unknown":
+                code_vers_seen.add(cver)
+            models_map[entry.name] = {
+                "model": mf.get("model"),
+                "code_version": cver,
+                "git_rev": mf.get("git_rev"),
+                "run_id": mf.get("run_id"),
+                "sync_seq": mf.get("sync_seq"),
+                "result_version": mf.get("result_version"),
+                "diag_pools": mf.get("diag_pools", {}),
+                "artifact_sha256": mf.get("artifact_sha256", {}),
+            }
+
+    phase7_sha: dict[str, str] = {}
+    for pf in PHASE7_FILES:
+        ppath = repo_outputs / pf
+        if ppath.is_file():
+            phase7_sha[pf] = _sha256_file(ppath)
+    fig_dir = repo_root / "paper" / "figures"
+    if fig_dir.is_dir():
+        for pdf in sorted(fig_dir.glob("*.pdf")):
+            phase7_sha[f"paper/figures/{pdf.name}"] = _sha256_file(pdf)
+
+    rel_manifest_path = repo_root / RESULTS_MANIFEST_REL
+    rel_ver_path = repo_root / RESULTS_VERSION_REL
+    prev_rel = _read_json_safe(rel_manifest_path) or {}
+    cur_seq = read_results_seq(repo_root)
+    unchanged = (
+        cur_seq > 0
+        and rel_ver_path.is_file()
+        and prev_rel.get("models") == models_map
+        and prev_rel.get("phase7_sha256") == phase7_sha
+    )
+    if unchanged:
+        return [RESULTS_VERSION_REL, RESULTS_MANIFEST_REL]
+
+    new_seq = bump_results_seq(repo_root)
+    repo_ver = read_repo_version(repo_root)
+    prov = get_version_provenance(repo_root)
+    warnings: list[str] = []
+    if len(code_vers_seen) > 1:
+        warnings.append(
+            "Multiple code versions across model results: " + ", ".join(sorted(code_vers_seen))
+        )
+    if code_vers_seen and repo_ver != "0.0.0" and any(v != repo_ver for v in code_vers_seen):
+        warnings.append(
+            f"Repo VERSION is v{repo_ver}, while models have versions: {sorted(code_vers_seen)}"
+        )
+
+    payload = {
+        "results_seq": new_seq,
+        "results_version": f"v{repo_ver}-res.{new_seq}",
+        "code_version": repo_ver,
+        "git_rev": prov["git_rev"],
+        "sync_label": label or "",
+        "updated_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "consistent_code_versions": len(code_vers_seen) <= 1,
+        "version_warnings": warnings,
+        "models": models_map,
+        "phase7_sha256": phase7_sha,
+    }
+    _atomic_write_json(rel_manifest_path, payload)
+    return [RESULTS_VERSION_REL, RESULTS_MANIFEST_REL]
+
+
+def summarize_unpacked_versions(
+    out_dir: pathlib.Path, expected_code_version: str = ""
+) -> dict[str, Any]:
+    """Summarizes per-model code/result versions under out_dir and flags mismatches."""
+    out_dir = pathlib.Path(out_dir).resolve()
+    rows: list[dict[str, Any]] = []
+    versions_seen: set[str] = set()
+    if out_dir.is_dir():
+        for entry in sorted(out_dir.iterdir()):
+            if not entry.is_dir() or entry.name in {"logs", "__pycache__"} or entry.name.startswith("."):
+                continue
+            mf = _read_json_safe(entry / "run_manifest.json") or {}
+            rep = (
+                _read_json_safe(entry / "matrix_summary_diag491.json")
+                or _read_json_safe(entry / "matrix_summary_strict341.json")
+                or _read_json_safe(entry / "matrix_summary.json")
+                or _read_json_safe(entry / "calibration_summary.json")
+            )
+            if not mf and not rep:
+                continue
+            model_name = str((mf or {}).get("model") or (rep or {}).get("model") or entry.name.replace("__", "/"))
+            cver = str((mf or {}).get("code_version") or (rep or {}).get("code_version") or "unknown")
+            grev = str((mf or {}).get("git_rev") or (rep or {}).get("git_rev") or "unknown")
+            rver = str((mf or {}).get("result_version") or (f"v{cver}" if cver != "unknown" else "unknown"))
+            rid = str((mf or {}).get("run_id") or (rep or {}).get("run_id") or "")
+            if cver != "unknown":
+                versions_seen.add(cver)
+            matches_expected = (
+                True
+                if not expected_code_version or expected_code_version == "0.0.0" or cver == "unknown"
+                else cver == expected_code_version
+            )
+            rows.append(
+                {
+                    "model": model_name,
+                    "slug": entry.name,
+                    "code_version": cver,
+                    "git_rev": grev,
+                    "result_version": rver,
+                    "run_id": rid,
+                    "matches_expected": matches_expected,
+                }
+            )
+    consistent = len(versions_seen) <= 1 and all(r["matches_expected"] for r in rows)
+    return {
+        "expected_code_version": expected_code_version,
+        "consistent": consistent,
+        "versions_seen": sorted(versions_seen),
+        "models": rows,
+    }
+
+
 def pack_outputs_for_repo(
     out_dir: pathlib.Path,
     repo_root: pathlib.Path,
@@ -193,6 +462,7 @@ def pack_outputs_for_repo(
     include_phase7: bool = True,
     max_file_mb: float = 45.0,
     include_ledger: bool = True,
+    label: str = "",
 ) -> list[pathlib.Path]:
     """Copies compact model summaries and gzips JSONL caches into repo_root/outputs/."""
     out_dir = out_dir.resolve()
@@ -216,6 +486,8 @@ def pack_outputs_for_repo(
         dst_dir.mkdir(parents=True, exist_ok=True)
 
         for fname in MODEL_SUMMARY_FILES:
+            if fname == "run_manifest.json":
+                continue
             src_f = src_dir / fname
             if not src_f.is_file():
                 continue
@@ -243,6 +515,16 @@ def pack_outputs_for_repo(
                 _copy_if_different(src_gz, dst_gz)
                 staged.append(dst_gz.relative_to(repo_root))
 
+        mf_path = _stamp_model_run_manifest(
+            src_dir=src_dir,
+            dst_dir=dst_dir,
+            repo_root=repo_root,
+            slug=slug,
+            label=label,
+        )
+        if mf_path is not None and mf_path.is_file():
+            staged.append(mf_path.relative_to(repo_root))
+
     if include_phase7:
         for pf in PHASE7_FILES:
             src_p = out_dir / pf
@@ -268,6 +550,14 @@ def pack_outputs_for_repo(
                 staged.append(pdf.relative_to(repo_root))
 
     if include_ledger:
+        if staged or (repo_outputs / "RESULTS_VERSION").is_file():
+            staged.extend(
+                _update_results_release_manifest(
+                    repo_root=repo_root,
+                    repo_outputs=repo_outputs,
+                    label=label,
+                )
+            )
         ledger = repo_root / "EXPERIMENT_LOG.md"
         if ledger.is_file():
             staged.append(ledger.relative_to(repo_root))
@@ -367,6 +657,7 @@ def sync_and_push_results(
         include_phase7=include_phase7,
         max_file_mb=max_file_mb,
         include_ledger=include_ledger,
+        label=label,
     )
     if not rel_paths:
         return False, "No C-BARR result artifacts found to sync."
@@ -388,7 +679,13 @@ def sync_and_push_results(
         ["git", "-C", str(repo_root), "diff", "--cached", "--quiet", "--", *rel_strs]
     )
     if diff_chk.returncode != 0:
-        msg = f"chore(results): sync {label}"
+        code_ver = read_repo_version(repo_root)
+        if include_ledger:
+            res_seq = read_results_seq(repo_root)
+            ver_tag = f"code=v{code_ver}, res.{res_seq}"
+        else:
+            ver_tag = f"code=v{code_ver}"
+        msg = f"chore(results): sync {label} [{ver_tag}]"
         cm_proc = subprocess.run(
             ["git", "-C", str(repo_root), "commit", "-m", msg, "--", *rel_strs],
             capture_output=True,
@@ -500,11 +797,22 @@ def main() -> None:
             out_dir=out_dir,
             overwrite=args.overwrite,
         )
+        ver_sum = summarize_unpacked_versions(
+            out_dir, expected_code_version=read_repo_version(repo_root)
+        )
         print(
             f"[sync] Unpacked {counts['caches_unpacked']} cache(s) and copied "
             f"{counts['summaries_copied']} summary file(s) across {counts['models']} model(s) "
             f"-> {out_dir}"
         )
+        if ver_sum["models"]:
+            print(f"[sync] Version Audit (repo=v{ver_sum['expected_code_version']}, consistent={ver_sum['consistent']}):")
+            for row in ver_sum["models"]:
+                match_lbl = "OK" if row["matches_expected"] else "MISMATCH"
+                print(
+                    f"  - {row['model']}: result={row['result_version']} code=v{row['code_version']} "
+                    f"git={row['git_rev']} [{match_lbl}]"
+                )
         return
 
     do_push = False if args.no_git_push else (True if args.git_push or args.mode == "push" else False)

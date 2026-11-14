@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+pick_python() {
+  local cand
+  for cand in \
+    "${CBARR_PYTHON:-}" \
+    "${REPO_ROOT}/.venv/bin/python" \
+    "${VIRTUAL_ENV:+${VIRTUAL_ENV}/bin/python}" \
+    "$(command -v python3 2>/dev/null || true)" \
+    "/usr/bin/python3" \
+    "/opt/homebrew/bin/python3" \
+    "/usr/local/bin/python3" \
+    "$(command -v python 2>/dev/null || true)"; do
+    if [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c "pass" >/dev/null 2>&1; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  echo "[version-hook] ERROR: No runnable Python interpreter found." >&2
+  return 1
+}
+
+PY_BIN="$(pick_python)"
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  if [ -z "${local_sha:-}" ] || [ "$local_sha" = "$ZERO_SHA" ]; then
+    continue
+  fi
+  if [ -z "${remote_sha:-}" ] || [ "$remote_sha" = "$ZERO_SHA" ]; then
+    continue
+  fi
+  "$PY_BIN" "${REPO_ROOT}/scripts/versioning.py" check \
+    --repo-dir "$REPO_ROOT" \
+    --base "$remote_sha" \
+    --target "$local_sha"
+done

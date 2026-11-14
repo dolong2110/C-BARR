@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from sklearn.linear_model import LogisticRegression
 
+from scripts.versioning import get_version_provenance
 from src.engine import run_gate1_lexical
 from src.logfmt import banner, hl
 from src.metrics import (
@@ -123,7 +124,7 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
     """Loads matrix summary + reconstructed per-item runs + strict341/diag491 reports for one model."""
     # Prefer the full calibration-disjoint diag491 summary when present, while keeping strict341 separately
     summary_path = None
-    for cand in ("matrix_summary_diag491.json", "matrix_summary.json", "matrix_summary_strict341.json"):
+    for cand in ("matrix_summary_diag491.json", "matrix_summary_strict341.json", "matrix_summary.json"):
         p = model_dir / cand
         if p.exists():
             summary_path = p
@@ -149,6 +150,31 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
     if (model_dir / "calibration_summary.json").exists():
         calib_summary = json.loads((model_dir / "calibration_summary.json").read_text(encoding="utf-8"))
 
+    run_manifest = None
+    if (model_dir / "run_manifest.json").exists():
+        run_manifest = json.loads((model_dir / "run_manifest.json").read_text(encoding="utf-8"))
+
+    tp = report.get("training_params") if isinstance(report.get("training_params"), dict) else {}
+    code_ver = str(
+        report.get("code_version")
+        or tp.get("code_version")
+        or (run_manifest or {}).get("code_version")
+        or "unknown"
+    )
+    git_rev = str(
+        report.get("git_rev")
+        or tp.get("git_rev")
+        or (run_manifest or {}).get("git_rev")
+        or "unknown"
+    )
+    provenance = {
+        "code_version": code_ver,
+        "git_rev": git_rev,
+        "run_id": str(report.get("run_id") or tp.get("run_id") or (run_manifest or {}).get("run_id") or ""),
+        "sync_seq": (run_manifest or {}).get("sync_seq"),
+        "result_version": (run_manifest or {}).get("result_version") or (f"v{code_ver}" if code_ver != "unknown" else "unknown"),
+    }
+
     eval_cache_path = model_dir / "eval_450_cache.jsonl"
     items: list[dict[str, Any]] = []
     per_system_runs: dict[str, list[dict[str, Any]]] = {k: [] for k in VARIANT_ORDER}
@@ -168,6 +194,8 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         "dir": model_dir,
         "report": report,
         "calib_summary": calib_summary,
+        "run_manifest": run_manifest,
+        "provenance": provenance,
         "strict_diag": strict_diag,
         "full_diag": full_diag,
         "items": items,
@@ -872,6 +900,44 @@ def discover_bundles(
     return bundles
 
 
+def build_version_audit(bundles: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Audits code_version / result_version consistency across separately trained model outputs."""
+    prov = get_version_provenance(ROOT)
+    analyzer_ver = prov["code_version"]
+    model_entries: dict[str, dict[str, Any]] = {}
+    unique_known_vers: set[str] = set()
+    mismatched_models: list[str] = []
+
+    for m_name, bundle in bundles.items():
+        mp = dict(bundle.get("provenance") or {})
+        cver = str(mp.get("code_version") or "unknown")
+        if cver != "unknown":
+            unique_known_vers.add(cver)
+        matches_analyzer = (
+            True if analyzer_ver == "0.0.0" or cver == "unknown" else cver == analyzer_ver
+        )
+        if not matches_analyzer:
+            mismatched_models.append(m_name)
+        model_entries[m_name] = {
+            **mp,
+            "matches_analyzer_version": matches_analyzer,
+        }
+
+    consistent_across_models = len(unique_known_vers) <= 1
+    matches_analyzer_version = len(mismatched_models) == 0 and (
+        consistent_across_models or len(unique_known_vers) == 0
+    )
+    return {
+        "analyzer_code_version": analyzer_ver,
+        "analyzer_git_rev": prov["git_rev"],
+        "consistent_across_models": consistent_across_models,
+        "matches_analyzer_version": matches_analyzer_version,
+        "versions_seen": sorted(unique_known_vers),
+        "mismatched_models": mismatched_models,
+        "models": model_entries,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze C-BARR outputs and generate tables/figures.")
     parser.add_argument("--out-dir", type=str, default="outputs")
@@ -880,6 +946,11 @@ def main() -> None:
     parser.add_argument("--dense-model", type=str, default="HuggingFaceTB/SmolLM3-3B")
     parser.add_argument("--n-boot", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--strict-version-match",
+        action="store_true",
+        help="Fail if analyzed model outputs come from mismatched or stale VERSIONs.",
+    )
     args = parser.parse_args()
 
     out_dir = pathlib.Path(args.out_dir)
@@ -893,7 +964,13 @@ def main() -> None:
 
     _configure_matplotlib()
 
-    stats_out: dict[str, Any] = {"models": {}, "n_boot": args.n_boot, "seed": args.seed}
+    version_audit = build_version_audit(bundles)
+    stats_out: dict[str, Any] = {
+        "models": {},
+        "version_audit": version_audit,
+        "n_boot": args.n_boot,
+        "seed": args.seed,
+    }
     for m_name, bundle in bundles.items():
         stats_out["models"][m_name] = analyze_model_bundle(bundle, n_boot=args.n_boot, seed=args.seed)
 
@@ -926,6 +1003,24 @@ def main() -> None:
 
     print(banner(f"PHASE 7 ANALYSIS COMPLETE ({len(bundles)} models)", "magenta"))
     print(f"Analyzed {len(bundles)} model(s): {', '.join(bundles.keys())}")
+    ver_tag_str = ", ".join(
+        f"{m}={d.get('result_version', 'unknown')}" for m, d in version_audit["models"].items()
+    )
+    print(
+        f"[VERSION AUDIT] analyzer=v{version_audit['analyzer_code_version']} | "
+        f"consistent={version_audit['consistent_across_models']} | "
+        f"matches_repo={version_audit['matches_analyzer_version']} | {ver_tag_str}"
+    )
+    if not version_audit["matches_analyzer_version"]:
+        print(
+            hl(
+                f"[WARN] Version mismatch across model results: versions_seen={version_audit['versions_seen']}, "
+                f"mismatched={version_audit['mismatched_models']} (repo=v{version_audit['analyzer_code_version']})",
+                "yellow",
+            )
+        )
+        if args.strict_version_match:
+            raise SystemExit(1)
     print(f"Saved stats to {out_dir / 'stats_summary.json'}")
     print(f"Saved LaTeX tables to {out_dir / 'paper_tables.tex'}")
     print(f"Saved 3 vector PDF figures to {fig_dir}/")
