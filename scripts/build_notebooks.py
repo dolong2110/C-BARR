@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates the 4 parallel-workflow C-BARR Colab/Kaggle notebooks (3 parallel GPU workers + 1 combiner)."""
+"""Generates the 5 C-BARR Colab/Kaggle notebooks (All-In-One + 3 parallel GPU workers + 1 combiner)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ NOTEBOOKS_DIR = REPO_ROOT / "notebooks"
 @dataclass(frozen=True)
 class NotebookSpec:
     filename: str
-    mode: str  # "worker1_4b" | "worker2_smollm3" | "worker3_scale" | "combine_analyze"
+    mode: str  # "all_in_one" | "worker1_4b" | "worker2_smollm3" | "worker3_scale" | "combine_analyze"
     title: str
     summary_bullets: tuple[str, ...]
     models_primary: tuple[str, ...]
@@ -44,6 +44,31 @@ ALL_4_CORE_MODELS: tuple[str, ...] = (
 
 
 SPECS: tuple[NotebookSpec, ...] = (
+    NotebookSpec(
+        filename="C_BARR_All_In_One.ipynb",
+        mode="all_in_one",
+        title="C-BARR All-In-One: Complete End-to-End Pipeline (Parts 1 + 2 + 3 + 4)",
+        summary_bullets=(
+            "**Combined Single-Session Runner**: Executes the full C-BARR pipeline end-to-end (Gate 0 -> Step 0a Smoke -> Step 0b Calibrate -> `4B` + `SmolLM3-3B` -> Scale `0.8B`/`2B` [`+9B` if `>=22 GB`] -> Phase 7 Analysis) in one session.",
+            "**Intra-Model `N`-GPU Auto-Sharding (`MAX_SHARDS_PER_MODEL = 4`)**: Automatically shards each model across all local GPUs (`min(GPU_COUNT, MAX_SHARDS_PER_MODEL)`) and merges deterministically before scoring.",
+            "**Resume & Version Stamping (`scripts/sync_results.py`)**: Unpacks prior caches on start if present, checks `VERSION` provenance across all models, and pushes unified artifacts + `EXPERIMENT_LOG.md`.",
+        ),
+        models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=True,
+        run_live_smoke_expr="HAS_CUDA",
+        run_calibrate_only=True,
+        run_primary_matrix=True,
+        run_scale_sweep=True,
+        run_w7_extensions=False,
+        run_phase7_analysis=True,
+        unpack_synced_on_start=True,
+        sync_include_ledger=True,
+        expected_models_check=ALL_4_CORE_MODELS,
+        sync_label_prefix="all-in-one",
+        bundle_filename="cbarr_results_bundle.zip",
+    ),
     NotebookSpec(
         filename="C_BARR_1_Worker_Qwen4B.ipynb",
         mode="worker1_4b",

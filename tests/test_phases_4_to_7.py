@@ -393,6 +393,15 @@ class TestPhases4To7(unittest.TestCase):
     def test_colab_kaggle_notebook_valid_json_and_python_syntax(self) -> None:
         """All generated Colab/Kaggle notebooks are valid nbformat 4 JSON with AST-valid Python cells."""
         notebook_expectations = {
+            "C_BARR_All_In_One.ipynb": (
+                "PIPELINE_MODE = 'all_in_one'",
+                "RUN_CALIBRATE_ONLY = True",
+                "RUN_PRIMARY_MATRIX = True",
+                "RUN_SCALE_SWEEP = True",
+                "RUN_PHASE7_ANALYSIS = True",
+                "UNPACK_SYNCED_RESULTS_ON_START = True",
+                "SYNC_INCLUDE_LEDGER = True",
+            ),
             "C_BARR_1_Worker_Qwen4B.ipynb": (
                 "PIPELINE_MODE = 'worker1_4b'",
                 "RUN_CALIBRATE_ONLY = True",
@@ -2220,6 +2229,106 @@ class TestPhases4To7(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(strict_proc.returncode, 0)
+
+    def test_four_part_shell_scripts_workflow(self) -> None:
+        """Runs Part 1/2/3 worker bash scripts in parallel in --mock mode, then Part 4 combiner."""
+        import os
+
+        from scripts.versioning import read_repo_version
+
+        scripts_expected = (
+            "run_part1_worker_qwen4b.sh",
+            "run_part2_worker_smollm3.sh",
+            "run_part3_worker_scale.sh",
+            "run_part4_combine_analyze.sh",
+        )
+        for s_name in scripts_expected:
+            sp = ROOT / "scripts" / s_name
+            self.assertTrue(sp.is_file(), f"Missing script: {sp}")
+            self.assertTrue(os.access(sp, os.X_OK), f"Script not executable: {sp}")
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_figs = root_tmp / "figs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            env = {**os.environ, "PYTHON_BIN": sys.executable, "CBARR_COLOR": "0"}
+            worker_cmds = [
+                [
+                    "bash",
+                    str(ROOT / "scripts" / s_name),
+                    "--mock",
+                    "--skip-preflight",
+                    "--strict-only",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                ]
+                for s_name in scripts_expected[:3]
+            ]
+            procs = [
+                subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for cmd in worker_cmds
+            ]
+            for s_name, proc in zip(scripts_expected[:3], procs):
+                out_s, err_s = proc.communicate(timeout=180)
+                self.assertEqual(proc.returncode, 0, f"{s_name} failed:\nSTDOUT:\n{out_s}\nSTDERR:\n{err_s}")
+
+            # Verify each worker populated only its own model directory + run logs in tmp_out
+            for slug in (
+                "Qwen__Qwen3.5-4B",
+                "HuggingFaceTB__SmolLM3-3B",
+                "Qwen__Qwen3.5-0.8B",
+                "Qwen__Qwen3.5-2B",
+            ):
+                self.assertTrue(
+                    (tmp_out / slug / "matrix_summary_strict341.json").is_file(),
+                    f"Missing strict341 summary for {slug}",
+                )
+
+            part4 = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_part4_combine_analyze.sh"),
+                    "--mock",
+                    "--skip-preflight",
+                    "--no-unpack",
+                    "--strict-version-match",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--exp-log",
+                    str(tmp_out / "combined_exp_log.md"),
+                ],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(part4.returncode, 0, f"Part 4 failed:\n{part4.stdout}\n{part4.stderr}")
+            stats = json.loads((tmp_out / "stats_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                sorted(stats["models"].keys()),
+                [
+                    "HuggingFaceTB/SmolLM3-3B",
+                    "Qwen/Qwen3.5-0.8B",
+                    "Qwen/Qwen3.5-2B",
+                    "Qwen/Qwen3.5-4B",
+                ],
+            )
+            self.assertTrue(stats["version_audit"]["consistent_across_models"])
+            self.assertEqual(stats["version_audit"]["analyzer_code_version"], read_repo_version(ROOT))
+            self.assertTrue((tmp_out / "paper_tables.tex").is_file())
+            self.assertTrue((tmp_figs / "fig1_pareto_frontier.pdf").is_file())
+            self.assertTrue((tmp_figs / "fig2_bsr_sla_curve.pdf").is_file())
+            self.assertTrue((tmp_figs / "fig3_ehurt_causal_recovery.pdf").is_file())
 
 
 if __name__ == "__main__":
