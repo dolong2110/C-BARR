@@ -78,11 +78,12 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261114T214425Z -->
 
 <!-- CBARR_RUN_START:20261114T223748Z -->
-### Run `20261114T223748Z` — **RUNNING (after Gate 0: Preflight Tests)** (Updated 2026-11-14 22:50:23 UTC)
-- **Code Version**: `v0.5.0` | **Git Commit**: `7ebaeeb-dirty` | **Last Loop**: `Gate 0: Preflight Tests` | **Wall Time**: `12m 24.5s` (744.5s)
+### Run `20261114T223748Z` — **FAILED (at Phase 7)** (Updated 2026-11-14 22:50:45 UTC)
+- **Code Version**: `v0.5.0` | **Git Commit**: `c33788a` | **Last Loop**: `Phase 7: Analysis & Gate-4 Audit` | **Wall Time**: `12m 46.6s` (766.6s)
 - **Hardware**: 2x Tesla T4 (14.6 GB, SM 7.5, CUDA 13.0, BF16=False) | PyTorch `2.11.0+cu130` | Transformers `5.20.2` | Kernels: `fla=True, causal_conv1d=False`
 - **Command**: `notebook:C_BARR_4_Combine_Analyze.ipynb`
 - **Raw Log**: `outputs/logs/cbarr_20261114T223748Z.log`
+- **Notes**: CalledProcessError: Command '['/usr/bin/python3', 'scripts/analyze_and_plot.py', '--out-dir', 'outputs', '--fig-dir', 'paper/figures']' returned non-zero exit status 1.
 
 #### 1. Training & Experiment Parameters
 ```json
@@ -122,6 +123,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Stage | Status | Wall Time |
 | :--- | :--- | :--- |
 | Gate 0: Preflight Tests | PASS | 11m 44.9s (704.9s) |
+| Phase 7: Analysis & Gate-4 Audit | FAIL | 9.1s (9.1s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
