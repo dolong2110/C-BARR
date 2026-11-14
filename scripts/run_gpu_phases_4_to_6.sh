@@ -507,7 +507,7 @@ for pkg in ('fla', 'causal_conv1d'):
     elif [ "${#MODELS_ARG[@]}" -gt 0 ]; then
       smoke_args=(--models "${MODELS_ARG[@]}")
     fi
-    run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
   fi
 }
 

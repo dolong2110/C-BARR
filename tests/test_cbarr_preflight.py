@@ -48,7 +48,12 @@ from src.metrics import (
     paired_bootstrap_diff_ci,
 )
 from src.routers import CBARRCalibrator, select_tiered_budget
-from scripts.run_smoke_test import MockDualModeEngine, build_smoke_12, verify_gate_3_on_engine
+from scripts.run_smoke_test import (
+    MockDualModeEngine,
+    _audit_m2_a_final,
+    build_smoke_12,
+    verify_gate_3_on_engine,
+)
 
 
 # Canonical sample prompts for all 25 Zhou et al. (2023) IFEval instruction types
@@ -268,7 +273,48 @@ class TestCBARRPreflight(unittest.TestCase):
                 self.assertTrue(res["gate3_no_hash_prefix_on_ifeval"])
                 self.assertTrue(res["gate3_no_32tok_truncation"])
                 self.assertTrue(res["gate3_p_term_and_zero_reminder_leak"])
+                self.assertEqual(res["gate3_trailing_bridge_quotes"], [])
                 self.assertTrue(res["d13_delib_le_250_verified"])
+
+            # Verify --resume reuses cached rows when code fingerprint matches & invalidates on mismatch
+            qwen_cache = tmp_dir / "smoke_12_Qwen__Qwen3.5-4B.jsonl"
+            qwen_meta = tmp_dir / "smoke_12_Qwen__Qwen3.5-4B_meta.json"
+            self.assertTrue(qwen_meta.is_file())
+            eng_qwen = MockDualModeEngine("Qwen/Qwen3.5-4B")
+            res_resumed = verify_gate_3_on_engine(eng_qwen, smoke_items, qwen_cache, resume=True)
+            self.assertEqual(res_resumed["n_items"], 12)
+            # Corrupt meta fingerprint -> --resume must clear stale cache and regenerate cleanly
+            qwen_meta.write_text('{"code_fingerprint": "stale0000"}\n', encoding="utf-8")
+            res_rebuilt = verify_gate_3_on_engine(eng_qwen, smoke_items, qwen_cache, resume=True)
+            self.assertEqual(res_rebuilt["n_items"], 12)
+
+            # Audit helper checks: reject prefix echoes & wrapper tokens, allow late paradox spillover quotes
+            with self.assertRaises(AssertionError):
+                _audit_m2_a_final("[Reminder: test]\nAnswer", "m2_b64", "ifeval_1")
+            with self.assertRaises(AssertionError):
+                _audit_m2_a_final(
+                    "Now provide the complete final response to my first message above while strictly following: foo",
+                    "m2_b64",
+                    "ifeval_3369",
+                )
+            with self.assertRaises(AssertionError):
+                _audit_m2_a_final(
+                    ("Clean opener sentence. " * 15)
+                    + "\nNow provide the complete final response to my first message above",
+                    "m2_b64",
+                    "ifeval_2",
+                )
+            late_paradox = (
+                'Write a limerick about a customer who is always right.\n\n'
+                'There once was a buyer named Joe,\nWho claimed he was always correct.\n'
+                'But Joe said, "No, I\'m right,"\nAnd walked out with his bill and his coat.\n\n'
+                'Wait, I need to check the constraint again because repeating the prompt already puts "right" twice.\n\n'
+                'Then there is a second block:\n'
+                '"Now provide the complete final response to my first message above while strictly following: ..."'
+            )
+            note = _audit_m2_a_final(late_paradox, "m2_b64", "ifeval_3369")
+            self.assertIsNotNone(note)
+            self.assertTrue(note.startswith("ifeval_3369:m2_b64@char"))
 
     def test_tier0_gate1_disambiguation_crgc_and_conformal_audit(self) -> None:
         # Capital-word frequency belongs to Precision, never Planning

@@ -897,7 +897,7 @@ if RUN_LIVE_SMOKE:
         run_logged_loop(
             "Step 0a: Live GPU 12-Item Smoke",
             run_and_tee,
-            [sys.executable, "scripts/run_smoke_test.py", "--live-gpu", "--models", *smoke_models],
+            [sys.executable, "scripts/run_smoke_test.py", "--live-gpu", "--resume", "--models", *smoke_models],
         )'''
     return _code_cell("cbarr-gate0-smoke", code)
 
