@@ -498,6 +498,64 @@ class TestPhases4To7(unittest.TestCase):
             max_expected_calls = 7 if early_close else 13
             self.assertLessEqual(eng_opt.decode_calls, max_expected_calls)
 
+    def test_setup_fast_kernels_policy_and_dry_run(self) -> None:
+        """Fast DeltaNet kernel installer gates by compute capability and writes safe pip pins."""
+        from scripts.setup_fast_kernels import (
+            _write_pip_constraints,
+            setup_and_verify_kernels,
+            should_attempt_kernels,
+        )
+
+        self.assertEqual(should_attempt_kernels(None, "auto")[0], False)
+        self.assertEqual(should_attempt_kernels((6, 0), "auto")[0], False)  # Pascal P100
+        self.assertEqual(should_attempt_kernels((7, 5), "auto")[0], True)   # Turing T4
+        self.assertEqual(should_attempt_kernels((8, 0), "auto")[0], True)   # Ampere A100
+        self.assertEqual(should_attempt_kernels((7, 5), "off")[0], False)
+        self.assertEqual(should_attempt_kernels((6, 0), "always")[0], True)
+
+        dry = setup_and_verify_kernels(mode="auto", dry_run=True)
+        self.assertIn("fla_active", dry)
+        self.assertIn("causal_conv1d_active", dry)
+
+        with tempfile.TemporaryDirectory() as td:
+            cpath = pathlib.Path(td) / "pins.txt"
+            _write_pip_constraints(cpath)
+            txt = cpath.read_text(encoding="utf-8")
+            self.assertIn("torch==", txt)
+            self.assertIn("transformers==", txt)
+
+    def test_logfmt_highlighting_toggle(self) -> None:
+        """Log formatter emits ANSI highlights when CBARR_COLOR=1 and clean text under NO_COLOR/0."""
+        import os
+        from src.logfmt import banner, colors_enabled, hl
+
+        prev_c = os.environ.get("CBARR_COLOR")
+        prev_n = os.environ.get("NO_COLOR")
+        try:
+            os.environ.pop("NO_COLOR", None)
+            os.environ["CBARR_COLOR"] = "1"
+            self.assertTrue(colors_enabled())
+            self.assertIn("\033[", hl("PASS", "green"))
+            self.assertIn("TITLE", banner("TITLE", "cyan"))
+
+            os.environ["CBARR_COLOR"] = "0"
+            self.assertFalse(colors_enabled())
+            self.assertEqual(hl("PASS", "green"), "PASS")
+
+            os.environ["CBARR_COLOR"] = "1"
+            os.environ["NO_COLOR"] = "1"
+            self.assertFalse(colors_enabled())
+            self.assertEqual(hl("PASS", "green"), "PASS")
+        finally:
+            if prev_c is None:
+                os.environ.pop("CBARR_COLOR", None)
+            else:
+                os.environ["CBARR_COLOR"] = prev_c
+            if prev_n is None:
+                os.environ.pop("NO_COLOR", None)
+            else:
+                os.environ["NO_COLOR"] = prev_n
+
 
 if __name__ == "__main__":
     unittest.main()

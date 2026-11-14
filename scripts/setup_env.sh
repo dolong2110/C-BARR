@@ -6,11 +6,8 @@ pip install --upgrade pip
 pip install "torch>=2.6" "transformers>=4.53.0" accelerate datasets matplotlib scipy scikit-learn \
     nltk immutabledict langdetect absl-py
 
-# Optional CUDA kernels for Linux/NVCC GPU hosts (Qwen3.5 Gated DeltaNet layers)
-if command -v nvcc >/dev/null 2>&1; then
-    pip install "flash-linear-attention==0.5.2" || true
-    pip install "causal-conv1d==1.7.0" --no-build-isolation || true
-fi
+# Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test
+python3 scripts/setup_fast_kernels.py --mode auto --allow-source-build || true
 
 # Vendor upstream Google Research instruction_following_eval if not already present
 if [ ! -d "./instruction_following_eval" ]; then

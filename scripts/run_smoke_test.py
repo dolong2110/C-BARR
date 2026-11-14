@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from src.engine import CBARRDualModeEngine, P_TERM, _build_reanchor_block, run_gate1_lexical
 from src.graders import grade_item, has_4gram_repetition_loop, has_cot_spillover
+from src.logfmt import banner, hl
 from src.metrics import SLICE_ORDER
 from scripts.run_matrix import cache_split_primitives, resolve_device_and_dtype
 
@@ -317,8 +318,8 @@ def main() -> None:
 
     summary_path = pathlib.Path("outputs/smoke_test_gate3_report.json")
     summary_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
-    print("Phase 3 (W3) 12-Example Pipeline Smoke Test PASSED:")
-    print(json.dumps(results, indent=2))
+    print(banner(f"Phase 3 (W3) 12-Example Pipeline Smoke Test: {hl('PASSED', 'green')}", "green"))
+    print(json.dumps(results, indent=2), flush=True)
 
 
 if __name__ == "__main__":

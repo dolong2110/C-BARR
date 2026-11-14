@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from src.engine import CBARRDualModeEngine, run_gate1_lexical
 from src.graders import grade_item, has_4gram_repetition_loop, has_cot_spillover
+from src.logfmt import banner, hl
 from src.metrics import (
     SLICE_ORDER,
     compute_4regime_and_oracle,
@@ -399,7 +400,10 @@ def cache_split_primitives(
                     t_last_log = now
             except Exception as exc:
                 print(
-                    f"[ERROR] Failed in {split_tag} at item {idx}/{total_items} uid={uid}: {exc}",
+                    hl(
+                        f"[ERROR] Failed in {split_tag} at item {idx}/{total_items} uid={uid}: {exc}",
+                        "red",
+                    ),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -415,14 +419,18 @@ def cache_split_primitives(
 
     total_elapsed = time.perf_counter() - t_start
     print(
-        f"[{split_tag}] completed {total_items} items (new={n_new}, cached={n_cached}) "
-        f"in {total_elapsed:.1f}s | {_format_running_metrics(rows_out)}",
+        hl(
+            f"[{split_tag}] completed {total_items} items (new={n_new}, cached={n_cached}) "
+            f"in {total_elapsed:.1f}s",
+            "green",
+        )
+        + f" | {_format_running_metrics(rows_out)}",
         flush=True,
     )
     slice_line = _format_slice_breakdown(rows_out)
     if slice_line:
         fmt_tag = "B0/B1b/M2_250" if (rows_out and "m2_b256" in rows_out[-1]) else "B0/B1b"
-        print(f"[{split_tag} slices ({fmt_tag})] {slice_line}", flush=True)
+        print(hl(f"[{split_tag} slices ({fmt_tag})]", "cyan") + f" {slice_line}", flush=True)
     return rows_out
 
 
@@ -516,11 +524,18 @@ def run_section6_diagnostics(
                 flush=True,
             )
 
-    summary["causal_attribution"] = compute_causal_decomposition(
+    ca = compute_causal_decomposition(
         z_strip=per_mode_z["A1_strip"],
         z_post_anchor=per_mode_z["B2a_post_anchor"],
         z_pre_anchor=per_mode_z["B1_pre_anchor"],
         z_post_raw=per_mode_z["B2b_post_raw"],
+    )
+    summary["causal_attribution"] = ca
+    print(
+        hl("[diag_controls Causal Attribution]", "cyan")
+        + f" rho_recency={100*float(ca.get('rho_recency', 0.0)):.1f}% | "
+        + f"rho_interference={100*float(ca.get('rho_interference', 0.0)):.1f}%",
+        flush=True,
     )
     return summary
 
@@ -637,7 +652,7 @@ def _build_calibration_summary(
 
 
 def _print_calibration_report(calib_summary: dict[str, Any]) -> None:
-    """Prints human-readable Gate-2 training Precision/Recall/F1/ROC-AUC and dev router scores."""
+    """Prints highlighted Gate-2 training Precision/Recall/F1/ROC-AUC and dev router scores."""
     params_d = calib_summary["calibrated_params"]
     cm = calib_summary.get("classifier_metrics", {})
     tr05 = cm.get("seed_train_at_05", {})
@@ -645,45 +660,47 @@ def _print_calibration_report(calib_summary: dict[str, Any]) -> None:
     dv_all = cm.get("dev_all_at_tau", {})
     dv_g2 = cm.get("dev_gate2_at_tau", {})
     tau_val = params_d["tau_prob"]
+    r1_ok = bool(calib_summary["contingency_r1_ok"])
+    r1_tag = hl("OK", "green") if r1_ok else hl("WARN", "yellow")
+    print(banner(f"CALIBRATION & GATE-2 TRAINING REPORT: {calib_summary['model']}", "cyan"), flush=True)
     print(
-        f"[calib] {calib_summary['model']} | tau_prob={tau_val:.3f} "
+        f"[calib] tau_prob={hl(f'{tau_val:.3f}', 'bold')} "
         f"tau_h_high={params_d['tau_h_high']:.3f} dev_esc={params_d['m2_escalation_rate_dev']:.3f} "
-        f"g1_skip={calib_summary['dev_gate1_skip_rate']:.3f} "
-        f"(R1={'OK' if calib_summary['contingency_r1_ok'] else 'WARN'})",
+        f"g1_skip={calib_summary['dev_gate1_skip_rate']:.3f} (R1={r1_tag})",
         flush=True,
     )
     if tr05:
         print(
-            f"  Gate-2 Train (seed_{calib_summary['n_seed']}, thr=0.50): "
-            f"Acc={100*tr05['accuracy']:.1f}% Prec={100*tr05['precision']:.1f}% "
-            f"Rec={100*tr05['recall']:.1f}% F1={100*tr05['f1']:.1f}% "
-            f"ROC-AUC={tr05['roc_auc']:.3f} (pos={tr05['pos_count']}/{tr05['n']})",
+            hl(f"  Gate-2 Train (seed_{calib_summary['n_seed']}, thr=0.50):", "yellow")
+            + f" Acc={100*tr05['accuracy']:.1f}% Prec={100*tr05['precision']:.1f}% "
+            + f"Rec={100*tr05['recall']:.1f}% F1={100*tr05['f1']:.1f}% "
+            + f"ROC-AUC={tr05['roc_auc']:.3f} (pos={tr05['pos_count']}/{tr05['n']})",
             flush=True,
         )
     if tr_t:
         print(
-            f"  Gate-2 Train (seed_{calib_summary['n_seed']}, tau={tau_val:.3f}): "
-            f"Acc={100*tr_t['accuracy']:.1f}% Prec={100*tr_t['precision']:.1f}% "
-            f"Rec={100*tr_t['recall']:.1f}% F1={100*tr_t['f1']:.1f}% "
-            f"pred_pos={100*tr_t['pred_pos_rate']:.1f}%",
+            hl(f"  Gate-2 Train (seed_{calib_summary['n_seed']}, tau={tau_val:.3f}):", "yellow")
+            + f" Acc={100*tr_t['accuracy']:.1f}% Prec={100*tr_t['precision']:.1f}% "
+            + f"Rec={100*tr_t['recall']:.1f}% F1={100*tr_t['f1']:.1f}% "
+            + f"pred_pos={100*tr_t['pred_pos_rate']:.1f}%",
             flush=True,
         )
     if dv_all:
         best_u = cm.get("best_dev_utility_u005")
         u_str = f" | Best U_0.05={100*best_u:.1f}%" if best_u is not None else ""
         print(
-            f"  Gate-2 Val   (dev_{calib_summary['n_dev']} all, tau={tau_val:.3f}): "
-            f"Acc={100*dv_all['accuracy']:.1f}% Prec={100*dv_all['precision']:.1f}% "
-            f"Rec={100*dv_all['recall']:.1f}% F1={100*dv_all['f1']:.1f}% "
-            f"ROC-AUC={dv_all['roc_auc']:.3f}{u_str}",
+            hl(f"  Gate-2 Val   (dev_{calib_summary['n_dev']} all, tau={tau_val:.3f}):", "cyan")
+            + f" Acc={100*dv_all['accuracy']:.1f}% Prec={100*dv_all['precision']:.1f}% "
+            + f"Rec={100*dv_all['recall']:.1f}% F1={100*dv_all['f1']:.1f}% "
+            + f"ROC-AUC={dv_all['roc_auc']:.3f}{u_str}",
             flush=True,
         )
     if dv_g2 and dv_g2.get("n", 0) > 0:
         print(
-            f"  Gate-2 Val   (Gate-2 subset n={dv_g2['n']}, tau={tau_val:.3f}): "
-            f"Acc={100*dv_g2['accuracy']:.1f}% Prec={100*dv_g2['precision']:.1f}% "
-            f"Rec={100*dv_g2['recall']:.1f}% F1={100*dv_g2['f1']:.1f}% "
-            f"ROC-AUC={dv_g2['roc_auc']:.3f}",
+            hl(f"  Gate-2 Val   (Gate-2 subset n={dv_g2['n']}, tau={tau_val:.3f}):", "cyan")
+            + f" Acc={100*dv_g2['accuracy']:.1f}% Prec={100*dv_g2['precision']:.1f}% "
+            + f"Rec={100*dv_g2['recall']:.1f}% F1={100*dv_g2['f1']:.1f}% "
+            + f"ROC-AUC={dv_g2['roc_auc']:.3f}",
             flush=True,
         )
     ds = calib_summary.get("dev_summary", {})
@@ -691,13 +708,13 @@ def _print_calibration_report(calib_summary: dict[str, Any]) -> None:
         if name in ds:
             t = ds[name]
             ip = 100.0 * float(t["slice_acc"].get("ifeval_precision", 0.0))
-            print(
+            line = (
                 f"  Dev {name:3s}: Macro={100*t['macro_acc']:.1f}% | "
                 f"IFEval-Prec={ip:.1f}% | OAA_250={100*t['oaa_250']:.1f}% | "
                 f"U_0.05={100*t['u_005']:.1f}% | MeanTok={t['mean_t_tot']:.0f} "
-                f"(calls={t['mean_calls']:.2f})",
-                flush=True,
+                f"(calls={t['mean_calls']:.2f})"
             )
+            print(hl(line, "green") if name == "M2" else line, flush=True)
 
 
 def main() -> None:
@@ -756,8 +773,11 @@ def main() -> None:
         else resolve_device_and_dtype(device_arg=args.device, dtype_arg=args.dtype)
     )
     print(
-        f"[run_matrix] model={args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
-        f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}",
+        banner(
+            f"RUN MATRIX: {args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
+            f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}",
+            "cyan",
+        ),
         flush=True,
     )
 
@@ -789,11 +809,16 @@ def main() -> None:
 
     if not calib_summary["contingency_r1_ok"]:
         print(
-            f"[WARN] Contingency R1 check: dev escalation rate={params.m2_escalation_rate_dev:.3f} "
-            f"(outside [0.20, 0.85]), tau_prob={params.tau_prob:.3f}."
+            hl(
+                f"[WARN] Contingency R1 check: dev escalation rate={params.m2_escalation_rate_dev:.3f} "
+                f"(outside [0.20, 0.85]), tau_prob={params.tau_prob:.3f}.",
+                "yellow",
+            )
         )
     if args.calibrate_only:
-        print(f"Saved calibration summary for {args.model} to {calib_path} ({t_calib_sec:.1f}s)")
+        print(
+            hl(f"Saved calibration summary for {args.model} to {calib_path} ({t_calib_sec:.1f}s)", "green")
+        )
         print(json.dumps(calib_summary["calibrated_params"], indent=2))
         return
 
@@ -846,17 +871,17 @@ def main() -> None:
     for k, p_adj in zip(comp_keys, adj_p):
         tables[k]["p_holm_vs_b1b"] = p_adj
 
-    print(f"[eval_matrix] {args.model} ({len(eval_rows)} items, {t_eval_sec:.1f}s):", flush=True)
+    print(banner(f"EVAL-450 BENCHMARK RESULTS: {args.model} ({len(eval_rows)} items, {t_eval_sec:.1f}s)", "cyan"), flush=True)
     for k in ("B0", "B1a", "B1b", "B2a", "M1c", "M2_Pre", "M2"):
         t = tables[k]
         ip = 100.0 * float(t["slice_acc"].get("ifeval_precision", 0.0))
         p_s = f" p={t['p_holm_vs_b1b']:.3g}" if k != "B1b" else ""
-        print(
+        row_txt = (
             f"  {k:7s}: Macro={100*t['macro_acc']:.1f}% | Prec={ip:.1f}% | "
             f"OAA_250={100*t['oaa_250']:.1f}% | U_0.05={100*t['u_005']:.1f}% | "
-            f"Tok={t['mean_t_tot']:.0f} calls={t['mean_calls']:.2f}{p_s}",
-            flush=True,
+            f"Tok={t['mean_t_tot']:.0f} calls={t['mean_calls']:.2f}{p_s}"
         )
+        print(hl(row_txt, "green") if k == "M2" else (hl(row_txt, "bold") if k in ("B0", "B1b") else row_txt), flush=True)
 
     # Evaluate M2_B512 separately under auxiliary_systems so Contingency R3 never alters
     # the 12-hypothesis Holm-Bonferroni FWER correction of the pre-registered table.
@@ -937,8 +962,11 @@ def main() -> None:
     (out_dir / f"tables_rows_{diag_tag}.tex").write_text(tex_payload, encoding="utf-8")
     (out_dir / "tables_rows.tex").write_text(tex_payload, encoding="utf-8")
     print(
-        f"Completed matrix run for {args.model} ({diag_tag}) in {t_total_sec:.1f}s. "
-        f"Saved to {out_dir / f'matrix_summary_{diag_tag}.json'}",
+        banner(
+            f"COMPLETED MATRIX RUN: {args.model} ({diag_tag}) in {t_total_sec:.1f}s -> "
+            f"{out_dir / f'matrix_summary_{diag_tag}.json'}",
+            "green",
+        ),
         flush=True,
     )
 

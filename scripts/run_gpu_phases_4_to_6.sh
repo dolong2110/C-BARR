@@ -11,6 +11,7 @@ set -euo pipefail
 #   bash scripts/run_gpu_phases_4_to_6.sh --mock          # Full offline CPU orchestration dry-run
 
 export PYTHONUNBUFFERED=1
+export CBARR_COLOR="${CBARR_COLOR:-0}"
 
 WITH_9B=0
 WITH_W7=0

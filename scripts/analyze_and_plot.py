@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.logfmt import banner, hl
 from src.metrics import (
     SLICE_ORDER,
     evaluate_system_table,
@@ -771,6 +772,7 @@ def main() -> None:
         bundles, args.primary_model, args.dense_model, fig_dir / "fig3_ehurt_causal_recovery.pdf"
     )
 
+    print(banner(f"PHASE 7 ANALYSIS COMPLETE ({len(bundles)} models)", "magenta"))
     print(f"Analyzed {len(bundles)} model(s): {', '.join(bundles.keys())}")
     print(f"Saved stats to {out_dir / 'stats_summary.json'}")
     print(f"Saved LaTeX tables to {out_dir / 'paper_tables.tex'}")
@@ -783,12 +785,15 @@ def main() -> None:
         b1b_s = rep_sys["B1b"]
         boot = m_stats.get("paired_bootstrap_95ci", {}).get("M2_minus_B1b", {}).get("oaa_250", {})
         gate4_ok = g4["m2_macro_ge_b1b"] and g4["token_reduction_pct"] > 0
+        g4_tag = hl("PASS", "green") if gate4_ok else hl("CHECK", "yellow")
+        m2_macro_str = hl(f"{100 * m2_s['macro_acc']:.1f}%", "green")
         print(
-            f"[SUMMARY {m_name}] M2 Macro={100*m2_s['macro_acc']:.1f}% vs B1b={100*b1b_s['macro_acc']:.1f}% | "
-            f"OAA_250={100*m2_s['oaa_250']:.1f}% (Delta={100*boot.get('diff_b_minus_a', 0):.1f} pp) | "
-            f"TokRed={g4['token_reduction_pct']:.1f}% | p_holm={g4['m2_p_holm_vs_b1b']:.4g} | "
-            f"Gate4={'PASS' if gate4_ok else 'CHECK'} | "
-            f"R2(rec/int)={100*cont['R2_rho_recency']:.1f}%/{100*cont['R2_rho_interference']:.1f}%"
+            hl(f"[SUMMARY {m_name}]", "cyan")
+            + f" M2 Macro={m2_macro_str} vs B1b={100*b1b_s['macro_acc']:.1f}% | "
+            + f"OAA_250={100*m2_s['oaa_250']:.1f}% (Delta={100*boot.get('diff_b_minus_a', 0):.1f} pp) | "
+            + f"TokRed={g4['token_reduction_pct']:.1f}% | p_holm={g4['m2_p_holm_vs_b1b']:.4g} | "
+            + f"Gate4={g4_tag} | "
+            + f"R2(rec/int)={100*cont['R2_rho_recency']:.1f}%/{100*cont['R2_rho_interference']:.1f}%"
         )
 
 
