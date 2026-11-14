@@ -131,3 +131,56 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `Qwen/Qwen3.5-4B` | 12 | True | True | False |
 | `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
 <!-- CBARR_RUN_END:20261114T223748Z -->
+
+<!-- CBARR_RUN_START:20261114T231920Z -->
+### Run `20261114T231920Z` — **RUNNING (after Gate 0: Preflight Tests)** (Updated 2026-11-14 23:32:12 UTC)
+- **Code Version**: `v0.5.2` | **Git Commit**: `51e8560` | **Last Loop**: `Gate 0: Preflight Tests` | **Wall Time**: `12m 41.3s` (761.3s)
+- **Hardware**: 2x Tesla T4 (14.6 GB, SM 7.5, CUDA 13.0, BF16=False) | PyTorch `2.11.0+cu130` | Transformers `5.20.2` | Kernels: `fla=True, causal_conv1d=False`
+- **Command**: `notebook:C_BARR_4_Combine_Analyze.ipynb`
+- **Raw Log**: `outputs/logs/cbarr_20261114T231920Z.log`
+
+#### 1. Training & Experiment Parameters
+```json
+{
+  "active_shards_per_model": 2,
+  "auto_push_github": true,
+  "checkpoint_every_items": 150,
+  "code_version": "0.5.2",
+  "dtype": "auto",
+  "git_rev": "51e8560",
+  "gpu_count": 2,
+  "include_b512": false,
+  "install_fast_kernels": "auto",
+  "lam_utility": 0.05,
+  "logreg_C": 1.0,
+  "models_primary": [],
+  "models_scale": [],
+  "norm_tokens": 250.0,
+  "notebook": "C_BARR_4_Combine_Analyze.ipynb",
+  "notebook_code_version": "0.5.0",
+  "pipeline_mode": "combine_analyze",
+  "platform": "colab",
+  "run_id": "20261114T231920Z",
+  "run_phase7_analysis": true,
+  "run_w7_extensions": false,
+  "seed": 42,
+  "sync_include_ledger": true,
+  "tau_grid": [
+    0.15,
+    0.85,
+    29
+  ]
+}
+```
+
+#### 2. Stage Timings
+| Stage | Status | Wall Time |
+| :--- | :--- | :--- |
+| Gate 0: Preflight Tests | PASS | 11m 55.2s (715.2s) |
+
+#### 3. Gate-3 Live 12-Item Smoke Check
+| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
+| :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | 12 | True | True | False |
+| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
+<!-- CBARR_RUN_END:20261114T231920Z -->
