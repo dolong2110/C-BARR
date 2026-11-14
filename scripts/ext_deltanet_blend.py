@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.run_matrix import resolve_device_and_dtype
+from src.engine import ensure_qwen35_device_safe_kernels
 from src.graders import grade_item
 from src.metrics import wilson_ci
 
@@ -119,6 +120,8 @@ def generate_with_blended_deltanet(
     prompt_with_think = f"{think_prefix}{t_think}\n</think>{post_close_ws}"
 
     device = next(model.parameters()).device
+    if device.type != "cuda":
+        ensure_qwen35_device_safe_kernels()
     ids_p = tok.encode(prompt_no_think, add_special_tokens=False)
     ids_f = tok.encode(prompt_with_think, add_special_tokens=False)
     if len(ids_f) < 2 or not ids_p:

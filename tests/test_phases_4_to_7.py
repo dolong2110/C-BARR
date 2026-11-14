@@ -1386,6 +1386,132 @@ class TestPhases4To7(unittest.TestCase):
         self.assertEqual(hw["vram_gb"], 24.0)
         self.assertTrue(hw["bf16_native"])
 
+    def test_qwen35_device_safe_kernel_routing_with_mocked_triton(self) -> None:
+        """Simulated Triton/FLA CPU crash is bypassed on CPU while CUDA tensors keep fast path."""
+        import functools
+        import transformers.models.qwen3_5.modeling_qwen3_5 as qwen_mod
+        from transformers import BatchEncoding
+        from transformers.models.qwen3_5 import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+        from scripts.ext_deltanet_blend import generate_with_blended_deltanet
+        from src.engine import CBARRDualModeEngine, ensure_qwen35_device_safe_kernels
+
+        orig_chunk = qwen_mod.torch_chunk_gated_delta_rule
+        orig_rec = qwen_mod.torch_recurrent_gated_delta_rule
+        orig_conv_fn = qwen_mod.causal_conv1d_fn
+        orig_conv_upd = qwen_mod.causal_conv1d_update
+
+        def _unwrap(fn):
+            raw = fn
+            while hasattr(raw, "__wrapped__"):
+                raw = raw.__wrapped__
+            return raw
+
+        raw_chunk = _unwrap(orig_chunk)
+        raw_rec = _unwrap(orig_rec)
+        raw_conv_fn = _unwrap(orig_conv_fn)
+        raw_conv_upd = _unwrap(orig_conv_upd)
+
+        cuda_calls: list[str] = []
+
+        def _make_triton_stub(tag: str, raw_fn):
+            @functools.wraps(raw_fn)
+            def _triton_stub(*args, **kwargs):
+                cuda_calls.append(tag)
+                raise ValueError("Pointer argument (at 0) cannot be accessed from Triton (cpu tensor?)")
+
+            return _triton_stub
+
+        class _SimpleTok:
+            eos_token_id = 2
+            pad_token_id = 0
+
+            def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False):
+                return " ".join(m["content"] for m in msgs) + (" <think>\n" if enable_thinking else "")
+
+            def encode(self, text, add_special_tokens=False):
+                return [10 + (sum(ord(c) for c in w) % 40) for w in text.split()] or [10, 11]
+
+            def decode(self, token_ids, skip_special_tokens=False):
+                return " ".join(f"w{t}" for t in token_ids if not skip_special_tokens or t != 2)
+
+            def __call__(self, text, return_tensors="pt"):
+                ids = torch.tensor([self.encode(text)], dtype=torch.long)
+                return BatchEncoding({"input_ids": ids, "attention_mask": torch.ones_like(ids)})
+
+        try:
+            qwen_mod.torch_chunk_gated_delta_rule = _make_triton_stub("chunk", raw_chunk)
+            qwen_mod.torch_recurrent_gated_delta_rule = _make_triton_stub("rec", raw_rec)
+            qwen_mod.causal_conv1d_fn = _make_triton_stub("conv_fn", raw_conv_fn)
+            qwen_mod.causal_conv1d_update = _make_triton_stub("conv_upd", raw_conv_upd)
+
+            self.assertTrue(ensure_qwen35_device_safe_kernels())
+
+            cfg = Qwen3_5TextConfig(
+                vocab_size=64,
+                hidden_size=32,
+                intermediate_size=64,
+                num_hidden_layers=4,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                head_dim=8,
+                linear_num_value_heads=4,
+                linear_num_key_heads=2,
+                linear_key_head_dim=8,
+                linear_value_head_dim=8,
+            )
+            tiny_qwen = Qwen3_5ForCausalLM(cfg).eval()
+            tok = _SimpleTok()
+
+            # Both ext_deltanet_blend and CBARRDualModeEngine must execute on CPU without hitting Triton stubs
+            out_blend = generate_with_blended_deltanet(
+                tiny_qwen,
+                tok,
+                eos_ids={2},
+                prompt_str="Answer concisely.",
+                t_think="Checking steps.",
+                alpha=0.5,
+                max_ans_tokens=3,
+                blend_conv=True,
+                evict_think_kv=True,
+            )
+            self.assertGreaterEqual(out_blend["gen_tokens"], 1)
+
+            eng = CBARRDualModeEngine.__new__(CBARRDualModeEngine)
+            eng.model_id = "Qwen/Qwen3.5-Tiny"
+            eng.is_smollm3 = False
+            eng.freeze_smollm3_date = "01 November 2026"
+            eng.device = "cpu"
+            eng.temperature = 0.0
+            eng.top_p = 1.0
+            eng.presence_penalty = 0.0
+            eng.sampling_seed = 42
+            eng.tok = tok
+            eng.model = tiny_qwen
+            eng.eos_ids = {2}
+            probe = eng.run_gate2_fast_probe("Explain gravity briefly.", probe_tokens=3)
+            self.assertGreaterEqual(probe["T_probe"], 1)
+            self.assertEqual(cuda_calls, [])
+
+            # CUDA tensors still preserve the fast kernel path
+            class _FakeCudaTensor(torch.Tensor):
+                @property
+                def is_cuda(self) -> bool:  # type: ignore[override]
+                    return True
+
+            fake_cuda_q = torch.randn(1, 2, 2, 4).as_subclass(_FakeCudaTensor)
+            with self.assertRaisesRegex(ValueError, "Triton"):
+                qwen_mod.torch_chunk_gated_delta_rule(
+                    fake_cuda_q, fake_cuda_q, fake_cuda_q, fake_cuda_q[..., 0], fake_cuda_q[..., 0]
+                )
+            self.assertEqual(cuda_calls, ["chunk"])
+        finally:
+            qwen_mod.torch_chunk_gated_delta_rule = orig_chunk
+            qwen_mod.torch_recurrent_gated_delta_rule = orig_rec
+            qwen_mod.causal_conv1d_fn = orig_conv_fn
+            qwen_mod.causal_conv1d_update = orig_conv_upd
+            ensure_qwen35_device_safe_kernels()
+
 
 if __name__ == "__main__":
     unittest.main()

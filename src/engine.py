@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import functools
 import hashlib
+import importlib
+import inspect
 import os
 import re
 import time
@@ -255,6 +258,84 @@ class PresencePenaltyLogitsProcessor(LogitsProcessor):
         return scores
 
 
+_QWEN35_KERNEL_NAMES = (
+    "causal_conv1d_update",
+    "causal_conv1d_fn",
+    "torch_chunk_gated_delta_rule",
+    "torch_recurrent_gated_delta_rule",
+)
+
+
+def _first_tensor(args: tuple[Any, ...], kwargs: dict[str, Any]) -> torch.Tensor | None:
+    for val in args:
+        if isinstance(val, torch.Tensor):
+            return val
+    for val in kwargs.values():
+        if isinstance(val, torch.Tensor):
+            return val
+    return None
+
+
+def _unwrap_kernel_fallback(fn: Any) -> Any:
+    raw = fn
+    seen: set[int] = set()
+    while hasattr(raw, "__wrapped__") and id(raw) not in seen:
+        seen.add(id(raw))
+        raw = raw.__wrapped__
+    return raw
+
+
+def ensure_qwen35_device_safe_kernels() -> bool:
+    """Routes Qwen3.5 DeltaNet/conv1d ops to PyTorch fallback whenever inputs are not on CUDA."""
+    try:
+        qwen_mod = importlib.import_module("transformers.models.qwen3_5.modeling_qwen3_5")
+    except Exception:
+        return False
+
+    patched_any = False
+    for name in _QWEN35_KERNEL_NAMES:
+        orig_fn = getattr(qwen_mod, name, None)
+        if orig_fn is None or getattr(orig_fn, "_cbarr_device_safe", False):
+            continue
+        raw_fn = _unwrap_kernel_fallback(orig_fn)
+        if raw_fn is orig_fn:
+            continue
+        sig = inspect.signature(raw_fn)
+        accepts_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        allowed_kw = frozenset(
+            k
+            for k, p in sig.parameters.items()
+            if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+
+        def _make_guarded(
+            fast_fn: Any,
+            fallback_fn: Any,
+            var_kw: bool,
+            valid_kw: frozenset[str],
+        ) -> Any:
+            @functools.wraps(fast_fn)
+            def _device_safe_kernel(*args: Any, **kwargs: Any) -> Any:
+                first_t = _first_tensor(args, kwargs)
+                if first_t is not None and not first_t.is_cuda:
+                    safe_kw = (
+                        kwargs if var_kw else {k: v for k, v in kwargs.items() if k in valid_kw}
+                    )
+                    return fallback_fn(*args, **safe_kw)
+                return fast_fn(*args, **kwargs)
+
+            _device_safe_kernel._cbarr_device_safe = True  # type: ignore[attr-defined]
+            _device_safe_kernel._cbarr_raw_fn = fallback_fn  # type: ignore[attr-defined]
+            return _device_safe_kernel
+
+        setattr(qwen_mod, name, _make_guarded(orig_fn, raw_fn, accepts_var_kw, allowed_kw))
+        patched_any = True
+
+    return patched_any or True
+
+
 class CBARRDualModeEngine:
     """Normalized text-only inference wrapper for Qwen3.5 (0.8B-9B) and SmolLM3-3B."""
 
@@ -278,6 +359,8 @@ class CBARRDualModeEngine:
         self.is_smollm3 = "smollm3" in model_id.lower()
         self.freeze_smollm3_date = freeze_smollm3_date
         self.device = device
+        if not str(device).lower().startswith("cuda"):
+            ensure_qwen35_device_safe_kernels()
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.presence_penalty = float(presence_penalty)
@@ -426,6 +509,8 @@ class CBARRDualModeEngine:
         return_past: bool = False,
     ) -> dict[str, Any]:
         """Executes HF model.generate from token IDs with optional KV/DeltaNet cache reuse."""
+        if inp_ids.device.type != "cuda":
+            ensure_qwen35_device_safe_kernels()
         t0 = time.perf_counter()
         cur_len = int(inp_ids.shape[1])
         gen_kwargs: dict[str, Any] = {

@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.run_matrix import resolve_device_and_dtype
-from src.engine import run_gate1_lexical
+from src.engine import ensure_qwen35_device_safe_kernels, run_gate1_lexical
 from src.metrics import evaluate_system_table
 from src.routers import _get_slow_rec, select_tiered_budget
 
@@ -157,6 +157,8 @@ def _extract_hf_prefill_features(
 ) -> np.ndarray:
     tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
     device, dtype = resolve_device_and_dtype("auto", "auto")
+    if not str(device).lower().startswith("cuda"):
+        ensure_qwen35_device_safe_kernels()
     model = AutoModelForCausalLM.from_pretrained(
         model_id, dtype=dtype, trust_remote_code=False
     ).to(device)
