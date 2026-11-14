@@ -398,6 +398,7 @@ class TestPhases4To7(unittest.TestCase):
                 "RUN_PRIMARY_MATRIX = True",
                 "RUN_SCALE_SWEEP = True",
                 "RUN_PHASE7_ANALYSIS = True",
+                "SYNC_INCLUDE_LEDGER = True",
             ),
             "C_BARR_Part1_Primary_Colab_Kaggle.ipynb": (
                 "PIPELINE_MODE = 'part1'",
@@ -405,6 +406,7 @@ class TestPhases4To7(unittest.TestCase):
                 "RUN_SCALE_SWEEP = False",
                 "RUN_PHASE7_ANALYSIS = False",
                 "UNPACK_SYNCED_RESULTS_ON_START = False",
+                "SYNC_INCLUDE_LEDGER = True",
             ),
             "C_BARR_Part2_Scale_Analyze_Colab_Kaggle.ipynb": (
                 "PIPELINE_MODE = 'part2'",
@@ -412,6 +414,47 @@ class TestPhases4To7(unittest.TestCase):
                 "RUN_SCALE_SWEEP = True",
                 "RUN_PHASE7_ANALYSIS = True",
                 "UNPACK_SYNCED_RESULTS_ON_START = True",
+                "SYNC_INCLUDE_LEDGER = True",
+            ),
+            "C_BARR_Part1a_Qwen4B_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part1a_4b'",
+                "RUN_CALIBRATE_ONLY = True",
+                "RUN_PRIMARY_MATRIX = True",
+                "RUN_SCALE_SWEEP = False",
+                "RUN_PHASE7_ANALYSIS = False",
+                "UNPACK_SYNCED_RESULTS_ON_START = False",
+                "SYNC_INCLUDE_LEDGER = False",
+                "Qwen/Qwen3.5-4B",
+            ),
+            "C_BARR_Part1b_SmolLM3_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part1b_smollm3'",
+                "RUN_CALIBRATE_ONLY = False",
+                "RUN_PRIMARY_MATRIX = True",
+                "RUN_SCALE_SWEEP = False",
+                "RUN_PHASE7_ANALYSIS = False",
+                "UNPACK_SYNCED_RESULTS_ON_START = False",
+                "SYNC_INCLUDE_LEDGER = False",
+                "HuggingFaceTB/SmolLM3-3B",
+            ),
+            "C_BARR_Part2_Scale_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part2_scale'",
+                "RUN_CALIBRATE_ONLY = False",
+                "RUN_PRIMARY_MATRIX = False",
+                "RUN_SCALE_SWEEP = True",
+                "RUN_PHASE7_ANALYSIS = False",
+                "UNPACK_SYNCED_RESULTS_ON_START = False",
+                "SYNC_INCLUDE_LEDGER = False",
+                "Qwen/Qwen3.5-0.8B",
+                "Qwen/Qwen3.5-2B",
+            ),
+            "C_BARR_Part3_W7_Analyze_Colab_Kaggle.ipynb": (
+                "PIPELINE_MODE = 'part3_analyze'",
+                "RUN_CALIBRATE_ONLY = False",
+                "RUN_PRIMARY_MATRIX = False",
+                "RUN_SCALE_SWEEP = False",
+                "RUN_PHASE7_ANALYSIS = True",
+                "UNPACK_SYNCED_RESULTS_ON_START = True",
+                "SYNC_INCLUDE_LEDGER = True",
             ),
         }
         shared_tokens = (
@@ -429,6 +472,12 @@ class TestPhases4To7(unittest.TestCase):
             "MATRIX_PARAM_ARGS",
             "AUTO_PUSH_RESULTS_TO_GITHUB",
             "AUTO_PARALLEL_MULTI_GPU",
+            "MAX_SHARDS_PER_MODEL = 4",
+            "N_ACTIVE_SHARDS",
+            "--shard-idx",
+            "--num-shards",
+            "--merge-shards",
+            "--no-ledger",
         )
         for nb_name, extra_tokens in notebook_expectations.items():
             nb_path = ROOT / "notebooks" / nb_name
@@ -1689,6 +1738,284 @@ class TestPhases4To7(unittest.TestCase):
             )
             self.assertIn("CBARR_RUN_START:r_p1", remote_md)
             self.assertIn("CBARR_RUN_START:r_p2", remote_md)
+
+    def test_run_matrix_n_gpu_sharding_parity(self) -> None:
+        """N=3 intra-model sharding (--shard-idx/--num-shards/--merge-shards) matches 1-GPU baseline bitwise."""
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            out_single = root_tmp / "out_single"
+            out_sharded = root_tmp / "out_sharded"
+
+            # 1-GPU baseline: strict341 -> incremental diag491
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(out_single),
+                    "--strict-diag",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(out_single),
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+
+            # N=3 sharded run: calibrate-only -> strict341 -> incremental diag491
+            n_shards = 3
+            for s_idx in range(n_shards):
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/run_matrix.py"),
+                        "--model",
+                        "Qwen/Qwen3.5-4B",
+                        "--data-dir",
+                        str(tmp_data),
+                        "--out-dir",
+                        str(out_sharded),
+                        "--calibrate-only",
+                        "--shard-idx",
+                        str(s_idx),
+                        "--num-shards",
+                        str(n_shards),
+                        "--mock",
+                    ],
+                    check=True,
+                    cwd=str(ROOT),
+                )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(out_sharded),
+                    "--calibrate-only",
+                    "--merge-shards",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            slug_dir_sharded = out_sharded / "Qwen__Qwen3.5-4B"
+            self.assertFalse((slug_dir_sharded / "shards").exists())
+
+            for diag_flags in (["--strict-diag"], []):
+                for s_idx in range(n_shards):
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(ROOT / "scripts/run_matrix.py"),
+                            "--model",
+                            "Qwen/Qwen3.5-4B",
+                            "--data-dir",
+                            str(tmp_data),
+                            "--out-dir",
+                            str(out_sharded),
+                            "--shard-idx",
+                            str(s_idx),
+                            "--num-shards",
+                            str(n_shards),
+                            *diag_flags,
+                            "--mock",
+                        ],
+                        check=True,
+                        cwd=str(ROOT),
+                    )
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/run_matrix.py"),
+                        "--model",
+                        "Qwen/Qwen3.5-4B",
+                        "--data-dir",
+                        str(tmp_data),
+                        "--out-dir",
+                        str(out_sharded),
+                        "--merge-shards",
+                        *diag_flags,
+                        "--mock",
+                    ],
+                    check=True,
+                    cwd=str(ROOT),
+                )
+                self.assertFalse((slug_dir_sharded / "shards").exists())
+
+            slug_dir_single = out_single / "Qwen__Qwen3.5-4B"
+            for tag in ("strict341", "diag491"):
+                rep_single = json.loads((slug_dir_single / f"matrix_summary_{tag}.json").read_text(encoding="utf-8"))
+                rep_sharded = json.loads((slug_dir_sharded / f"matrix_summary_{tag}.json").read_text(encoding="utf-8"))
+                self.assertEqual(rep_single["calibrated_params"], rep_sharded["calibrated_params"])
+                self.assertEqual(rep_single["systems"], rep_sharded["systems"])
+                self.assertEqual(rep_single["oracle_and_4regime"], rep_sharded["oracle_and_4regime"])
+                self.assertEqual(rep_single["section6_diagnostics"], rep_sharded["section6_diagnostics"])
+                self.assertEqual(
+                    (slug_dir_single / f"tables_rows_{tag}.tex").read_text(encoding="utf-8"),
+                    (slug_dir_sharded / f"tables_rows_{tag}.tex").read_text(encoding="utf-8"),
+                )
+
+    def test_sync_results_concurrent_workers_no_ledger_combine(self) -> None:
+        """Three concurrent workers (cloned from same commit, include_ledger=False) rebase-merge conflict-free -> Combiner."""
+        import shutil
+        from scripts.log_experiment import _upsert_run_block
+        from scripts.sync_results import sync_and_push_results, unpack_repo_caches
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            bare_repo = root_tmp / "origin.git"
+            seed_repo = root_tmp / "seed_repo"
+            subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "clone", str(bare_repo), str(seed_repo)], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "checkout", "-B", "master"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "config", "user.name", "tester"], check=True)
+            subprocess.run(["git", "-C", str(seed_repo), "config", "user.email", "tester@example.org"], check=True)
+
+            shutil.copy2(ROOT / ".gitignore", seed_repo / ".gitignore")
+            (seed_repo / "scripts").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / "check_anonymity.sh", seed_repo / "scripts" / "check_anonymity.sh")
+            (seed_repo / "paper" / "figures").mkdir(parents=True, exist_ok=True)
+            (seed_repo / "paper" / "main.tex").write_text("\\author{Anonymous Authors}\n", encoding="utf-8")
+            (seed_repo / "EXPERIMENT_LOG.md").write_text("# C-BARR Log\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(seed_repo), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(seed_repo), "commit", "-m", "seed"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(seed_repo), "push", "-u", "origin", "master"], check=True, capture_output=True)
+
+            # Clone all 3 concurrent workers from the SAME base commit before any worker pushes
+            worker_specs = [
+                ("w_4b", "worker-4b", ["Qwen/Qwen3.5-4B"], []),
+                ("w_smol", "worker-smollm3", ["HuggingFaceTB/SmolLM3-3B"], ["--strict-diag"]),
+                ("w_scale", "worker-scale", ["Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"], ["--strict-diag"]),
+            ]
+            worker_repos: list[tuple[pathlib.Path, str, list[str]]] = []
+            for dir_name, lbl, models, extra_flags in worker_specs:
+                w_repo = root_tmp / dir_name
+                w_out = w_repo / "outputs"
+                subprocess.run(["git", "clone", "-b", "master", str(bare_repo), str(w_repo)], check=True, capture_output=True)
+                for m_id in models:
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(ROOT / "scripts/run_matrix.py"),
+                            "--model",
+                            m_id,
+                            "--data-dir",
+                            str(tmp_data),
+                            "--out-dir",
+                            str(w_out),
+                            *extra_flags,
+                            "--mock",
+                        ],
+                        check=True,
+                        cwd=str(ROOT),
+                    )
+                # Dirty local EXPERIMENT_LOG.md must NOT get committed when include_ledger=False
+                _upsert_run_block(
+                    w_repo / "EXPERIMENT_LOG.md",
+                    lbl,
+                    f"<!-- CBARR_RUN_START:{lbl} -->\n### `{lbl}`\n<!-- CBARR_RUN_END:{lbl} -->",
+                    upsert=True,
+                )
+                worker_repos.append((w_repo, lbl, models))
+
+            # Push sequentially from stale clones (forces real rebase across disjoint outputs/<model>/* paths)
+            for w_repo, lbl, models in worker_repos:
+                ok, msg = sync_and_push_results(
+                    repo_root=w_repo,
+                    out_dir=w_repo / "outputs",
+                    label=lbl,
+                    models=models,
+                    include_phase7=False,
+                    include_ledger=False,
+                    remote="origin",
+                    branch="master",
+                    git_push=True,
+                )
+                self.assertTrue(ok, f"{lbl} failed: {msg}")
+
+            # Verify remote EXPERIMENT_LOG.md remained completely untouched during concurrent worker pushes
+            mid_md = subprocess.check_output(
+                ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
+                text=True,
+            )
+            self.assertEqual(mid_md, "# C-BARR Log\n")
+
+            # Combiner (Part 3) clones fresh, unpacks all 4 worker models, runs Phase 7 + ledger push
+            comb_repo = root_tmp / "comb_repo"
+            comb_out = comb_repo / "outputs"
+            subprocess.run(["git", "clone", "-b", "master", str(bare_repo), str(comb_repo)], check=True, capture_output=True)
+            unpacked = unpack_repo_caches(repo_root=comb_repo, out_dir=comb_out)
+            self.assertEqual(unpacked["models"], 4)
+            self.assertGreaterEqual(unpacked["caches_unpacked"], 12)
+
+            comb_figs = comb_repo / "paper" / "figures"
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts/analyze_and_plot.py"), "--out-dir", str(comb_out), "--fig-dir", str(comb_figs)],
+                check=True,
+                cwd=str(ROOT),
+            )
+            _upsert_run_block(
+                comb_repo / "EXPERIMENT_LOG.md",
+                "r_comb",
+                "<!-- CBARR_RUN_START:r_comb -->\n### Run `r_comb` — **PASSED (COMBINED 4 MODELS)**\n<!-- CBARR_RUN_END:r_comb -->",
+                upsert=True,
+            )
+            ok_comb, msg_comb = sync_and_push_results(
+                repo_root=comb_repo,
+                out_dir=comb_out,
+                label="part3-combined",
+                include_phase7=True,
+                include_ledger=True,
+                remote="origin",
+                branch="master",
+                git_push=True,
+            )
+            self.assertTrue(ok_comb, msg_comb)
+
+            stats = json.loads((comb_out / "stats_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                set(stats["models"].keys()),
+                {
+                    "Qwen/Qwen3.5-4B",
+                    "HuggingFaceTB/SmolLM3-3B",
+                    "Qwen/Qwen3.5-0.8B",
+                    "Qwen/Qwen3.5-2B",
+                },
+            )
+            final_md = subprocess.check_output(
+                ["git", "--git-dir", str(bare_repo), "show", "master:EXPERIMENT_LOG.md"],
+                text=True,
+            )
+            self.assertIn("CBARR_RUN_START:r_comb", final_md)
 
 
 if __name__ == "__main__":

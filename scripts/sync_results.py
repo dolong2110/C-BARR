@@ -192,6 +192,7 @@ def pack_outputs_for_repo(
     models: list[str] | None = None,
     include_phase7: bool = True,
     max_file_mb: float = 45.0,
+    include_ledger: bool = True,
 ) -> list[pathlib.Path]:
     """Copies compact model summaries and gzips JSONL caches into repo_root/outputs/."""
     out_dir = out_dir.resolve()
@@ -266,9 +267,10 @@ def pack_outputs_for_repo(
                     )
                 staged.append(pdf.relative_to(repo_root))
 
-    ledger = repo_root / "EXPERIMENT_LOG.md"
-    if ledger.is_file():
-        staged.append(ledger.relative_to(repo_root))
+    if include_ledger:
+        ledger = repo_root / "EXPERIMENT_LOG.md"
+        if ledger.is_file():
+            staged.append(ledger.relative_to(repo_root))
 
     return list(dict.fromkeys(staged))
 
@@ -354,6 +356,7 @@ def sync_and_push_results(
     token_env: str = "GITHUB_TOKEN",
     git_push: bool = True,
     max_file_mb: float = 45.0,
+    include_ledger: bool = True,
 ) -> tuple[bool, str]:
     """Packs compact results, commits only allowlisted files, and pushes with pull --rebase retry."""
     repo_root = repo_root.resolve()
@@ -363,6 +366,7 @@ def sync_and_push_results(
         models=models,
         include_phase7=include_phase7,
         max_file_mb=max_file_mb,
+        include_ledger=include_ledger,
     )
     if not rel_paths:
         return False, "No C-BARR result artifacts found to sync."
@@ -460,6 +464,7 @@ def main() -> None:
     parser.add_argument("--label", type=str, default="run")
     parser.add_argument("--models", nargs="*", default=None)
     parser.add_argument("--no-phase7", action="store_true")
+    parser.add_argument("--no-ledger", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--max-file-mb", type=float, default=45.0)
     parser.add_argument("--git-push", action="store_true")
@@ -484,6 +489,7 @@ def main() -> None:
             models=args.models,
             include_phase7=not args.no_phase7,
             max_file_mb=args.max_file_mb,
+            include_ledger=not args.no_ledger,
         )
         print(f"[sync] Packed {len(paths)} artifact(s) into {repo_root / 'outputs'}")
         return
@@ -513,6 +519,7 @@ def main() -> None:
         token_env=args.git_token_env,
         git_push=do_push,
         max_file_mb=args.max_file_mb,
+        include_ledger=not args.no_ledger,
     )
     status = "OK" if ok else "WARN"
     print(f"[sync] {status}: {msg}")

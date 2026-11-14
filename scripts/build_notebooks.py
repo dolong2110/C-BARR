@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates the unified and split (Part 1 + Part 2) C-BARR Colab/Kaggle notebooks."""
+"""Generates unified, 2-part split, and 4-part concurrent C-BARR Colab/Kaggle notebooks."""
 
 from __future__ import annotations
 
@@ -15,18 +15,32 @@ NOTEBOOKS_DIR = REPO_ROOT / "notebooks"
 @dataclass(frozen=True)
 class NotebookSpec:
     filename: str
-    mode: str  # "full" | "part1" | "part2"
+    mode: str  # "full" | "part1" | "part2" | "part1a_4b" | "part1b_smollm3" | "part2_scale" | "part3_analyze"
     title: str
     summary_bullets: tuple[str, ...]
+    models_primary: tuple[str, ...]
+    models_scale: tuple[str, ...]
+    auto_include_9b: bool
+    run_preflight_tests: bool
     run_live_smoke_expr: str
     run_calibrate_only: bool
     run_primary_matrix: bool
     run_scale_sweep: bool
+    run_w7_extensions: bool
     run_phase7_analysis: bool
     unpack_synced_on_start: bool
-    require_part1_models: bool
+    sync_include_ledger: bool
+    expected_models_check: tuple[str, ...]
     sync_label_prefix: str
     bundle_filename: str
+
+
+ALL_4_CORE_MODELS: tuple[str, ...] = (
+    "Qwen/Qwen3.5-4B",
+    "HuggingFaceTB/SmolLM3-3B",
+    "Qwen/Qwen3.5-0.8B",
+    "Qwen/Qwen3.5-2B",
+)
 
 
 SPECS: tuple[NotebookSpec, ...] = (
@@ -35,18 +49,24 @@ SPECS: tuple[NotebookSpec, ...] = (
         mode="full",
         title="C-BARR: Colab & Kaggle End-to-End GPU Runner",
         summary_bullets=(
-            "Runs the complete **C-BARR** pipeline end-to-end (Preflight -> Calibration -> Phase 4/5 Primary -> Phase 6 Scale Sweep -> Phase 7 Analysis) on Google Colab or Kaggle.",
-            "**Automatic Multi-GPU Dispatch (`AUTO_PARALLEL_MULTI_GPU = True`)**: On dual-GPU machines such as Kaggle `GPU T4 x2`, runs independent models concurrently across `GPU 0` and `GPU 1` without git lock contention; falls back sequentially on single-GPU hosts.",
-            "**Cross-Session GitHub Artifact Sync (`scripts/sync_results.py`)**: Compresses compact JSONL caches (`*.jsonl.gz`) and syncs per-model summaries + `EXPERIMENT_LOG.md` so runs can also resume seamlessly from pushed repo results.",
+            "Runs the complete **C-BARR** pipeline end-to-end (Preflight -> Calibration -> Phase 4/5 Primary -> Phase 6 Scale Sweep -> Phase 7 Analysis) in one session.",
+            "**Intra-Model `N`-GPU Auto-Sharding (`MAX_SHARDS_PER_MODEL = 4`)**: Automatically shards each model across `min(GPU_COUNT, MAX_SHARDS_PER_MODEL)` local GPUs (`2`, `3`, `4+` GPUs), keeping 0% GPU idle time and merging deterministically before calibration/evaluation (bit-for-bit identical to 1 GPU).",
+            "**Cross-Session GitHub Artifact Sync (`scripts/sync_results.py`)**: Compresses compact JSONL caches (`*.jsonl.gz`) and syncs per-model summaries + `EXPERIMENT_LOG.md`.",
             "**Hardware-Aware Precision (`DTYPE = \"auto\"`) & VRAM Guard**: Uses `bfloat16` on Ampere+ (`L4`/`A100`), `float16` on `T4`/`P100`, and enables `Qwen/Qwen3.5-9B` only when `VRAM >= 22 GB`.",
         ),
+        models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=True,
         run_live_smoke_expr="HAS_CUDA",
         run_calibrate_only=True,
         run_primary_matrix=True,
         run_scale_sweep=True,
+        run_w7_extensions=False,
         run_phase7_analysis=True,
         unpack_synced_on_start=True,
-        require_part1_models=False,
+        sync_include_ledger=True,
+        expected_models_check=(),
         sync_label_prefix="full",
         bundle_filename="cbarr_results_bundle.zip",
     ),
@@ -55,18 +75,23 @@ SPECS: tuple[NotebookSpec, ...] = (
         mode="part1",
         title="C-BARR (Part 1 of 2): Preflight + Primary Models (4B & SmolLM3-3B)",
         summary_bullets=(
-            "**Session 1 of 2 (Kaggle/Colab Split Pipeline)**: Designed to fit comfortably inside a single Kaggle GPU session (`~2.5-4h` on `GPU T4 x2` in parallel; `~5-7h` on 1x `T4`).",
-            "Executes **Gate 0** (offline unit tests), **Step 0a** (live 12-item smoke gate), **Step 0b** (calibration on `Qwen/Qwen3.5-4B`), and **Phase 4/5** (`strict341 -> diag491` for `Qwen/Qwen3.5-4B` and `HuggingFaceTB/SmolLM3-3B`).",
-            "**Auto GitHub Hand-off (`scripts/sync_results.py --mode push`)**: Compresses Part 1's per-model caches (`*.jsonl.gz`, ~1.5-2 MB/model) and pushes summaries + `EXPERIMENT_LOG.md` after Stage A (`strict341`) and Stage B (`diag491`) so **Part 2** can pull and combine everything automatically.",
-            "Add `GITHUB_TOKEN` (fine-grained PAT with `Contents: Read and write`) as a Colab/Kaggle Secret before starting so Part 1 auto-pushes its results to GitHub.",
+            "**Session 1 of 2 (Sequential 2-Part Split)**: Runs Gate 0, Step 0a Smoke, Step 0b Calibration, and Phase 4/5 (`strict341 -> diag491`) for `Qwen/Qwen3.5-4B` and `HuggingFaceTB/SmolLM3-3B`.",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Uses all available local GPUs (`min(GPU_COUNT, MAX_SHARDS_PER_MODEL)`) on `4B` and `SmolLM3-3B` sequentially so no GPU sits idle (~1.5–2.5h on `GPU T4 x2`).",
+            "**Auto GitHub Hand-off (`scripts/sync_results.py`)**: Compresses per-model caches (`*.jsonl.gz`, ~1.5–2 MB/model) and pushes summaries + `EXPERIMENT_LOG.md` after each stage so **Part 2** can pull and combine everything.",
         ),
+        models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=True,
         run_live_smoke_expr="HAS_CUDA",
         run_calibrate_only=True,
         run_primary_matrix=True,
         run_scale_sweep=False,
+        run_w7_extensions=False,
         run_phase7_analysis=False,
         unpack_synced_on_start=False,
-        require_part1_models=False,
+        sync_include_ledger=True,
+        expected_models_check=(),
         sync_label_prefix="part1-primary",
         bundle_filename="cbarr_part1_bundle.zip",
     ),
@@ -75,18 +100,123 @@ SPECS: tuple[NotebookSpec, ...] = (
         mode="part2",
         title="C-BARR (Part 2 of 2): Pull Part 1 + Scale Sweep + Combined Phase 7",
         summary_bullets=(
-            "**Session 2 of 2 (Kaggle/Colab Split Pipeline)**: Clones/pulls `dolong2110/C-BARR`, unpacks **Part 1**'s pushed model caches (`Qwen/Qwen3.5-4B` + `HuggingFaceTB/SmolLM3-3B`) via `scripts/sync_results.py --mode unpack`, and completes the rest of the paper pipeline.",
-            "Executes **Gate 0** (fast environment check), **Phase 6 Scale Sweep** (`Qwen/Qwen3.5-0.8B` & `Qwen/Qwen3.5-2B` in parallel on dual GPUs, plus `9B` if `VRAM >= 22 GB`), optional **W7 extensions** (`RUN_W7_EXTENSIONS = True`), and **Combined Phase 7** (`scripts/analyze_and_plot.py` + `bash scripts/check_anonymity.sh`).",
-            "**Unified Paper Outputs & GitHub Push**: Phase 7 runs across **all** Part 1 + Part 2 models together (`stats_summary.json`, `paper_tables.tex`, anonymized `paper/figures/fig{1,2,3}_*.pdf`), then commits and pushes the complete combined artifacts back to GitHub (`EXPERIMENT_LOG.md` + `outputs/*` + `paper/figures/*.pdf`).",
+            "**Session 2 of 2 (Sequential 2-Part Split)**: Clones/pulls `dolong2110/C-BARR`, unpacks **Part 1**'s pushed caches (`4B` + `SmolLM3-3B`), runs **Phase 6 Scale Sweep** (`0.8B` & `2B`, plus `9B` if `VRAM >= 22 GB`, `N`-GPU sharded), optional **W7**, and **Combined Phase 7**.",
+            "**Unified Paper Outputs & GitHub Push**: Phase 7 runs across **all** Part 1 + Part 2 models together (`stats_summary.json`, `paper_tables.tex`, anonymized `paper/figures/fig{1,2,3}_*.pdf`), then pushes the combined artifacts + `EXPERIMENT_LOG.md` to GitHub.",
         ),
+        models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=True,
         run_live_smoke_expr="False",
         run_calibrate_only=False,
         run_primary_matrix=False,
         run_scale_sweep=True,
+        run_w7_extensions=False,
         run_phase7_analysis=True,
         unpack_synced_on_start=True,
-        require_part1_models=True,
+        sync_include_ledger=True,
+        expected_models_check=ALL_4_CORE_MODELS,
         sync_label_prefix="part2-combined",
+        bundle_filename="cbarr_results_bundle.zip",
+    ),
+    NotebookSpec(
+        filename="C_BARR_Part1a_Qwen4B_Colab_Kaggle.ipynb",
+        mode="part1a_4b",
+        title="C-BARR Worker 1/3: Gate 0 + Calibrate + Qwen/Qwen3.5-4B (Primary)",
+        summary_bullets=(
+            "**Balanced Concurrent Split (Worker 1 of 3 GPU Workers)**: Runs Gate 0, Step 0a Smoke, Step 0b Calibration, and `Qwen/Qwen3.5-4B` (`strict341 -> diag491`).",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Automatically shards items across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs (`T4 x2` -> ~1.5–2h, `4× GPU` -> ~45–60 min), bit-for-bit identical to 1 GPU.",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-4B/*` so you can run Worker 1a, Worker 1b, and Worker 2 **simultaneously** on separate Kaggle/Colab sessions with zero git conflicts before running **Part 3 Combiner**.",
+        ),
+        models_primary=("Qwen/Qwen3.5-4B",),
+        models_scale=(),
+        auto_include_9b=False,
+        run_preflight_tests=True,
+        run_live_smoke_expr="HAS_CUDA",
+        run_calibrate_only=True,
+        run_primary_matrix=True,
+        run_scale_sweep=False,
+        run_w7_extensions=False,
+        run_phase7_analysis=False,
+        unpack_synced_on_start=False,
+        sync_include_ledger=False,
+        expected_models_check=(),
+        sync_label_prefix="worker-4b",
+        bundle_filename="cbarr_part1a_qwen4b_bundle.zip",
+    ),
+    NotebookSpec(
+        filename="C_BARR_Part1b_SmolLM3_Colab_Kaggle.ipynb",
+        mode="part1b_smollm3",
+        title="C-BARR Worker 2/3: HuggingFaceTB/SmolLM3-3B (Primary)",
+        summary_bullets=(
+            "**Balanced Concurrent Split (Worker 2 of 3 GPU Workers)**: Dedicated runner for `HuggingFaceTB/SmolLM3-3B` (`strict341 -> diag491`, ~45–60 min on `T4 x2` or ~25 min on `4× GPU`).",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Splits items across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs and merges deterministically.",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/HuggingFaceTB__SmolLM3-3B/*` so it can run side-by-side with `Part1a_Qwen4B` and `Part2_Scale` with zero git conflicts.",
+        ),
+        models_primary=("HuggingFaceTB/SmolLM3-3B",),
+        models_scale=(),
+        auto_include_9b=False,
+        run_preflight_tests=False,
+        run_live_smoke_expr="False",
+        run_calibrate_only=False,
+        run_primary_matrix=True,
+        run_scale_sweep=False,
+        run_w7_extensions=False,
+        run_phase7_analysis=False,
+        unpack_synced_on_start=False,
+        sync_include_ledger=False,
+        expected_models_check=(),
+        sync_label_prefix="worker-smollm3",
+        bundle_filename="cbarr_part1b_smollm3_bundle.zip",
+    ),
+    NotebookSpec(
+        filename="C_BARR_Part2_Scale_Colab_Kaggle.ipynb",
+        mode="part2_scale",
+        title="C-BARR Worker 3/3: Scale Sweep (Qwen3.5-0.8B & 2B [+9B if >=22 GB])",
+        summary_bullets=(
+            "**Balanced Concurrent Split (Worker 3 of 3 GPU Workers)**: Dedicated runner for Phase 6 Scale Sweep (`Qwen/Qwen3.5-0.8B` & `Qwen/Qwen3.5-2B` with `strict341`, plus `Qwen/Qwen3.5-9B` automatically if `VRAM >= 22 GB`).",
+            "**Intra-Model `N`-GPU Auto-Sharding**: Splits each scale model cleanly across up to `MAX_SHARDS_PER_MODEL = 4` local GPUs (~45 min combined on `T4 x2`).",
+            "**Conflict-Free Concurrent GitHub Sync (`--no-ledger`)**: Pushes **only** `outputs/Qwen__Qwen3.5-{0.8B,2B,9B}/*` immediately after each model completes so it can run simultaneously alongside `Part1a_Qwen4B` and `Part1b_SmolLM3`.",
+        ),
+        models_primary=(),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=False,
+        run_live_smoke_expr="False",
+        run_calibrate_only=False,
+        run_primary_matrix=False,
+        run_scale_sweep=True,
+        run_w7_extensions=False,
+        run_phase7_analysis=False,
+        unpack_synced_on_start=False,
+        sync_include_ledger=False,
+        expected_models_check=(),
+        sync_label_prefix="worker-scale",
+        bundle_filename="cbarr_part2_scale_bundle.zip",
+    ),
+    NotebookSpec(
+        filename="C_BARR_Part3_W7_Analyze_Colab_Kaggle.ipynb",
+        mode="part3_analyze",
+        title="C-BARR Combiner (Step 4): Unpack All Workers + Optional W7 + Combined Phase 7",
+        summary_bullets=(
+            "**Final Combiner for the 3-Worker Split**: Pulls `dolong2110/C-BARR`, unpacks all worker models (`Qwen3.5-4B`, `SmolLM3-3B`, `Qwen3.5-0.8B`, `Qwen3.5-2B`, `+9B` if present) via `scripts/sync_results.py --mode unpack`, optionally runs **W7** (`RUN_W7_EXTENSIONS = True` on `4B`), and runs **Combined Phase 7**.",
+            "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Does not require a GPU quota slot unless you toggle `RUN_W7_EXTENSIONS = True`.",
+            "**Unified Paper Outputs & Push**: Generates `outputs/stats_summary.json`, `outputs/paper_tables.tex`, anonymized `paper/figures/*.pdf`, and unified `EXPERIMENT_LOG.md`, then pushes everything cleanly to GitHub.",
+        ),
+        models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
+        models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
+        auto_include_9b=True,
+        run_preflight_tests=True,
+        run_live_smoke_expr="False",
+        run_calibrate_only=False,
+        run_primary_matrix=False,
+        run_scale_sweep=False,
+        run_w7_extensions=False,
+        run_phase7_analysis=True,
+        unpack_synced_on_start=True,
+        sync_include_ledger=True,
+        expected_models_check=ALL_4_CORE_MODELS,
+        sync_label_prefix="part3-combined",
         bundle_filename="cbarr_results_bundle.zip",
     ),
 )
@@ -210,11 +340,14 @@ print(f"Workspace / Out: {REPO_DIR} -> {OUT_DIR}")
 print(f"HF_HOME        : {os.environ.get('HF_HOME', 'default (~/.cache/huggingface)')}")
 print(f"Free Disk      : {disk.free / (1024**3):.1f} GB")
 if not HAS_CUDA:
-    print("[WARN] No CUDA GPU detected! Turn on GPU Accelerator in Runtime / Session settings before Phase 4-6.")'''
+    print("[WARN] No CUDA GPU detected! CPU/Phase-7 mode only unless GPU Accelerator is enabled.")'''
     return _code_cell("cbarr-env-detect", code)
 
 
 def _build_config_cell(spec: NotebookSpec) -> dict:
+    primary_list = list(spec.models_primary)
+    scale_list = list(spec.models_scale)
+    expected_list = list(spec.expected_models_check)
     code = f'''import datetime as dt
 import json
 import time
@@ -227,37 +360,34 @@ NOTEBOOK_NAME = {spec.filename!r}
 PIPELINE_MODE = {spec.mode!r}
 
 # Primary evaluation + causal diagnostic models (strict341 -> diag491)
-MODELS_PRIMARY = [
-    "Qwen/Qwen3.5-4B",
-    "HuggingFaceTB/SmolLM3-3B",
-]
+MODELS_PRIMARY = {primary_list!r}
 
 # Cross-scale models (run with --strict-diag for Table 2)
-MODELS_SCALE = [
-    "Qwen/Qwen3.5-0.8B",
-    "Qwen/Qwen3.5-2B",
-]
+MODELS_SCALE = {scale_list!r}
 # Automatically include Qwen3.5-9B (~18.5 GB) when GPU has >= 22 GB VRAM (L4/A100)
-AUTO_INCLUDE_9B = True
+AUTO_INCLUDE_9B = {spec.auto_include_9b!r}
 FORCE_9B = False
 if (AUTO_INCLUDE_9B and VRAM_GB >= 22.0) or FORCE_9B:
-    MODELS_SCALE.append("Qwen/Qwen3.5-9B")
+    if "Qwen/Qwen3.5-9B" not in MODELS_SCALE:
+        MODELS_SCALE.append("Qwen/Qwen3.5-9B")
 
 # Pipeline stage toggles
-RUN_PREFLIGHT_TESTS = True
+RUN_PREFLIGHT_TESTS = {spec.run_preflight_tests!r}
 RUN_LIVE_SMOKE = {spec.run_live_smoke_expr}
 RUN_CALIBRATE_ONLY = {spec.run_calibrate_only!r}
 RUN_PRIMARY_MATRIX = {spec.run_primary_matrix!r}
 RUN_SCALE_SWEEP = {spec.run_scale_sweep!r}
 INCLUDE_B512 = False       # Contingency R3 auxiliary B=512 sweep
-RUN_W7_EXTENSIONS = False  # Optional W7: DeltaNet state blend + Prefill MLP probe
+RUN_W7_EXTENSIONS = {spec.run_w7_extensions!r}  # Optional W7: DeltaNet state blend + Prefill MLP probe
 RUN_PHASE7_ANALYSIS = {spec.run_phase7_analysis!r}
-REQUIRE_PART1_MODELS = {spec.require_part1_models!r}
+EXPECTED_MODELS_FOR_PHASE7 = {expected_list!r}
 
-# Cross-session & multi-GPU orchestration
-AUTO_PARALLEL_MULTI_GPU = True       # Uses GPU 0 + GPU 1 concurrently on Kaggle T4 x2 when >= 2 GPUs
+# Cross-session & intra-model multi-GPU orchestration
+AUTO_PARALLEL_MULTI_GPU = True       # Auto-shards items across up to MAX_SHARDS_PER_MODEL local GPUs
+MAX_SHARDS_PER_MODEL = 4             # Appropriate shard cap per model (set 6-8 on 8x GPU servers)
 UNPACK_SYNCED_RESULTS_ON_START = {spec.unpack_synced_on_start!r}  # Unpacks *.jsonl.gz from git repo into OUT_DIR
 SYNC_RESULTS_TO_GITHUB = True        # Commits & pushes compact summaries + *.jsonl.gz via scripts/sync_results.py
+SYNC_INCLUDE_LEDGER = {spec.sync_include_ledger!r}  # False in concurrent worker notebooks to prevent git conflicts on EXPERIMENT_LOG.md
 SYNC_LABEL_PREFIX = {spec.sync_label_prefix!r}
 BUNDLE_FILENAME = {spec.bundle_filename!r}
 
@@ -279,7 +409,7 @@ PREFETCH_MODEL_WEIGHTS = False        # Set True to pre-download all active HF c
 # Per-loop Ledger & GitHub Auto-Push
 RECORD_EXPERIMENT_LOG = True
 EXP_LOG_REL_PATH = "EXPERIMENT_LOG.md"
-AUTO_PUSH_RESULTS_TO_GITHUB = True    # Commits + pushes EXPERIMENT_LOG.md & compact artifacts when GITHUB_TOKEN is set
+AUTO_PUSH_RESULTS_TO_GITHUB = True    # Commits + pushes results when GITHUB_TOKEN is set
 CHECKPOINT_EVERY_ITEMS = 150          # Single-GPU runs push intermediate progress every N new eval_450 items (0=off)
 RUN_ID = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 PIPELINE_START_TIME = time.perf_counter()
@@ -315,7 +445,7 @@ if GITHUB_TOKEN:
     os.environ["GITHUB_TOKEN"] = GITHUB_TOKEN
 elif AUTO_PUSH_RESULTS_TO_GITHUB and REPO_URL.startswith("https://"):
     print(
-        "[INFO] GITHUB_TOKEN secret not found: EXPERIMENT_LOG.md and compact caches will be "
+        "[INFO] GITHUB_TOKEN secret not found: results and compact caches will be "
         "committed locally (add GITHUB_TOKEN secret with Contents Read/Write to enable automatic GitHub push)."
     )
 
@@ -334,10 +464,15 @@ ALL_ACTIVE_MODELS = list(
     dict.fromkeys(
         (MODELS_PRIMARY if RUN_PRIMARY_MATRIX or RUN_CALIBRATE_ONLY else [])
         + (MODELS_SCALE if RUN_SCALE_SWEEP else [])
+        + ([MODELS_PRIMARY[0]] if (RUN_W7_EXTENSIONS and MODELS_PRIMARY) else [])
     )
 )
-if not ALL_ACTIVE_MODELS:
-    ALL_ACTIVE_MODELS = [MODELS_PRIMARY[0]]
+
+N_ACTIVE_SHARDS = (
+    min(GPU_COUNT, max(1, int(MAX_SHARDS_PER_MODEL)))
+    if (AUTO_PARALLEL_MULTI_GPU and HAS_CUDA and GPU_COUNT >= 2)
+    else 1
+)
 
 MATRIX_PARAM_ARGS = [
     "--seed", str(SEED),
@@ -354,7 +489,7 @@ NOTEBOOK_PARAMS = {{
     "pipeline_mode": PIPELINE_MODE,
     "run_id": RUN_ID,
     "gpu_count": GPU_COUNT,
-    "parallel_multi_gpu": bool(AUTO_PARALLEL_MULTI_GPU and GPU_COUNT >= 2),
+    "active_shards_per_model": N_ACTIVE_SHARDS,
     "dtype": DTYPE,
     "seed": SEED,
     "lam_utility": LAM_UTILITY,
@@ -366,20 +501,20 @@ NOTEBOOK_PARAMS = {{
     "include_b512": INCLUDE_B512,
     "run_w7_extensions": RUN_W7_EXTENSIONS,
     "run_phase7_analysis": RUN_PHASE7_ANALYSIS,
+    "sync_include_ledger": SYNC_INCLUDE_LEDGER,
     "install_fast_kernels": str(INSTALL_FAST_DELTANET_KERNELS),
     "auto_push_github": AUTO_PUSH_RESULTS_TO_GITHUB,
     "checkpoint_every_items": CHECKPOINT_EVERY_ITEMS,
 }}
 print("Run ID       :", RUN_ID)
-print("Notebook Mode:", f"{{PIPELINE_MODE}} ({{NOTEBOOK_NAME}})")
-print("Active models:", ALL_ACTIVE_MODELS)'''
+print("Notebook Mode:", f"{{PIPELINE_MODE}} ({{NOTEBOOK_NAME}}) | shards/model={{N_ACTIVE_SHARDS}}")
+print("Active models:", ALL_ACTIVE_MODELS if ALL_ACTIVE_MODELS else "(combiner / Phase 7 only)")'''
     return _code_cell("cbarr-config", code)
 
 
 def _build_clone_install_cell() -> dict:
     code = '''import concurrent.futures
 import importlib.metadata
-import queue
 import re
 import threading
 
@@ -430,6 +565,8 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 TIMINGS_FILE = LOG_DIR / f"timings_{RUN_ID}.jsonl"
 PARAMS_FILE = LOG_DIR / f"params_{RUN_ID}.json"
 RUN_LOG_FILE = LOG_DIR / f"cbarr_{RUN_ID}.log"
+# Concurrent worker notebooks log locally so simultaneous pushes never race EXPERIMENT_LOG.md
+LEDGER_MD_PATH = (REPO_DIR / EXP_LOG_REL_PATH) if SYNC_INCLUDE_LEDGER else (LOG_DIR / f"experiment_log_{RUN_ID}.md")
 PARAMS_FILE.write_text(json.dumps(NOTEBOOK_PARAMS, indent=2) + "\\n", encoding="utf-8")
 _ANSI_ESCAPE_RE = re.compile(r"\\x1b\\[[0-9;]*[A-Za-z]")
 _IO_LOCK = threading.Lock()
@@ -448,6 +585,7 @@ def _highlight_line(line: str) -> str:
             "[step",
             "[gate",
             "[sync]",
+            "[merge]",
             "pass",
             "completed",
             "calibration",
@@ -512,8 +650,7 @@ def run_and_tee(
 def matrix_step_flags(allow_git_step_push: bool = True) -> list[str]:
     """Builds per-step checkpoint & optional GitHub auto-push flags for scripts/run_matrix.py."""
     PARAMS_FILE.write_text(json.dumps(NOTEBOOK_PARAMS, indent=2) + "\\n", encoding="utf-8")
-    if not allow_git_step_push:
-        # Concurrent multi-GPU workers keep file-level caches disjoint while coordinator handles git
+    if not allow_git_step_push or not SYNC_INCLUDE_LEDGER:
         return ["--step-checkpoint-every", "0"]
     flags = [
         "--run-id", RUN_ID,
@@ -523,7 +660,7 @@ def matrix_step_flags(allow_git_step_push: bool = True) -> list[str]:
         "--step-checkpoint-every", str(CHECKPOINT_EVERY_ITEMS),
     ]
     if RECORD_EXPERIMENT_LOG:
-        flags.extend(["--exp-log", str(REPO_DIR / EXP_LOG_REL_PATH)])
+        flags.extend(["--exp-log", str(LEDGER_MD_PATH)])
         if AUTO_PUSH_RESULTS_TO_GITHUB:
             flags.extend(["--git-push", "--git-branch", REPO_BRANCH])
     return flags
@@ -544,7 +681,7 @@ def record_loop_checkpoint(
     push: bool = True,
     notes: str = "",
 ) -> None:
-    """Records stage duration telemetry, upserts EXPERIMENT_LOG.md, and optionally pushes to GitHub."""
+    """Records stage duration telemetry, upserts markdown ledger, and optionally pushes."""
     if stage_dur_sec is not None:
         _append_stage_timing(loop_name, "PASS" if stage_ok else "FAIL", stage_dur_sec)
     if not RECORD_EXPERIMENT_LOG:
@@ -562,7 +699,7 @@ def record_loop_checkpoint(
         "--timings-file", str(TIMINGS_FILE),
         "--log-file", str(RUN_LOG_FILE),
         "--params-json", f"@{PARAMS_FILE}",
-        "--md-log", str(REPO_DIR / EXP_LOG_REL_PATH),
+        "--md-log", str(LEDGER_MD_PATH),
         "--total-sec", f"{total_sec:.2f}",
         "--upsert",
     ]
@@ -571,7 +708,7 @@ def record_loop_checkpoint(
         cmd.extend(["--smoke-report", str(smoke_rpt)])
     if notes:
         cmd.extend(["--notes", notes])
-    if push and AUTO_PUSH_RESULTS_TO_GITHUB:
+    if push and SYNC_INCLUDE_LEDGER and AUTO_PUSH_RESULTS_TO_GITHUB:
         cmd.extend(["--git-push", "--git-branch", REPO_BRANCH])
     subprocess.run(cmd, check=False)
 
@@ -581,7 +718,7 @@ def sync_results_to_github(
     models: list[str] | None = None,
     include_phase7: bool = False,
 ) -> None:
-    """Commits compact summaries, *.jsonl.gz caches, and EXPERIMENT_LOG.md, pushing when enabled."""
+    """Commits compact summaries & *.jsonl.gz caches (excluding shared ledger in worker mode)."""
     if not SYNC_RESULTS_TO_GITHUB:
         return
     cmd = [
@@ -597,6 +734,8 @@ def sync_results_to_github(
         cmd.extend(["--models", *models])
     if not include_phase7:
         cmd.append("--no-phase7")
+    if not SYNC_INCLUDE_LEDGER:
+        cmd.append("--no-ledger")
     if AUTO_PUSH_RESULTS_TO_GITHUB:
         cmd.append("--git-push")
     else:
@@ -735,7 +874,7 @@ for fname in REQUIRED_DATA_SPLITS:
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# 4. Unpack any previously pushed *.jsonl.gz caches + summaries (essential for Part 2 hand-off)
+# 4. Unpack previously pushed *.jsonl.gz caches + summaries when combining results
 if UNPACK_SYNCED_RESULTS_ON_START:
     run_and_tee(
         [
@@ -777,38 +916,101 @@ def _build_gate0_smoke_cell() -> dict:
 
 if RUN_LIVE_SMOKE:
     print("=== [Step 0a] Running Live GPU 12-Item Smoke Gate ===")
-    smoke_models = [m for m in MODELS_PRIMARY if ("9B" not in m or VRAM_GB >= 22.0)] or [ALL_ACTIVE_MODELS[0]]
-    run_logged_loop(
-        "Step 0a: Live GPU 12-Item Smoke",
-        run_and_tee,
-        [sys.executable, "scripts/run_smoke_test.py", "--live-gpu", "--models", *smoke_models],
-    )'''
+    smoke_models = [m for m in MODELS_PRIMARY if ("9B" not in m or VRAM_GB >= 22.0)] or ALL_ACTIVE_MODELS[:1]
+    if smoke_models:
+        run_logged_loop(
+            "Step 0a: Live GPU 12-Item Smoke",
+            run_and_tee,
+            [sys.executable, "scripts/run_smoke_test.py", "--live-gpu", "--models", *smoke_models],
+        )'''
     return _code_cell("cbarr-gate0-smoke", code)
 
 
 def _build_calibrate_cell() -> dict:
     code = '''if RUN_CALIBRATE_ONLY:
-    cal_model = MODELS_PRIMARY[0] if MODELS_PRIMARY else ALL_ACTIVE_MODELS[0]
-    print(f"=== [Step 0b] Running Zero-Leakage Calibration on {cal_model} ===")
-    run_logged_loop(
-        f"Step 0b: Calibration ({cal_model})",
-        run_and_tee,
-        [
-            sys.executable,
-            "scripts/run_matrix.py",
-            "--model",
-            cal_model,
-            "--data-dir",
-            "data",
-            "--out-dir",
-            str(OUT_DIR),
-            "--dtype",
-            DTYPE,
-            "--calibrate-only",
-            *MATRIX_PARAM_ARGS,
-            *matrix_step_flags(),
-        ],
-    )'''
+    cal_model = MODELS_PRIMARY[0] if MODELS_PRIMARY else (ALL_ACTIVE_MODELS[0] if ALL_ACTIVE_MODELS else "Qwen/Qwen3.5-4B")
+    print(f"=== [Step 0b] Running Zero-Leakage Calibration on {cal_model} (shards={N_ACTIVE_SHARDS}) ===")
+    if N_ACTIVE_SHARDS <= 1:
+        run_logged_loop(
+            f"Step 0b: Calibration ({cal_model})",
+            run_and_tee,
+            [
+                sys.executable,
+                "scripts/run_matrix.py",
+                "--model",
+                cal_model,
+                "--data-dir",
+                "data",
+                "--out-dir",
+                str(OUT_DIR),
+                "--dtype",
+                DTYPE,
+                "--calibrate-only",
+                *MATRIX_PARAM_ARGS,
+                *matrix_step_flags(),
+            ],
+        )
+    else:
+        t_cal = time.perf_counter()
+
+        def _cal_shard(s_idx: int) -> None:
+            slug = cal_model.replace("/", "__")
+            w_log = LOG_DIR / f"cbarr_{RUN_ID}_gpu{s_idx}_{slug}_calib.log"
+            run_and_tee(
+                [
+                    sys.executable,
+                    "scripts/run_matrix.py",
+                    "--model",
+                    cal_model,
+                    "--data-dir",
+                    "data",
+                    "--out-dir",
+                    str(OUT_DIR),
+                    "--dtype",
+                    DTYPE,
+                    "--calibrate-only",
+                    "--shard-idx",
+                    str(s_idx),
+                    "--num-shards",
+                    str(N_ACTIVE_SHARDS),
+                    "--step-checkpoint-every",
+                    "0",
+                    *MATRIX_PARAM_ARGS,
+                ],
+                extra_env={"CUDA_VISIBLE_DEVICES": str(s_idx)},
+                prefix=f"GPU{s_idx}:calib",
+                worker_log_path=w_log,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=N_ACTIVE_SHARDS) as pool:
+            futs = [pool.submit(_cal_shard, i) for i in range(N_ACTIVE_SHARDS)]
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
+
+        run_and_tee(
+            [
+                sys.executable,
+                "scripts/run_matrix.py",
+                "--model",
+                cal_model,
+                "--data-dir",
+                "data",
+                "--out-dir",
+                str(OUT_DIR),
+                "--dtype",
+                DTYPE,
+                "--calibrate-only",
+                "--merge-shards",
+                *MATRIX_PARAM_ARGS,
+                *matrix_step_flags(),
+            ]
+        )
+        record_loop_checkpoint(
+            f"Step 0b: Calibration ({cal_model})",
+            status=f"RUNNING (after Step 0b: {cal_model})",
+            stage_dur_sec=time.perf_counter() - t_cal,
+            stage_ok=True,
+        )'''
     return _code_cell("cbarr-calibrate", code)
 
 
@@ -825,14 +1027,16 @@ def _build_primary_matrix_cell() -> dict:
                 shutil.rmtree(item, ignore_errors=True)
 
 
-def run_model_matrix(
+def run_model_matrix_sharded(
     model_id: str,
+    stage_prefix: str,
     strict_diag: bool,
     include_b512: bool = False,
-    gpu_idx: int | None = None,
-    allow_git_step_push: bool = True,
 ) -> None:
-    cmd = [
+    """Runs one model across 1 GPU or N_ACTIVE_SHARDS GPUs in parallel, then merges deterministically."""
+    mode_lbl = "strict341" if strict_diag else "diag491"
+    loop_name = f"{stage_prefix}: {model_id} ({mode_lbl})"
+    base_cmd = [
         sys.executable,
         "scripts/run_matrix.py",
         "--model",
@@ -844,20 +1048,68 @@ def run_model_matrix(
         "--dtype",
         DTYPE,
         *MATRIX_PARAM_ARGS,
-        *matrix_step_flags(allow_git_step_push=allow_git_step_push),
     ]
     if strict_diag:
-        cmd.append("--strict-diag")
+        base_cmd.append("--strict-diag")
     if include_b512:
-        cmd.append("--include-b512")
+        base_cmd.append("--include-b512")
 
-    extra_env = {"CUDA_VISIBLE_DEVICES": str(gpu_idx)} if gpu_idx is not None else None
-    prefix = f"GPU{gpu_idx}:{model_id.split('/')[-1]}" if gpu_idx is not None else ""
+    if N_ACTIVE_SHARDS <= 1:
+        cmd = [*base_cmd, *matrix_step_flags()]
+        print("Executing:", " ".join(cmd), flush=True)
+        run_logged_loop(loop_name, run_and_tee, cmd)
+        return
+
+    print(
+        f"=== [{N_ACTIVE_SHARDS}-GPU Intra-Model Sharded] {loop_name} ===",
+        flush=True,
+    )
+    t0 = time.perf_counter()
     slug = model_id.replace("/", "__")
-    mode_tag = "strict341" if strict_diag else "diag491"
-    worker_log = (LOG_DIR / f"cbarr_{RUN_ID}_gpu{gpu_idx}_{slug}_{mode_tag}.log") if gpu_idx is not None else None
-    print(f"{'[' + prefix + '] ' if prefix else ''}Executing: {' '.join(cmd)}", flush=True)
-    run_and_tee(cmd, extra_env=extra_env, prefix=prefix, worker_log_path=worker_log)
+
+    def _run_shard(shard_idx: int) -> None:
+        w_log = LOG_DIR / f"cbarr_{RUN_ID}_gpu{shard_idx}_{slug}_{mode_lbl}.log"
+        s_cmd = [
+            *base_cmd,
+            "--shard-idx",
+            str(shard_idx),
+            "--num-shards",
+            str(N_ACTIVE_SHARDS),
+            "--step-checkpoint-every",
+            "0",
+        ]
+        run_and_tee(
+            s_cmd,
+            extra_env={"CUDA_VISIBLE_DEVICES": str(shard_idx)},
+            prefix=f"GPU{shard_idx}:{model_id.split('/')[-1]}",
+            worker_log_path=w_log,
+        )
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=N_ACTIVE_SHARDS) as pool:
+            futs = {pool.submit(_run_shard, s_i): s_i for s_i in range(N_ACTIVE_SHARDS)}
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
+
+        merge_cmd = [*base_cmd, "--merge-shards", *matrix_step_flags()]
+        print("Merging shards:", " ".join(merge_cmd), flush=True)
+        run_and_tee(merge_cmd)
+    except Exception as exc:
+        record_loop_checkpoint(
+            loop_name,
+            status=f"FAILED (at {loop_name})",
+            stage_dur_sec=time.perf_counter() - t0,
+            stage_ok=False,
+            notes=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+
+    record_loop_checkpoint(
+        loop_name,
+        status=f"RUNNING (after {loop_name})",
+        stage_dur_sec=time.perf_counter() - t0,
+        stage_ok=True,
+    )
 
 
 def run_models_batch(
@@ -865,94 +1117,46 @@ def run_models_batch(
     stage_prefix: str,
     strict_diag: bool,
     include_b512: bool = False,
+    sync_each_model: bool = True,
 ) -> None:
-    """Runs models concurrently across multiple CUDA GPUs when available, or sequentially on 1 GPU."""
+    """Runs each model across all N_ACTIVE_SHARDS GPUs sequentially with immediate per-model GitHub sync."""
     if not models:
         return
     mode_lbl = "strict341" if strict_diag else "diag491"
-    use_parallel = bool(AUTO_PARALLEL_MULTI_GPU and HAS_CUDA and GPU_COUNT >= 2 and len(models) >= 2)
-    if not use_parallel:
-        for idx, model_id in enumerate(models):
-            if idx > 0:
-                _prune_hf_hub_if_low_disk()
-            run_logged_loop(
-                f"{stage_prefix}: {model_id} ({mode_lbl})",
-                run_model_matrix,
-                model_id,
-                strict_diag=strict_diag,
-                include_b512=include_b512,
+    for idx, model_id in enumerate(models):
+        if idx > 0:
+            _prune_hf_hub_if_low_disk()
+        run_model_matrix_sharded(
+            model_id,
+            stage_prefix=stage_prefix,
+            strict_diag=strict_diag,
+            include_b512=include_b512,
+        )
+        if sync_each_model:
+            short_slug = model_id.split("/")[-1].lower()
+            sync_results_to_github(
+                label=f"{short_slug}-{mode_lbl}",
+                models=[model_id],
+                include_phase7=False,
             )
-        return
-
-    _prune_hf_hub_if_low_disk()
-    n_workers = min(GPU_COUNT, len(models))
-    print(f"=== [Parallel {n_workers}-GPU Batch] {stage_prefix} ({mode_lbl}): {models} ===", flush=True)
-    gpu_pool: queue.Queue[int] = queue.Queue()
-    for g in range(n_workers):
-        gpu_pool.put(g)
-
-    def _worker(model_id: str) -> tuple[str, float]:
-        gpu_idx = gpu_pool.get()
-        t0 = time.perf_counter()
-        try:
-            run_model_matrix(
-                model_id,
-                strict_diag=strict_diag,
-                include_b512=include_b512,
-                gpu_idx=gpu_idx,
-                allow_git_step_push=False,
-            )
-            return model_id, time.perf_counter() - t0
-        finally:
-            gpu_pool.put(gpu_idx)
-
-    failures: list[tuple[str, Exception]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-        future_map = {pool.submit(_worker, m_id): m_id for m_id in models}
-        for fut in concurrent.futures.as_completed(future_map):
-            m_id = future_map[fut]
-            loop_name = f"{stage_prefix}: {m_id} ({mode_lbl})"
-            try:
-                _, dt_sec = fut.result()
-                record_loop_checkpoint(
-                    loop_name,
-                    status=f"RUNNING (after {loop_name})",
-                    stage_dur_sec=dt_sec,
-                    stage_ok=True,
-                )
-            except Exception as exc:
-                record_loop_checkpoint(
-                    loop_name,
-                    status=f"FAILED (at {loop_name})",
-                    stage_dur_sec=0.0,
-                    stage_ok=False,
-                    notes=f"{type(exc).__name__}: {exc}",
-                )
-                failures.append((m_id, exc))
-    if failures:
-        first_m, first_exc = failures[0]
-        raise RuntimeError(f"Parallel worker failed for {first_m}: {first_exc}") from first_exc
 
 
-if RUN_PRIMARY_MATRIX:
+if RUN_PRIMARY_MATRIX and MODELS_PRIMARY:
     print(f"\\n=== [Phase 4/5 Stage A] Primary Models strict341: {MODELS_PRIMARY} ===")
     run_models_batch(MODELS_PRIMARY, "Phase 4/5", strict_diag=True, include_b512=INCLUDE_B512)
-    sync_results_to_github(label="primary-strict341", models=MODELS_PRIMARY, include_phase7=False)
 
     print(f"\\n=== [Phase 4/5 Stage B] Primary Models diag491: {MODELS_PRIMARY} ===")
-    run_models_batch(MODELS_PRIMARY, "Phase 4/5", strict_diag=False, include_b512=INCLUDE_B512)
-    sync_results_to_github(label="primary-diag491", models=MODELS_PRIMARY, include_phase7=False)'''
+    run_models_batch(MODELS_PRIMARY, "Phase 4/5", strict_diag=False, include_b512=INCLUDE_B512)'''
     return _code_cell("cbarr-primary-matrix", code)
 
 
 def _build_scale_w7_cell() -> dict:
-    code = '''if RUN_SCALE_SWEEP:
+    code = '''if RUN_SCALE_SWEEP and MODELS_SCALE:
     print(f"\\n=== [Phase 6] Scale Sweep (strict341): {MODELS_SCALE} ===")
     run_models_batch(MODELS_SCALE, "Phase 6", strict_diag=True, include_b512=INCLUDE_B512)
-    sync_results_to_github(label="scale-strict341", models=MODELS_SCALE, include_phase7=False)
 
 if RUN_W7_EXTENSIONS:
-    w7_model = MODELS_PRIMARY[0] if MODELS_PRIMARY else ALL_ACTIVE_MODELS[0]
+    w7_model = MODELS_PRIMARY[0] if MODELS_PRIMARY else (ALL_ACTIVE_MODELS[0] if ALL_ACTIVE_MODELS else "Qwen/Qwen3.5-4B")
     print(f"\\n=== [Optional W7] Running DeltaNet Blend & Prefill MLP on {w7_model} ===")
     run_logged_loop(
         f"W7: DeltaNet Blend ({w7_model})",
@@ -971,18 +1175,18 @@ if RUN_W7_EXTENSIONS:
 def _build_analyze_export_cell() -> dict:
     code = '''import zipfile
 
-if REQUIRE_PART1_MODELS:
-    missing_p1 = [
-        m for m in MODELS_PRIMARY
+if EXPECTED_MODELS_FOR_PHASE7:
+    missing_models = [
+        m for m in EXPECTED_MODELS_FOR_PHASE7
         if not (OUT_DIR / m.replace("/", "__") / "eval_450_cache.jsonl").exists()
     ]
-    if missing_p1:
+    if missing_models:
         print(
-            f"[WARN] Missing Part 1 model caches in OUT_DIR: {missing_p1}. "
-            "Run Part 1 first (and push to GitHub) or copy caches before generating combined tables."
+            f"[WARN] Missing expected worker model caches in OUT_DIR: {missing_models}. "
+            "Ensure worker notebooks finished pushing to GitHub before running combined Phase 7."
         )
     else:
-        print(f"[OK] Part 1 + Part 2 models verified in {OUT_DIR}:")
+        print(f"[OK] All expected models verified in {OUT_DIR}:")
         for d in sorted(p.name for p in OUT_DIR.iterdir() if p.is_dir() and (p / "eval_450_cache.jsonl").exists()):
             print(f"  - {d}")
 
@@ -1036,7 +1240,7 @@ if RUN_PHASE7_ANALYSIS:
     sync_results_to_github(label="final-phase7", include_phase7=True)
 else:
     record_loop_checkpoint(
-        f"{SYNC_LABEL_PREFIX}: Checkpoint Complete",
+        f"{SYNC_LABEL_PREFIX}: Worker Complete",
         status=f"PASSED ({PIPELINE_MODE.upper()})",
         stage_dur_sec=0.0,
         stage_ok=True,
@@ -1044,42 +1248,48 @@ else:
     )
     sync_results_to_github(
         label="complete",
-        models=MODELS_PRIMARY if PIPELINE_MODE == "part1" else None,
+        models=ALL_ACTIVE_MODELS if ALL_ACTIVE_MODELS else None,
         include_phase7=False,
     )
 
 # Package compact downloadable bundle (tables, stats JSONs, per-model summaries, *.jsonl.gz, ledger, figures)
 bundle_zip = WORKSPACE_ROOT / BUNDLE_FILENAME
+active_slugs = {m.replace("/", "__") for m in ALL_ACTIVE_MODELS} if (not SYNC_INCLUDE_LEDGER and ALL_ACTIVE_MODELS) else None
 with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    exp_md = REPO_DIR / EXP_LOG_REL_PATH
-    if exp_md.exists():
-        zf.write(exp_md, arcname=EXP_LOG_REL_PATH)
+    if LEDGER_MD_PATH.exists():
+        zf.write(LEDGER_MD_PATH, arcname=EXP_LOG_REL_PATH if SYNC_INCLUDE_LEDGER else LEDGER_MD_PATH.name)
     for log_artifact in (RUN_LOG_FILE, TIMINGS_FILE, PARAMS_FILE):
         if log_artifact.exists():
             zf.write(log_artifact, arcname=f"outputs/logs/{log_artifact.name}")
-    for top_file in ("stats_summary.json", "paper_tables.tex"):
-        p = OUT_DIR / top_file
-        if p.exists():
-            zf.write(p, arcname=f"outputs/{top_file}")
+    if RUN_PHASE7_ANALYSIS:
+        for top_file in ("stats_summary.json", "paper_tables.tex"):
+            p = OUT_DIR / top_file
+            if p.exists():
+                zf.write(p, arcname=f"outputs/{top_file}")
     for sub in sorted(OUT_DIR.iterdir()):
-        if sub.is_dir():
-            for fname in (
-                "calibration_summary.json",
-                "matrix_summary.json",
-                "matrix_summary_strict341.json",
-                "matrix_summary_diag491.json",
-                "tables_rows.tex",
-                "tables_rows_strict341.tex",
-                "tables_rows_diag491.tex",
-                "ext_deltanet_blend.json",
-                "prefill_mlp_summary.json",
-            ):
-                fp = sub / fname
-                if fp.exists():
-                    zf.write(fp, arcname=f"outputs/{sub.name}/{fname}")
+        if not sub.is_dir():
+            continue
+        if active_slugs is not None and sub.name not in active_slugs:
+            continue
+        for fname in (
+            "calibration_summary.json",
+            "matrix_summary.json",
+            "matrix_summary_strict341.json",
+            "matrix_summary_diag491.json",
+            "tables_rows.tex",
+            "tables_rows_strict341.tex",
+            "tables_rows_diag491.tex",
+            "ext_deltanet_blend.json",
+            "prefill_mlp_summary.json",
+        ):
+            fp = sub / fname
+            if fp.exists():
+                zf.write(fp, arcname=f"outputs/{sub.name}/{fname}")
     repo_out = REPO_DIR / "outputs"
     if repo_out.is_dir():
         for gz_fp in sorted(repo_out.glob("*/*_cache.jsonl.gz")):
+            if active_slugs is not None and gz_fp.parent.name not in active_slugs:
+                continue
             zf.write(gz_fp, arcname=f"outputs/{gz_fp.parent.name}/{gz_fp.name}")
     if RUN_PHASE7_ANALYSIS and FIG_DIR.is_dir():
         for pdf in sorted(FIG_DIR.glob("*.pdf")):

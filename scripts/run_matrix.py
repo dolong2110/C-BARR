@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import time
@@ -215,13 +216,18 @@ def cache_split_primitives(
     checkpoint_every: int = 0,
     checkpoint_cb: Callable[[int, int, str, str], None] | None = None,
     calib_seed_only: bool = False,
+    extra_existing: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Executes and incrementally caches atomic primitives per item to prevent GPU re-runs (with D13-D16)."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    existing: dict[str, dict[str, Any]] = {}
+    # Seed read-only from canonical cache (if provided) before overlaying shard-local rows
+    existing: dict[str, dict[str, Any]] = dict(extra_existing or {})
+    local_rows: dict[str, dict[str, Any]] = {}
     if cache_path.exists():
         for row in _load_jsonl(cache_path):
-            existing[row["item"]["uid"]] = row
+            uid_k = str(row["item"]["uid"])
+            existing[uid_k] = row
+            local_rows[uid_k] = row
 
     def _run_or_reuse_m2_row(
         item: dict[str, Any],
@@ -280,6 +286,7 @@ def cache_split_primitives(
                         cached_row["m2_b512"] = _run_or_reuse_m2_row(
                             item, g1, cached_row["b1b"], 512, "post_stripped"
                         )
+                        local_rows[uid] = cached_row
                         upgraded_existing = True
                     n_cached += 1
                     rec = cached_row
@@ -409,6 +416,7 @@ def cache_split_primitives(
                     f_append.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     f_append.flush()
                     existing[uid] = rec
+                    local_rows[uid] = rec
                     n_new += 1
                     dt_item = time.perf_counter() - t_item_start
                     cum_new_sec += dt_item
@@ -479,11 +487,11 @@ def cache_split_primitives(
                 )
                 raise
 
-    # Persist backfilled m2_b512 entries atomically so interrupted rewrites cannot corrupt cache
+    # Persist backfilled m2_b512 entries atomically without duplicating read-only canonical rows
     if upgraded_existing:
         tmp_path = cache_path.with_suffix(".jsonl.tmp")
         with tmp_path.open("w", encoding="utf-8") as f_tmp:
-            for row in existing.values():
+            for row in local_rows.values():
                 f_tmp.write(json.dumps(row, ensure_ascii=False) + "\n")
         tmp_path.replace(cache_path)
 
@@ -504,12 +512,22 @@ def cache_split_primitives(
     return rows_out
 
 
+def _load_uid_map(cache_path: pathlib.Path) -> dict[str, dict[str, Any]]:
+    """Loads a JSONL item cache keyed by item UID without mutating disk state."""
+    out: dict[str, dict[str, Any]] = {}
+    if cache_path.exists():
+        for row in _load_jsonl(cache_path):
+            out[str(row["item"]["uid"])] = row
+    return out
+
+
 def run_section6_diagnostics(
     engine: CBARRDualModeEngine,
     diag_items: list[dict[str, Any]],
     gsm_seed_items: list[dict[str, Any]],
     out_dir: pathlib.Path,
     mode_cb: Callable[[str, dict[str, Any]], None] | None = None,
+    shard_dir: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     """Runs Causal Diagnostic Controls (Trace Stripping vs. Post-Think Re-Anchoring) on E_hurt."""
     filler_text = " ".join(x.get("rationale_gold", "") for x in gsm_seed_items)
@@ -518,19 +536,45 @@ def run_section6_diagnostics(
     # Identify E_hurt: items where thinking directly caused failure (Pass(B0)=1 and Fail(B1b)=0).
     # strict341 is a subset of diag491, so sharing diag_ehurt_cache + diag_controls_cache avoids recompute.
     e_hurt: list[dict[str, Any]] = []
-    cache_path = out_dir / "diag_ehurt_cache.jsonl"
-    cached_rows = cache_split_primitives(
-        engine, diag_items, cache_path, full_eval_modes=False, run_calib_tiers=False
-    )
+    canonical_cache_path = out_dir / "diag_ehurt_cache.jsonl"
+    if shard_dir is not None:
+        canon_ehurt = _load_uid_map(canonical_cache_path)
+        cache_path = shard_dir / "diag_ehurt_cache.jsonl"
+        cached_rows = cache_split_primitives(
+            engine,
+            diag_items,
+            cache_path,
+            full_eval_modes=False,
+            run_calib_tiers=False,
+            extra_existing=canon_ehurt,
+        )
+    else:
+        cached_rows = cache_split_primitives(
+            engine,
+            diag_items,
+            canonical_cache_path,
+            full_eval_modes=False,
+            run_calib_tiers=False,
+        )
     for row in cached_rows:
         if int(row["b0"]["z"]) == 1 and int(row["b1b"]["z"]) == 0 and row["b1b"]["t_think"]:
             e_hurt.append(row)
 
-    controls_cache_path = out_dir / "diag_controls_cache.jsonl"
+    canonical_controls_path = out_dir / "diag_controls_cache.jsonl"
+    controls_cache_path = (
+        shard_dir / "diag_controls_cache.jsonl"
+        if shard_dir is not None
+        else canonical_controls_path
+    )
     cached_controls: dict[tuple[str, str], dict[str, Any]] = {}
-    if controls_cache_path.exists():
-        for rec in _load_jsonl(controls_cache_path):
-            cached_controls[(str(rec["uid"]), str(rec["mode"]))] = rec
+    for p_ctrl in (
+        (canonical_controls_path, controls_cache_path)
+        if shard_dir is not None
+        else (controls_cache_path,)
+    ):
+        if p_ctrl.exists():
+            for rec in _load_jsonl(p_ctrl):
+                cached_controls[(str(rec["uid"]), str(rec["mode"]))] = rec
 
     modes = (
         "A1_strip",
@@ -670,6 +714,164 @@ def _build_engine(
         sampling_seed=sampling_seed,
         local_files_only=local_files_only,
     )
+
+
+class _TokenizerOnlyEngine:
+    """Lightweight tokenizer wrapper used when --merge-shards finalizes 100% cached outputs."""
+
+    def __init__(self, model_id: str, local_files_only: bool = False) -> None:
+        from transformers import AutoTokenizer
+
+        self.model_id = model_id
+        self.device = "cpu"
+        try:
+            self.tok = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only)
+        except Exception:
+            if local_files_only:
+                raise
+            self.tok = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+
+
+_DIAG_MODES: tuple[str, ...] = (
+    "A1_strip",
+    "B2a_post_anchor",
+    "B1_pre_anchor",
+    "B2b_post_raw",
+    "A2_math_swap",
+    "B3_early_cut_no_anchor",
+)
+
+
+def merge_shard_caches(
+    out_dir: pathlib.Path,
+    seed_items: list[dict[str, Any]],
+    dev_items: list[dict[str, Any]],
+    eval_items: list[dict[str, Any]],
+    diag_items: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Merges sharded per-GPU JSONL caches atomically back into canonical item-ordered caches."""
+    shards_root = out_dir / "shards"
+    shard_dirs = sorted(p for p in shards_root.glob("shard_*") if p.is_dir()) if shards_root.is_dir() else []
+    merged_counts: dict[str, int] = {}
+
+    split_specs: tuple[tuple[str, list[dict[str, Any]]], ...] = (
+        ("seed_60_cache.jsonl", seed_items),
+        ("dev_60_cache.jsonl", dev_items),
+        ("eval_450_cache.jsonl", eval_items),
+        ("diag_ehurt_cache.jsonl", diag_items),
+    )
+    for fname, items in split_specs:
+        canon_path = out_dir / fname
+        shard_files = [sd / fname for sd in shard_dirs if (sd / fname).is_file()]
+        if not shard_files:
+            continue
+        by_uid: dict[str, dict[str, Any]] = {}
+        for src_p in (canon_path, *shard_files):
+            if not src_p.is_file():
+                continue
+            for row in _load_jsonl(src_p):
+                uid = str(row["item"]["uid"])
+                if uid in by_uid:
+                    merged = dict(by_uid[uid])
+                    merged.update(row)
+                    by_uid[uid] = merged
+                else:
+                    by_uid[uid] = row
+
+        ordered_uids = [str(it["uid"]) for it in items]
+        seen: set[str] = set()
+        rows_sorted: list[dict[str, Any]] = []
+        for u in ordered_uids:
+            if u in by_uid and u not in seen:
+                rows_sorted.append(by_uid[u])
+                seen.add(u)
+        for u in sorted(by_uid):
+            if u not in seen:
+                rows_sorted.append(by_uid[u])
+                seen.add(u)
+
+        tmp_p = canon_path.with_suffix(".jsonl.tmp")
+        with tmp_p.open("w", encoding="utf-8") as fh:
+            for row in rows_sorted:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp_p.replace(canon_path)
+        merged_counts[fname] = len(rows_sorted)
+
+    ctrl_canon = out_dir / "diag_controls_cache.jsonl"
+    ctrl_shards = [sd / "diag_controls_cache.jsonl" for sd in shard_dirs if (sd / "diag_controls_cache.jsonl").is_file()]
+    if ctrl_shards:
+        by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for src_p in (ctrl_canon, *ctrl_shards):
+            if not src_p.is_file():
+                continue
+            for rec in _load_jsonl(src_p):
+                by_key[(str(rec["uid"]), str(rec["mode"]))] = rec
+        mode_rank = {m: i for i, m in enumerate(_DIAG_MODES)}
+        uid_rank = {str(it["uid"]): i for i, it in enumerate(diag_items)}
+        sorted_keys = sorted(
+            by_key,
+            key=lambda kv: (mode_rank.get(kv[1], 99), uid_rank.get(kv[0], 10**9), kv[0]),
+        )
+        tmp_c = ctrl_canon.with_suffix(".jsonl.tmp")
+        with tmp_c.open("w", encoding="utf-8") as fh:
+            for k in sorted_keys:
+                fh.write(json.dumps(by_key[k], ensure_ascii=False) + "\n")
+        tmp_c.replace(ctrl_canon)
+        merged_counts["diag_controls_cache.jsonl"] = len(sorted_keys)
+
+    return merged_counts
+
+
+def _is_model_fully_cached(
+    out_dir: pathlib.Path,
+    seed_items: list[dict[str, Any]],
+    dev_items: list[dict[str, Any]],
+    eval_items: list[dict[str, Any]],
+    diag_items: list[dict[str, Any]],
+    calibrate_only: bool,
+    include_b512: bool,
+) -> bool:
+    seed_map = _load_uid_map(out_dir / "seed_60_cache.jsonl")
+    dev_map = _load_uid_map(out_dir / "dev_60_cache.jsonl")
+    if not all(str(x["uid"]) in seed_map for x in seed_items):
+        return False
+    if not all(str(x["uid"]) in dev_map for x in dev_items):
+        return False
+    if calibrate_only:
+        return True
+
+    eval_map = _load_uid_map(out_dir / "eval_450_cache.jsonl")
+    for x in eval_items:
+        u = str(x["uid"])
+        if u not in eval_map:
+            return False
+        if include_b512 and "m2_b512" not in eval_map[u]:
+            return False
+
+    ehurt_map = _load_uid_map(out_dir / "diag_ehurt_cache.jsonl")
+    ehurt_uids: list[str] = []
+    for x in diag_items:
+        u = str(x["uid"])
+        if u not in ehurt_map:
+            return False
+        row = ehurt_map[u]
+        if int(row["b0"]["z"]) == 1 and int(row["b1b"]["z"]) == 0 and row["b1b"]["t_think"]:
+            ehurt_uids.append(u)
+
+    if not ehurt_uids:
+        return True
+    ctrl_path = out_dir / "diag_controls_cache.jsonl"
+    if not ctrl_path.is_file():
+        return False
+    ctrl_keys = {
+        (str(rec["uid"]), str(rec["mode"]))
+        for rec in _load_jsonl(ctrl_path)
+    }
+    for u in ehurt_uids:
+        for m in _DIAG_MODES:
+            if (u, m) not in ctrl_keys:
+                return False
+    return True
 
 
 def _resolve_m2_b512(
@@ -975,7 +1177,34 @@ def main() -> None:
         action="store_true",
         help="Load Hugging Face models strictly from local cache without network lookups.",
     )
+    parser.add_argument(
+        "--shard-idx",
+        type=int,
+        default=0,
+        help="0-based worker shard index when splitting a single model across GPUs.",
+    )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=1,
+        help="Total number of data-parallel shards for a single model (1 disables sharding).",
+    )
+    parser.add_argument(
+        "--merge-shards",
+        action="store_true",
+        help="Merge out_dir/shards/shard_* caches into canonical JSONL files before finalizing summaries.",
+    )
+    parser.add_argument(
+        "--keep-shards",
+        action="store_true",
+        help="Retain out_dir/shards after --merge-shards completes (default removes temp shards).",
+    )
     args = parser.parse_args()
+
+    if args.num_shards < 1:
+        parser.error("--num-shards must be >= 1")
+    if not (0 <= args.shard_idx < args.num_shards):
+        parser.error(f"--shard-idx ({args.shard_idx}) must satisfy 0 <= shard_idx < num_shards ({args.num_shards})")
 
     data_dir = pathlib.Path(args.data_dir)
     verify_manifest_integrity(data_dir)
@@ -993,6 +1222,12 @@ def main() -> None:
     diag_tag = "strict341" if args.strict_diag else "diag491"
     diag_file = "ifeval_diag_341_strict.jsonl" if args.strict_diag else "ifeval_diag_491.jsonl"
     diag_items = _load_jsonl(data_dir / diag_file)
+
+    shard_mode = args.num_shards > 1 and not args.merge_shards
+    if args.merge_shards:
+        merged_stats = merge_shard_caches(out_dir, seed_items, dev_items, eval_items, diag_items)
+        if merged_stats:
+            print(f"[merge] Merged shards into {out_dir}: {merged_stats}", flush=True)
 
     t_run_start = time.perf_counter()
     resolved_runtime = (
@@ -1021,10 +1256,11 @@ def main() -> None:
         "b0_max_new_tokens": 1024,
         "b1b_max_new_tokens": 2048,
     }
+    shard_banner = f" | shard={args.shard_idx}/{args.num_shards}" if shard_mode else ""
     print(
         banner(
             f"RUN MATRIX: {args.model} | diag_pool={diag_tag} ({len(diag_items)}) | "
-            f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}",
+            f"device={resolved_runtime[0]} | dtype={resolved_runtime[1]}{shard_banner}",
             "cyan",
         ),
         flush=True,
@@ -1038,17 +1274,92 @@ def main() -> None:
         flush=True,
     )
 
-    engine = _build_engine(
-        args.model,
-        device_arg=args.device,
-        use_mock=args.mock,
-        dtype_arg=args.dtype,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        presence_penalty=args.presence_penalty,
-        sampling_seed=args.seed,
-        local_files_only=args.offline,
-    )
+    if (
+        not shard_mode
+        and args.merge_shards
+        and not args.mock
+        and _is_model_fully_cached(
+            out_dir,
+            seed_items,
+            dev_items,
+            eval_items,
+            diag_items,
+            calibrate_only=args.calibrate_only,
+            include_b512=args.include_b512,
+        )
+    ):
+        print("[merge] All shard items cached; finalizing summaries on tokenizer-only path.", flush=True)
+        engine = _TokenizerOnlyEngine(args.model, local_files_only=args.offline)
+    else:
+        engine = _build_engine(
+            args.model,
+            device_arg=args.device,
+            use_mock=args.mock,
+            dtype_arg=args.dtype,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            presence_penalty=args.presence_penalty,
+            sampling_seed=args.seed,
+            local_files_only=args.offline,
+        )
+
+    if shard_mode:
+        shard_dir = out_dir / "shards" / f"shard_{args.shard_idx}_of_{args.num_shards}"
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        cache_split_primitives(
+            engine,
+            seed_items[args.shard_idx :: args.num_shards],
+            shard_dir / "seed_60_cache.jsonl",
+            False,
+            True,
+            calib_seed_only=True,
+            extra_existing=_load_uid_map(out_dir / "seed_60_cache.jsonl"),
+        )
+        cache_split_primitives(
+            engine,
+            dev_items[args.shard_idx :: args.num_shards],
+            shard_dir / "dev_60_cache.jsonl",
+            False,
+            True,
+            extra_existing=_load_uid_map(out_dir / "dev_60_cache.jsonl"),
+        )
+        if args.calibrate_only:
+            print(
+                banner(
+                    f"COMPLETED CALIBRATION SHARD {args.shard_idx}/{args.num_shards}: {args.model}",
+                    "green",
+                ),
+                flush=True,
+            )
+            return
+        cache_split_primitives(
+            engine,
+            eval_items[args.shard_idx :: args.num_shards],
+            shard_dir / "eval_450_cache.jsonl",
+            True,
+            True,
+            include_b512=args.include_b512,
+            extra_existing=_load_uid_map(out_dir / "eval_450_cache.jsonl"),
+        )
+        gsm_seed = [x for x in seed_items if x["dataset"] == "gsm8k"]
+        run_section6_diagnostics(
+            engine,
+            diag_items[args.shard_idx :: args.num_shards],
+            gsm_seed,
+            out_dir,
+            mode_cb=None,
+            shard_dir=shard_dir,
+        )
+        shard_sec = round(time.perf_counter() - t_run_start, 2)
+        print(
+            banner(
+                f"COMPLETED SHARD {args.shard_idx}/{args.num_shards}: {args.model} ({diag_tag}) "
+                f"in {shard_sec:.1f}s -> {shard_dir}",
+                "green",
+            ),
+            flush=True,
+        )
+        return
 
     t_calib_start = time.perf_counter()
     seed_rows = cache_split_primitives(
@@ -1097,6 +1408,8 @@ def main() -> None:
             )
         )
     if args.calibrate_only:
+        if args.merge_shards and not args.keep_shards and (out_dir / "shards").is_dir():
+            shutil.rmtree(out_dir / "shards", ignore_errors=True)
         print(
             hl(f"Saved calibration summary for {args.model} to {calib_path} ({t_calib_sec:.1f}s)", "green")
         )
@@ -1317,6 +1630,8 @@ def main() -> None:
     t_diag_sec = round(time.perf_counter() - t_diag_start, 2)
     t_total_sec = round(time.perf_counter() - t_run_start, 2)
     _write_matrix_artifacts("completed", diag_summary, t_diag_sec)
+    if args.merge_shards and not args.keep_shards and (out_dir / "shards").is_dir():
+        shutil.rmtree(out_dir / "shards", ignore_errors=True)
     _emit_step_checkpoint(
         args,
         f"Section 6 & Matrix Complete: {args.model} ({diag_tag})",
