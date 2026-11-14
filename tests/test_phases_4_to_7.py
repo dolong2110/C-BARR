@@ -1179,6 +1179,213 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("ifevalpp_paraphrase_stress", res)
             self.assertIn("mlp_para", res["ifevalpp_paraphrase_stress"])
 
+    def test_mps_bf16_auto_selection_and_fallback(self) -> None:
+        """MPS auto precision prefers BF16 when supported cleanly and falls back to FP16 otherwise."""
+        from unittest import mock
+        import scripts.run_matrix as rm
+
+        with mock.patch.object(rm, "_mps_supports_bf16", return_value=True):
+            self.assertEqual(rm.resolve_device_and_dtype("mps", "auto"), ("mps", torch.bfloat16))
+        with mock.patch.object(rm, "_mps_supports_bf16", return_value=False):
+            self.assertEqual(rm.resolve_device_and_dtype("mps", "auto"), ("mps", torch.float16))
+        self.assertEqual(rm.resolve_device_and_dtype("mps", "float16"), ("mps", torch.float16))
+
+    def test_seed_calib_tier_skip_and_native_probe_b0_fusion(self) -> None:
+        """Seed-only calibration skips unused M2 tiers; native greedy engine fuses probe -> b0."""
+        from unittest import mock
+        from scripts.run_matrix import cache_split_primitives, run_section6_diagnostics
+        from src.engine import CBARRDualModeEngine, run_gate1_lexical
+
+        class _NativeDummyTok:
+            eos_token_id = 99
+            pad_token_id = 0
+
+            def convert_tokens_to_ids(self, tok_str: str) -> int:
+                return 99 if tok_str == "<|im_end|>" else -1
+
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                if len(msgs) == 3:
+                    return f"U1:{msgs[0]['content']}|A1:{msgs[1]['content']}|U2:{msgs[2]['content']}|GEN:"
+                return f"SYS:{msgs[0]['content']}|THINK={enable_thinking}|"
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                return [10 + (i % 50) for i, _ in enumerate(text.split())]
+
+            def decode(self, token_ids: Sequence[int], skip_special_tokens: bool = False) -> str:
+                return " ".join(
+                    "<|im_end|>" if t == 99 else f"w{t}" for t in token_ids
+                )
+
+        # Construct a native-class instance (does NOT override _decode_raw) with a mocked generate core
+        eng = CBARRDualModeEngine.__new__(CBARRDualModeEngine)
+        eng.model_id = "Qwen/Qwen3.5-0.8B"
+        eng.is_smollm3 = False
+        eng.freeze_smollm3_date = "01 November 2026"
+        eng.device = "cpu"
+        eng.temperature = 0.0
+        eng.top_p = 1.0
+        eng.presence_penalty = 0.0
+        eng.sampling_seed = 42
+        eng.tok = _NativeDummyTok()
+        eng.eos_ids = {99}
+
+        core_calls: list[dict] = []
+
+        def _fake_core(
+            inp_ids,
+            attention_mask,
+            prompt_len_for_penalty,
+            max_new_tokens,
+            log_entropies,
+            seed_key,
+            past_key_values=None,
+            return_past=False,
+        ):
+            core_calls.append({"max_new": max_new_tokens, "has_pkv": past_key_values is not None})
+            if past_key_values is not None:
+                ids = [201, 202, 99][:max_new_tokens]
+                prev_gen = [101, 102]
+                seq = torch.cat([inp_ids, torch.tensor([ids])], dim=1)
+                return {
+                    "raw_text": eng.tok.decode(ids),
+                    "gen_ids": ids,
+                    "total_gen_tokens": len(ids),
+                    "content_tokens": len(ids) - (1 if ids[-1] == 99 else 0),
+                    "hit_eos": bool(ids and ids[-1] == 99),
+                    "step_entropies": [],
+                    "latency_ms": 1.0,
+                }
+            if max_new_tokens == 32:
+                ids = [101, 102]
+                seq = torch.cat([inp_ids, torch.tensor([ids])], dim=1)
+                out_d = {
+                    "raw_text": eng.tok.decode(ids),
+                    "gen_ids": ids,
+                    "total_gen_tokens": len(ids),
+                    "content_tokens": 2,
+                    "hit_eos": False,
+                    "step_entropies": [0.2, 0.3],
+                    "latency_ms": 1.0,
+                }
+                if return_past:
+                    out_d["_kv_state"] = {
+                        "sequences": seq,
+                        "past_key_values": "MOCK_PKV",
+                        "prompt_len_for_penalty": prompt_len_for_penalty,
+                        "gen_ids": ids,
+                    }
+                return out_d
+            ids = list(range(300, 300 + min(40, max_new_tokens))) + [99]
+            ids = ids[:max_new_tokens]
+            return {
+                "raw_text": eng.tok.decode(ids),
+                "gen_ids": ids,
+                "total_gen_tokens": len(ids),
+                "content_tokens": len(ids) - (1 if ids[-1] == 99 else 0),
+                "hit_eos": bool(ids and ids[-1] == 99),
+                "step_entropies": [],
+                "latency_ms": 2.0,
+            }
+
+        item = _read_jsonl(ROOT / "data/seed_60.jsonl")[0]
+        with mock.patch.object(eng, "_decode_generate_core", side_effect=_fake_core):
+            def _fake_raw_stateful(prompt_str, max_new_tokens, log_entropies=False):
+                return _fake_core(
+                    torch.tensor([[1, 2, 3]]), torch.ones((1, 3), dtype=torch.long),
+                    3, max_new_tokens, log_entropies, prompt_str, return_past=True
+                )
+
+            with mock.patch.object(eng, "_decode_raw_stateful", side_effect=_fake_raw_stateful), mock.patch.object(
+                eng, "_decode_raw", side_effect=lambda p, max_new_tokens, log_entropies=False: _fake_core(
+                    torch.tensor([[1, 2, 3]]), torch.ones((1, 3), dtype=torch.long),
+                    3, max_new_tokens, log_entropies, p, return_past=False
+                )
+            ):
+                with tempfile.TemporaryDirectory() as td:
+                    rows = cache_split_primitives(
+                        eng, [item], pathlib.Path(td) / "seed.jsonl",
+                        full_eval_modes=False, run_calib_tiers=True, calib_seed_only=True,
+                    )
+                    self.assertIn("m2_b128", rows[0])
+                    self.assertNotIn("m2_b64", rows[0])
+                    self.assertNotIn("m2_b256", rows[0])
+                    # Probe(32) + complete_fast_probe(has_pkv=True) fused b0 without extra separate b0 decode!
+                    self.assertTrue(any(c["has_pkv"] for c in core_calls))
+                    self.assertFalse(rows[0]["b0"]["truncated"])
+
+                # Also verify run_section6_diagnostics reuses B2a_post_anchor for B2b_post_raw
+                ehurt_item = [r for r in _read_jsonl(ROOT / "data/eval_450.jsonl") if r["slice"] == "ifeval_precision"][0]
+                diag_calls: list[str] = []
+
+                def _fake_diag_raw(prompt_str, max_new_tokens, log_entropies=False):
+                    diag_calls.append(prompt_str)
+                    return {
+                        "raw_text": "clean response",
+                        "gen_ids": [1, 2, 99],
+                        "total_gen_tokens": 3,
+                        "content_tokens": 2,
+                        "hit_eos": True,
+                        "step_entropies": [],
+                        "latency_ms": 1.0,
+                    }
+
+                with tempfile.TemporaryDirectory() as td2:
+                    tp = pathlib.Path(td2)
+                    # Pre-populate diag_ehurt_cache with one E_hurt row
+                    (tp / "diag_ehurt_cache.jsonl").write_text(
+                        json.dumps({
+                            "item": ehurt_item,
+                            "b0": {"z": 1, "T_total": 10},
+                            "b1b": {"z": 0, "T_total": 50, "t_think": "long thinking"},
+                            "probe": {"T_probe": 10},
+                            "fast_done": {"z": 1, "T_total": 10},
+                        }) + "\n",
+                        encoding="utf-8",
+                    )
+                    with mock.patch.object(eng, "_decode_raw", side_effect=_fake_diag_raw):
+                        summary = run_section6_diagnostics(eng, [ehurt_item], [{"rationale_gold": "step 1"}], tp)
+                    self.assertEqual(len(diag_calls), 5)  # 5 instead of 6 (B2b reused B2a!)
+                    g1_e = run_gate1_lexical(ehurt_item["prompt"])
+                    self.assertIn("B2b_post_raw", summary)
+                    self.assertEqual(summary["B2a_post_anchor"]["n_ehurt"], 1)
+                    controls_recs = {
+                        (r["uid"], r["mode"]): r["a_final"]
+                        for r in (json.loads(l) for l in (tp / "diag_controls_cache.jsonl").read_text().splitlines() if l)
+                    }
+                    self.assertEqual(controls_recs[(ehurt_item["uid"], "B2a_post_anchor")], "clean response")
+                    self.assertEqual(
+                        controls_recs[(ehurt_item["uid"], "B2b_post_raw")],
+                        f"[Reminder: strictly follow: {g1_e.anchor_clause}]\nclean response",
+                    )
+
+    def test_detect_hardware_mps_telemetry(self) -> None:
+        """Hardware probe records Apple Silicon MPS VRAM and BF16 capability cleanly."""
+        from unittest import mock
+        from types import SimpleNamespace
+        from scripts.log_experiment import _detect_hardware
+
+        fake_torch = SimpleNamespace(
+            __version__="2.14.1",
+            version=SimpleNamespace(cuda=None),
+            cuda=SimpleNamespace(is_available=lambda: False),
+            backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: True)),
+            bfloat16=torch.bfloat16,
+            ones=lambda *a, **kw: torch.ones(*a),
+            mps=SimpleNamespace(recommended_max_memory=lambda: int(24 * (1024**3))),
+        )
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            hw = _detect_hardware()
+        self.assertTrue(hw["mps_available"])
+        self.assertIn("Apple MPS", hw["gpu_name"])
+        self.assertEqual(hw["vram_gb"], 24.0)
+        self.assertTrue(hw["bf16_native"])
+
 
 if __name__ == "__main__":
     unittest.main()

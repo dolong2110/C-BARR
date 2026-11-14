@@ -345,11 +345,20 @@ def main() -> None:
         cache_out = out_dir / f"smoke_12_{tag}.jsonl"
         if args.live_gpu:
             device, dtype = resolve_device_and_dtype(args.device, args.dtype)
+            print(f"[smoke] Loading {model_id} on device={device} dtype={dtype}", flush=True)
             engine = CBARRDualModeEngine(model_id, device=device, dtype=dtype)
         else:
             engine = MockDualModeEngine(model_id)
         res = verify_gate_3_on_engine(engine, smoke_items, cache_out)
         results.append(res)
+        if args.live_gpu:
+            import gc
+            from scripts.run_matrix import _release_accelerator_cache
+
+            dev_name = str(getattr(engine, "device", "cpu"))
+            del engine
+            gc.collect()
+            _release_accelerator_cache(dev_name)
 
     summary_path = out_dir / "smoke_test_gate3_report.json"
     summary_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")

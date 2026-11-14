@@ -72,10 +72,30 @@ def verify_manifest_integrity(data_dir: pathlib.Path) -> dict[str, str]:
     return manifest
 
 
+def _mps_supports_bf16() -> bool:
+    """Checks whether Apple Silicon MPS supports native bfloat16 matmul cleanly."""
+    if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+        return False
+    try:
+        probe = torch.ones((2, 2), device="mps", dtype=torch.bfloat16)
+        _ = float((probe @ probe).sum().item())
+        return True
+    except Exception:
+        return False
+
+
+def _release_accelerator_cache(device_str: str) -> None:
+    """Frees idle allocator blocks on MPS or CUDA during long per-item sweeps."""
+    if device_str == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        torch.mps.empty_cache()
+    elif device_str.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def resolve_device_and_dtype(
     device_arg: str = "auto", dtype_arg: str = "auto"
 ) -> tuple[str, torch.dtype]:
-    """Resolves target compute device and hardware-appropriate floating dtype (BF16 on sm>=80, FP16 on T4/P100/MPS)."""
+    """Resolves target compute device and hardware-appropriate floating dtype (BF16 on sm>=80 & supported MPS)."""
     if device_arg == "auto":
         if torch.cuda.is_available():
             dev = "cuda"
@@ -108,7 +128,7 @@ def resolve_device_and_dtype(
         )
         return dev, (torch.bfloat16 if has_native_bf16 else torch.float16)
     if dev == "mps":
-        return dev, torch.float16
+        return dev, (torch.bfloat16 if _mps_supports_bf16() else torch.float16)
     return dev, torch.float32
 
 
@@ -194,6 +214,7 @@ def cache_split_primitives(
     include_b512: bool = False,
     checkpoint_every: int = 0,
     checkpoint_cb: Callable[[int, int, str, str], None] | None = None,
+    calib_seed_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Executes and incrementally caches atomic primitives per item to prevent GPU re-runs (with D13-D16)."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,19 +289,43 @@ def cache_split_primitives(
                     t_item_start = time.perf_counter()
                     prompt = item["prompt"]
                     g1 = run_gate1_lexical(prompt)
-                    # Patch D14: max_new_tokens=1024
-                    b0 = _annotate_run(
-                        item, engine.run_direct_non_thinking(prompt, max_new_tokens=1024)
+                    # On native greedy HF backend, run Gate-2 32-token probe first and continue from
+                    # its live KV/DeltaNet cache to get identical b0/fast_done in 1 pass instead of 2.
+                    native_greedy = (
+                        type(engine)._decode_raw is CBARRDualModeEngine._decode_raw
+                        and float(getattr(engine, "temperature", 0.0)) == 0.0
                     )
-                    probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
-                    # Patch D15: Reuse b0 when probe has empty ans_prefix under deterministic greedy decoding
-                    if probe["ans_prefix"] == "":
-                        probe.pop("_kv_state", None)
-                        fast_done = dict(b0)
+                    if native_greedy:
+                        probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
+                        if probe["ans_prefix"] == "":
+                            fast_done = _annotate_run(
+                                item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
+                            )
+                            b0 = dict(fast_done)
+                            b0["truncated"] = False
+                        else:
+                            probe.pop("_kv_state", None)
+                            # Patch D14: max_new_tokens=1024
+                            b0 = _annotate_run(
+                                item, engine.run_direct_non_thinking(prompt, max_new_tokens=1024)
+                            )
+                            fast_done = _annotate_run(
+                                item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
+                            )
                     else:
-                        fast_done = _annotate_run(
-                            item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
+                        # Patch D14: max_new_tokens=1024
+                        b0 = _annotate_run(
+                            item, engine.run_direct_non_thinking(prompt, max_new_tokens=1024)
                         )
+                        probe = engine.run_gate2_fast_probe(prompt, g1=g1, probe_tokens=32)
+                        # Patch D15: Reuse b0 when probe has empty ans_prefix under deterministic greedy decoding
+                        if probe["ans_prefix"] == "":
+                            probe.pop("_kv_state", None)
+                            fast_done = dict(b0)
+                        else:
+                            fast_done = _annotate_run(
+                                item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
+                            )
                     # Capture greedy B1b Stage-1 token IDs in memory to slice M2 caps without regenerating <think>,
                     # plus per-item s2_memo to skip duplicate Stage-2 decoding when </think> closes early.
                     b1b_s1: dict[str, Any] = {}
@@ -307,27 +352,28 @@ def cache_split_primitives(
                     }
 
                     if run_calib_tiers or full_eval_modes:
-                        # Patch D13: Deduct T_probe at B=250 when escalated from Gate 2 so T_probe + T_think <= 250 (OAA_250)
-                        b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
-                        rec["m2_b64"] = _run_or_reuse_m2_row(
-                            item, g1, b1b, 64, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
-                        )
                         rec["m2_b128"] = _run_or_reuse_m2_row(
                             item, g1, b1b, 128, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
                         )
-                        rec["m2_b256"] = _run_or_reuse_m2_row(
-                            item,
-                            g1,
-                            b1b,
-                            b256_after_probe,
-                            "post_stripped",
-                            b1b_s1=b1b_s1,
-                            s2_memo=s2_memo,
-                        )
-                        # Patch D13: Cap m2_b256_direct at budget_b=250
-                        rec["m2_b256_direct"] = _run_or_reuse_m2_row(
-                            item, g1, b1b, 250, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
-                        )
+                        if full_eval_modes or not calib_seed_only:
+                            # Patch D13: Deduct T_probe at B=250 when escalated from Gate 2 so T_probe + T_think <= 250 (OAA_250)
+                            b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
+                            rec["m2_b64"] = _run_or_reuse_m2_row(
+                                item, g1, b1b, 64, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
+                            )
+                            rec["m2_b256"] = _run_or_reuse_m2_row(
+                                item,
+                                g1,
+                                b1b,
+                                b256_after_probe,
+                                "post_stripped",
+                                b1b_s1=b1b_s1,
+                                s2_memo=s2_memo,
+                            )
+                            # Patch D13: Cap m2_b256_direct at budget_b=250
+                            rec["m2_b256_direct"] = _run_or_reuse_m2_row(
+                                item, g1, b1b, 250, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
+                            )
 
                     if full_eval_modes:
                         b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
@@ -367,6 +413,8 @@ def cache_split_primitives(
                     dt_item = time.perf_counter() - t_item_start
                     cum_new_sec += dt_item
                     rows_out.append(rec)
+                    if n_new % 16 == 0:
+                        _release_accelerator_cache(str(getattr(engine, "device", "cpu")))
 
                 now = time.perf_counter()
                 should_log = False
@@ -495,6 +543,8 @@ def run_section6_diagnostics(
     per_mode_z: dict[str, list[int]] = {}
     summary: dict[str, Any] = {}
 
+    can_reuse_b2_post = type(engine)._decode_raw is CBARRDualModeEngine._decode_raw
+    b2a_raw_cache: dict[str, str] = {}
     with controls_cache_path.open("a", encoding="utf-8") as f_ctrl:
         print(
             f"[diag_controls] E_hurt={len(e_hurt)} items across {len(modes)} causal controls",
@@ -507,17 +557,31 @@ def run_section6_diagnostics(
                 uid = str(row["item"]["uid"])
                 cached = cached_controls.get((uid, m))
                 if cached is None:
-                    try:
-                        ans = engine.run_diagnostic_control(
-                            row["item"]["prompt"], row["b1b"]["t_think"], filler_ids, mode=m
+                    ans: str | None = None
+                    if m == "B2b_post_raw" and can_reuse_b2_post and uid in b2a_raw_cache:
+                        g1 = run_gate1_lexical(row["item"]["prompt"])
+                        cb_strip, _ = engine._build_reanchor_for_engine(
+                            False, g1.anchor_clause, "post_stripped"
                         )
-                    except Exception as exc:
-                        print(
-                            f"[ERROR] diag control {m} failed at uid={uid}: {exc}",
-                            file=sys.stderr,
-                            flush=True,
+                        cb_raw, vis_raw = engine._build_reanchor_for_engine(
+                            False, g1.anchor_clause, "post_raw"
                         )
-                        raise
+                        if cb_strip == cb_raw and vis_raw:
+                            ans = f"{vis_raw}{b2a_raw_cache[uid]}"
+                    if ans is None:
+                        try:
+                            ans = engine.run_diagnostic_control(
+                                row["item"]["prompt"], row["b1b"]["t_think"], filler_ids, mode=m
+                            )
+                        except Exception as exc:
+                            print(
+                                f"[ERROR] diag control {m} failed at uid={uid}: {exc}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            raise
+                    if m == "B2a_post_anchor" and can_reuse_b2_post:
+                        b2a_raw_cache[uid] = ans
                     g = grade_item(row["item"], ans)
                     cached = {"uid": uid, "mode": m, "a_final": ans, "grade": g}
                     cached_controls[(uid, m)] = cached
@@ -583,6 +647,7 @@ def _build_engine(
     top_p: float = 1.0,
     presence_penalty: float = 0.0,
     sampling_seed: int = 42,
+    local_files_only: bool = False,
 ) -> Any:
     if use_mock:
         from scripts.run_smoke_test import MockDualModeEngine
@@ -603,6 +668,7 @@ def _build_engine(
         top_p=top_p,
         presence_penalty=presence_penalty,
         sampling_seed=sampling_seed,
+        local_files_only=local_files_only,
     )
 
 
@@ -904,6 +970,11 @@ def main() -> None:
         default=0,
         help="Checkpoint eval_450 progress into ledger every N newly computed items (0 disables mid-split push).",
     )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Load Hugging Face models strictly from local cache without network lookups.",
+    )
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data_dir)
@@ -976,11 +1047,12 @@ def main() -> None:
         top_p=args.top_p,
         presence_penalty=args.presence_penalty,
         sampling_seed=args.seed,
+        local_files_only=args.offline,
     )
 
     t_calib_start = time.perf_counter()
     seed_rows = cache_split_primitives(
-        engine, seed_items, out_dir / "seed_60_cache.jsonl", False, True
+        engine, seed_items, out_dir / "seed_60_cache.jsonl", False, True, calib_seed_only=True
     )
     dev_rows = cache_split_primitives(
         engine, dev_items, out_dir / "dev_60_cache.jsonl", False, True

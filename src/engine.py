@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
+import os
 import re
 import time
 from typing import Any
@@ -267,6 +268,7 @@ class CBARRDualModeEngine:
         top_p: float = 1.0,
         presence_penalty: float = 0.0,
         sampling_seed: int = 42,
+        local_files_only: bool = False,
     ):
         if temperature < 0.0:
             raise ValueError(f"temperature must be >= 0.0, got {temperature}")
@@ -280,13 +282,38 @@ class CBARRDualModeEngine:
         self.top_p = float(top_p)
         self.presence_penalty = float(presence_penalty)
         self.sampling_seed = int(sampling_seed)
-        self.tok = AutoTokenizer.from_pretrained(model_id)
-        # AutoModelForCausalLM loads Qwen3_5ForCausalLM on Qwen/Qwen3.5-* checkpoints,
-        # dropping the ViT vision tower and MTP heads to save GPU memory.
+        offline_env = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes") or (
+            os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
+        )
+        use_local_only = bool(local_files_only or offline_env)
+
+        def _load_tok(local_only: bool) -> Any:
+            return AutoTokenizer.from_pretrained(model_id, local_files_only=local_only)
+
+        def _load_model(local_only: bool) -> Any:
+            # AutoModelForCausalLM loads Qwen3_5ForCausalLM on Qwen/Qwen3.5-* checkpoints,
+            # dropping the ViT vision tower and MTP heads to save GPU memory.
+            try:
+                return AutoModelForCausalLM.from_pretrained(
+                    model_id, dtype=dtype, local_files_only=local_only
+                )
+            except TypeError:
+                return AutoModelForCausalLM.from_pretrained(
+                    model_id, torch_dtype=dtype, local_files_only=local_only
+                )
+
         try:
-            loaded = AutoModelForCausalLM.from_pretrained(model_id, dtype=dtype)
-        except TypeError:
-            loaded = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype)
+            self.tok = _load_tok(use_local_only)
+        except OSError:
+            if use_local_only:
+                raise
+            self.tok = _load_tok(True)
+        try:
+            loaded = _load_model(use_local_only)
+        except OSError:
+            if use_local_only:
+                raise
+            loaded = _load_model(True)
         self.model = loaded.to(device).eval()
 
         raw_eos: list[int] = []
@@ -407,11 +434,10 @@ class CBARRDualModeEngine:
             "pad_token_id": self.tok.pad_token_id or next(iter(self.eos_ids), 0),
             "return_dict_in_generate": True,
             "output_scores": log_entropies,
+            "use_cache": True,
         }
         if past_key_values is not None:
             gen_kwargs["past_key_values"] = past_key_values
-        if return_past or past_key_values is not None:
-            gen_kwargs["use_cache"] = True
         temperature = float(getattr(self, "temperature", 0.0))
         top_p = float(getattr(self, "top_p", 1.0))
         presence_penalty = float(getattr(self, "presence_penalty", 0.0))
@@ -435,8 +461,9 @@ class CBARRDualModeEngine:
             attention_mask=attention_mask,
             **gen_kwargs,
         )
-        latency_ms = (time.perf_counter() - t0) * 1000.0
         gen_ids = out.sequences[0, cur_len:].tolist()
+        # Measure wall latency after D2H sequence materialization so async MPS/CUDA work is complete.
+        latency_ms = (time.perf_counter() - t0) * 1000.0
         hit_eos = bool(gen_ids and gen_ids[-1] in self.eos_ids)
 
         # Measure entropy only across non-EOS content tokens so stopping punctuation doesn't skew stats

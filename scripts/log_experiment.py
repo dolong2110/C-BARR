@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import platform
 import re
 import stat
 import subprocess
@@ -73,6 +74,7 @@ def _detect_hardware() -> dict[str, Any]:
         "torch": "unavailable",
         "transformers": "unavailable",
         "cuda_available": False,
+        "mps_available": False,
         "cuda_version": None,
         "gpu_count": 0,
         "gpu_name": "CPU/MPS",
@@ -94,6 +96,9 @@ def _detect_hardware() -> dict[str, Any]:
         info["torch"] = torch.__version__
         info["cuda_version"] = getattr(torch.version, "cuda", None)
         info["cuda_available"] = bool(torch.cuda.is_available())
+        info["mps_available"] = bool(
+            hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        )
         if info["cuda_available"]:
             info["gpu_count"] = int(torch.cuda.device_count())
             props = torch.cuda.get_device_properties(0)
@@ -102,8 +107,28 @@ def _detect_hardware() -> dict[str, Any]:
             info["vram_gb"] = round(props.total_memory / (1024**3), 1)
             info["sm_cap"] = f"{sm[0]}.{sm[1]}"
             info["bf16_native"] = bool(torch.cuda.is_bf16_supported() and sm[0] >= 8)
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            info["gpu_name"] = "Apple MPS"
+        elif info["mps_available"]:
+            info["gpu_count"] = 1
+            chip_label = platform.machine() or "arm64"
+            try:
+                brand = subprocess.check_output(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                if brand:
+                    chip_label = brand
+            except Exception:
+                pass
+            info["gpu_name"] = f"Apple MPS ({chip_label})"
+            if hasattr(torch, "mps") and hasattr(torch.mps, "recommended_max_memory"):
+                info["vram_gb"] = round(torch.mps.recommended_max_memory() / (1024**3), 1)
+            try:
+                p = torch.ones((2, 2), device="mps", dtype=torch.bfloat16)
+                _ = float((p @ p).sum().item())
+                info["bf16_native"] = True
+            except Exception:
+                info["bf16_native"] = False
     except Exception:
         pass
     for pkg, key in (("fla", "fla_available"), ("causal_conv1d", "causal_conv1d_available")):

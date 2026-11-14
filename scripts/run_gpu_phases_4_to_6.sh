@@ -9,7 +9,13 @@ set -euo pipefail
 #
 # Key flags:
 #   --gpu <id>              Pin CUDA_VISIBLE_DEVICES (default: auto)
-#   --dtype <auto|bf16|fp16|fp32>  Model precision override (default: auto -> bf16 on sm>=80, fp16 on T4/P100)
+#   --device <dev>          Compute device override: auto, cuda, mps, cpu (default: auto)
+#   --dtype <auto|bf16|fp16|fp32>  Model precision override (default: auto -> bf16 on sm>=80 & Apple Silicon MPS BF16)
+#   --models "<m1 m2>"      Optional space-separated subset of models (default: full C-BARR 4-model matrix)
+#   --model <id>            Convenience alias for single-model local run (repeatable)
+#   --calibrate-only        Run Step 0a + Gate-2 calibration only (seed_60 + dev_60)
+#   --strict-only           Skip the second diag491 pass and run strict341 only
+#   --offline               Set HF_HUB_OFFLINE=1 and load locally cached checkpoints without Hub network checks
 #   --push                  Commit & push EXPERIMENT_LOG.md at every internal step and outer loop
 #   --checkpoint-every <N>  Mid-eval_450 checkpoint cadence in new items (default: 150 live, 0 mock)
 #   --with-9b / --with-w7   Enable Qwen3.5-9B scale sweep / optional W7 extensions
@@ -26,6 +32,9 @@ WITH_9B=0
 WITH_W7=0
 IS_MOCK=0
 SKIP_SMOKE=0
+CALIBRATE_ONLY=0
+STRICT_ONLY=0
+OFFLINE_MODE=0
 AUTO_PUSH="${CBARR_AUTO_PUSH:-0}"
 OUT_DIR="outputs"
 FIG_DIR="paper/figures"
@@ -34,7 +43,9 @@ EXP_LOG=""
 NO_EXP_LOG=0
 RUN_ID_ARG=""
 DTYPE="auto"
+DEVICE_ARG="auto"
 GPU_ID=""
+MODELS_ARG=()
 SEED=42
 LAM_UTILITY="0.05"
 NORM_TOKENS="250.0"
@@ -51,10 +62,29 @@ while [ "$#" -gt 0 ]; do
     --with-9b) WITH_9B=1 ;;
     --with-w7) WITH_W7=1 ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
+    --calibrate-only) CALIBRATE_ONLY=1 ;;
+    --strict-only) STRICT_ONLY=1 ;;
+    --offline) OFFLINE_MODE=1; export HF_HUB_OFFLINE=1; EXTRA_FLAGS+=("--offline") ;;
     --no-exp-log) NO_EXP_LOG=1 ;;
     --push) AUTO_PUSH=1 ;;
     --include-b512) EXTRA_FLAGS+=("$1") ;;
     --mock) IS_MOCK=1; EXTRA_FLAGS+=("$1") ;;
+    --device)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      DEVICE_ARG="$1"
+      ;;
+    --model)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      MODELS_ARG+=("$1")
+      ;;
+    --models)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      read -r -a _tmp_models <<< "$1"
+      MODELS_ARG+=("${_tmp_models[@]}")
+      ;;
     --run-id)
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
@@ -183,6 +213,7 @@ fi
 
 # Shared hyperparameters and per-step checkpoint flags forwarded into every scripts/run_matrix.py invocation
 MATRIX_PARAM_FLAGS=(
+  --device "$DEVICE_ARG"
   --seed "$SEED"
   --lam-utility "$LAM_UTILITY"
   --norm-tokens "$NORM_TOKENS"
@@ -250,8 +281,12 @@ checkpoint_exp_log() {
   if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
     push_args=(--git-push)
   fi
-  if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ] && [ -f "outputs/smoke_test_gate3_report.json" ]; then
-    smoke_args=(--smoke-report "outputs/smoke_test_gate3_report.json")
+  if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ]; then
+    if [ -f "${OUT_DIR}/smoke_test_gate3_report.json" ]; then
+      smoke_args=(--smoke-report "${OUT_DIR}/smoke_test_gate3_report.json")
+    elif [ -f "outputs/smoke_test_gate3_report.json" ]; then
+      smoke_args=(--smoke-report "outputs/smoke_test_gate3_report.json")
+    fi
   fi
   "$PY_BIN" scripts/log_experiment.py \
     --run-id "$RUN_ID" \
@@ -337,13 +372,23 @@ run_stage "Gate 0: Preflight Tests" "$PY_BIN" -m unittest discover -s tests -v
 
 if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ]; then
   run_stage "Step 0a: Hardware & Kernel Probe" "$PY_BIN" -c "
-import torch, transformers
-print('PyTorch:', torch.__version__, '| CUDA:', getattr(torch.version, 'cuda', None), '| Transformers:', transformers.__version__)
-print('CUDA available:', torch.cuda.is_available(), '| Device count:', torch.cuda.device_count())
+import platform, torch, transformers
+print('PyTorch:', torch.__version__, '| Transformers:', transformers.__version__, '| Arch:', platform.machine())
+print('CUDA available:', torch.cuda.is_available(), '| Device count:', torch.cuda.device_count(), '| MPS available:', bool(hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()))
 if torch.cuda.is_available():
     props = torch.cuda.get_device_properties(0)
     sm = torch.cuda.get_device_capability(0)
     print(f'GPU[0]: {props.name} | VRAM={props.total_memory / (1024**3):.1f} GB | SM={sm[0]}.{sm[1]} | BF16={torch.cuda.is_bf16_supported() and sm[0] >= 8}')
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    mem_gb = torch.mps.recommended_max_memory() / (1024**3) if hasattr(torch, 'mps') and hasattr(torch.mps, 'recommended_max_memory') else 0.0
+    bf16_ok = False
+    try:
+        p = torch.ones((2, 2), device='mps', dtype=torch.bfloat16)
+        _ = float((p @ p).sum().item())
+        bf16_ok = True
+    except Exception:
+        bf16_ok = False
+    print(f'MPS: Apple Silicon | MaxRecMem={mem_gb:.1f} GB | BF16={bf16_ok}')
 for pkg in ('fla', 'causal_conv1d'):
     try:
         mod = __import__(pkg)
@@ -351,22 +396,70 @@ for pkg in ('fla', 'causal_conv1d'):
     except Exception as exc:
         print(f'Optional kernel {pkg}: unavailable ({exc}) -> PyTorch fallback will be used')
 "
-  run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu
+  SMOKE_MODEL_ARGS=()
+  if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+    SMOKE_MODEL_ARGS=(--models "${MODELS_ARG[@]}")
+  fi
+  run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${SMOKE_MODEL_ARGS[@]+"${SMOKE_MODEL_ARGS[@]}"}
+fi
+
+if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+  for _m in "${MODELS_ARG[@]}"; do
+    if [ "$CALIBRATE_ONLY" -eq 1 ]; then
+      run_stage "Calibrate: ${_m}" \
+        "$PY_BIN" scripts/run_matrix.py --model "$_m" --out-dir "$OUT_DIR" --dtype "$DTYPE" --calibrate-only "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+    else
+      run_stage "Strict341: ${_m}" \
+        "$PY_BIN" scripts/run_matrix.py --model "$_m" --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+      if [ "$STRICT_ONLY" -eq 0 ]; then
+        run_stage "Diag491: ${_m}" \
+          "$PY_BIN" scripts/run_matrix.py --model "$_m" --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+      fi
+    fi
+  done
+  if [ "$WITH_W7" -eq 1 ] && [ "$CALIBRATE_ONLY" -eq 0 ]; then
+    W7_FLAGS=()
+    if [ "$IS_MOCK" -eq 1 ]; then
+      W7_FLAGS+=(--mock)
+    fi
+    _first_m="${MODELS_ARG[0]}"
+    run_stage "W7: DeltaNet Blend (${_first_m})" \
+      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$_first_m" --out-dir "$OUT_DIR" ${W7_FLAGS[@]+"${W7_FLAGS[@]}"}
+    run_stage "W7: Prefill MLP Probe (${_first_m})" \
+      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$_first_m" --out-dir "$OUT_DIR" ${W7_FLAGS[@]+"${W7_FLAGS[@]}"}
+  fi
+  if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+    run_stage "Phase 7 / W8: Analysis, Tables & Figures" \
+      "$PY_BIN" scripts/analyze_and_plot.py --out-dir "$OUT_DIR" --fig-dir "$FIG_DIR"
+  fi
+  run_stage "Submission Audit: Double-Blind Anonymity" \
+    bash scripts/check_anonymity.sh
+  exit 0
 fi
 
 run_stage "Step 0b: Primary 4B Gate-2 Calibration" \
   "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --calibrate-only "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
+if [ "$CALIBRATE_ONLY" -eq 1 ]; then
+  run_stage "Submission Audit: Double-Blind Anonymity" \
+    bash scripts/check_anonymity.sh
+  exit 0
+fi
+
 # Run strict341 first so its cached diag_ehurt/controls entries are reused during diag491
 run_stage "Phase 4 / W4: Qwen3.5-4B (strict341)" \
   "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
-run_stage "Phase 4 / W4: Qwen3.5-4B (diag491)" \
-  "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+if [ "$STRICT_ONLY" -eq 0 ]; then
+  run_stage "Phase 4 / W4: Qwen3.5-4B (diag491)" \
+    "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-4B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+fi
 
 run_stage "Phase 5 / W5: SmolLM3-3B (strict341)" \
   "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
-run_stage "Phase 5 / W5: SmolLM3-3B (diag491)" \
-  "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+if [ "$STRICT_ONLY" -eq 0 ]; then
+  run_stage "Phase 5 / W5: SmolLM3-3B (diag491)" \
+    "$PY_BIN" scripts/run_matrix.py --model HuggingFaceTB/SmolLM3-3B --out-dir "$OUT_DIR" --dtype "$DTYPE" "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
+fi
 
 run_stage "Phase 6 / W6: Qwen3.5-0.8B (strict341)" \
   "$PY_BIN" scripts/run_matrix.py --model Qwen/Qwen3.5-0.8B --out-dir "$OUT_DIR" --dtype "$DTYPE" --strict-diag "${MATRIX_PARAM_FLAGS[@]}" ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
