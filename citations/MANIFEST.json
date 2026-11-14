@@ -1,0 +1,1245 @@
+[
+  {
+    "slug": "01_zhou2023_ifeval",
+    "bib_key": "zhou2023ifeval",
+    "arxiv_id": "2311.07911",
+    "claimed": "Zhou et al. (2023) Instruction-Following Evaluation for Large Language Models",
+    "ok": true,
+    "source_url": "cached",
+    "file": "01_zhou2023_ifeval.pdf",
+    "size_bytes": 464152,
+    "size_mb": 0.44,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Instruction-Following Evaluation for Large Language Models",
+      "authors": [
+        "Jeffrey Zhou",
+        "Tianjian Lu",
+        "Swaroop Mishra",
+        "Siddhartha Brahma",
+        "Sujoy Basu",
+        "Yi Luan",
+        "Denny Zhou",
+        "Le Hou"
+      ],
+      "published": "2023-11-14T05:13:55Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "One core capability of Large Language Models (LLMs) is to follow natural language instructions. However, the evaluation of such abilities is not standardized: Human evaluations are expensive, slow, and not objectively reproducible, while LLM-based auto-evaluation is potentially biased or limited by the ability of the evaluator LLM. To overcome these issues, we introduce Instruction-Following Eval (IFEval) for large language models. IFEval is a straightforward and easy-to-reproduce evaluation ben"
+    }
+  },
+  {
+    "slug": "02_yang2024_gateddeltanet",
+    "bib_key": "yang2024gateddeltanet",
+    "arxiv_id": "2412.06464",
+    "claimed": "Yang, Kautz, Hatamizadeh (ICLR 2025 / arXiv:2412.06464) Gated Delta Networks",
+    "ok": true,
+    "source_url": "cached",
+    "file": "02_yang2024_gateddeltanet.pdf",
+    "size_bytes": 442953,
+    "size_mb": 0.42,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Gated Delta Networks: Improving Mamba2 with Delta Rule",
+      "authors": [
+        "Songlin Yang",
+        "Jan Kautz",
+        "Ali Hatamizadeh"
+      ],
+      "published": "2024-12-09T13:09:04Z",
+      "comment": "ICLR 2025 camera ready",
+      "journal_ref": "",
+      "abstract_head": "Linear Transformers have gained attention as efficient alternatives to standard Transformers, but their performance in retrieval and long-context tasks has been limited. To address these limitations, recent work has explored two distinct mechanisms: gating for adaptive memory control and the delta update rule for precise memory modifications. We observe that these mechanisms are complementary: gating enables rapid memory erasure while the delta rule facilitates targeted updates. Building on this"
+    }
+  },
+  {
+    "slug": "03_muennighoff2025_s1",
+    "bib_key": "muennighoff2025s1",
+    "arxiv_id": "2501.19393",
+    "claimed": "Muennighoff et al. (EMNLP 2025) s1: Simple test-time scaling",
+    "ok": true,
+    "source_url": "cached",
+    "file": "03_muennighoff2025_s1.pdf",
+    "size_bytes": 1052396,
+    "size_mb": 1.0,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "s1: Simple test-time scaling",
+      "authors": [
+        "Niklas Muennighoff",
+        "Zitong Yang",
+        "Weijia Shi",
+        "Xiang Lisa Li",
+        "Li Fei-Fei",
+        "Hannaneh Hajishirzi",
+        "Luke Zettlemoyer",
+        "Percy Liang",
+        "Emmanuel Candès",
+        "Tatsunori Hashimoto"
+      ],
+      "published": "2025-01-31T18:48:08Z",
+      "comment": "46 pages (9 main), 10 figures, 15 tables",
+      "journal_ref": "",
+      "abstract_head": "Test-time scaling is a promising new approach to language modeling that uses extra test-time compute to improve performance. Recently, OpenAI's o1 model showed this capability but did not publicly share its methodology, leading to many replication efforts. We seek the simplest approach to achieve test-time scaling and strong reasoning performance. First, we curate a small dataset s1K of 1,000 questions paired with reasoning traces relying on three criteria we validate through ablations: difficul"
+    }
+  },
+  {
+    "slug": "04_ma2025_nothinking",
+    "bib_key": "ma2025nothinking",
+    "arxiv_id": "2504.09858",
+    "claimed": "Ma et al. (2025) Reasoning Models Can Be Effective Without Thinking",
+    "ok": true,
+    "source_url": "cached",
+    "file": "04_ma2025_nothinking.pdf",
+    "size_bytes": 819559,
+    "size_mb": 0.78,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Reasoning Models Can Be Effective Without Thinking",
+      "authors": [
+        "Wenjie Ma",
+        "Jingxuan He",
+        "Charlie Snell",
+        "Tyler Griggs",
+        "Sewon Min",
+        "Matei Zaharia"
+      ],
+      "published": "2025-04-14T04:08:16Z",
+      "comment": "33 pages, 7 main figures, 2 tables",
+      "journal_ref": "",
+      "abstract_head": "Recent LLMs have significantly improved reasoning capabilities, primarily by including an explicit, lengthy Thinking process as part of generation. In this paper, we question whether this explicit thinking is necessary. Using the state-of-the-art DeepSeek-R1-Distill-Qwen, we find that bypassing the thinking process via simple prompting, denoted as NoThinking, can be surprisingly effective. When controlling for the number of tokens, NoThinking outperforms Thinking across a diverse set of seven ch"
+    }
+  },
+  {
+    "slug": "05_li2025_pitfalls",
+    "bib_key": "li2025pitfalls",
+    "arxiv_id": "2505.11423",
+    "claimed": "Li et al. (NeurIPS 2025) When Thinking Fails: The Pitfalls of Reasoning for Instruction-Following in LLMs",
+    "ok": true,
+    "source_url": "cached",
+    "file": "05_li2025_pitfalls.pdf",
+    "size_bytes": 3122680,
+    "size_mb": 2.98,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "When Thinking Fails: The Pitfalls of Reasoning for Instruction-Following in LLMs",
+      "authors": [
+        "Xiaomin Li",
+        "Zhou Yu",
+        "Zhiwei Zhang",
+        "Xupeng Chen",
+        "Ziji Zhang",
+        "Yingying Zhuang",
+        "Narayanan Sadagopan",
+        "Anurag Beniwal"
+      ],
+      "published": "2025-05-16T16:36:00Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Reasoning-enhanced large language models (RLLMs), whether explicitly trained for reasoning or prompted via chain-of-thought (CoT), have achieved state-of-the-art performance on many complex reasoning tasks. However, we uncover a surprising and previously overlooked phenomenon: explicit CoT reasoning can significantly degrade instruction-following accuracy. Evaluating 15 models on two benchmarks: IFEval (with simple, rule-verifiable constraints) and ComplexBench (with complex, compositional const"
+    }
+  },
+  {
+    "slug": "06_venkateswaran2026_spotlight",
+    "bib_key": "venkateswaran2026spotlight",
+    "arxiv_id": "2505.12025",
+    "claimed": "Venkateswaran & Contractor (EACL 2026) Spotlight Your Instructions",
+    "ok": true,
+    "source_url": "cached",
+    "file": "06_venkateswaran2026_spotlight.pdf",
+    "size_bytes": 1629929,
+    "size_mb": 1.55,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Spotlight Your Instructions: Instruction-following with Dynamic Attention Steering",
+      "authors": [
+        "Praveen Venkateswaran",
+        "Danish Contractor"
+      ],
+      "published": "2025-05-17T14:28:53Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "In many real-world applications, users rely on natural language instructions to guide large language models (LLMs) across a wide range of tasks. These instructions are often complex, diverse, and subject to frequent change. However, LLMs do not always attend to these instructions reliably, and users lack simple mechanisms to emphasize their importance beyond modifying prompt wording or structure. To address this, we present an inference-time method that enables users to emphasize specific parts "
+    }
+  },
+  {
+    "slug": "07_zhu2026_savethinking",
+    "bib_key": "zhu2026savethinking",
+    "arxiv_id": "2505.15276",
+    "claimed": "Zhu et al. (EMNLP 2026 Findings) When Can Large Reasoning Models Save Thinking?",
+    "ok": true,
+    "source_url": "cached",
+    "file": "07_zhu2026_savethinking.pdf",
+    "size_bytes": 1044337,
+    "size_mb": 1.0,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "When Can Large Reasoning Models Save Thinking? Mechanistic Analysis of Behavioral Divergence in Reasoning",
+      "authors": [
+        "Rongzhi Zhu",
+        "Yi Liu",
+        "Jiancheng Wang",
+        "Xiangyu Liu",
+        "Zequn Sun",
+        "Yiwei Wang",
+        "Yu Deng",
+        "Zijian Zhou",
+        "Wei Hu"
+      ],
+      "published": "2025-05-21T08:55:35Z",
+      "comment": "Accepted in the Findings of EMNLP 2026",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models (LRMs) have achieved remarkable success on complex tasks, yet their tendency to \"overthink\" leads to inefficiencies. Although \"save-thinking\" prompts are intended to mitigate this issue, we find that LRMs still frequently enter the \"Still-thinking\" mode instead of the expected \"No-thinking\" mode, especially on difficult queries. To analyze this behavioral divergence, we examine LRMs from three perspectives: confidence at the thinking-termination boundary, divergence in int"
+    }
+  },
+  {
+    "slug": "08_aggarwal2025_optimalthinkingbench",
+    "bib_key": "aggarwal2025optimalthinkingbench",
+    "arxiv_id": "2508.13141",
+    "claimed": "Aggarwal et al. (2025) OptimalThinkingBench",
+    "ok": true,
+    "source_url": "cached",
+    "file": "08_aggarwal2025_optimalthinkingbench.pdf",
+    "size_bytes": 2161978,
+    "size_mb": 2.06,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "OptimalThinkingBench: Evaluating Over and Underthinking in LLMs",
+      "authors": [
+        "Pranjal Aggarwal",
+        "Seungone Kim",
+        "Jack Lanchantin",
+        "Sean Welleck",
+        "Jason Weston",
+        "Ilia Kulikov",
+        "Swarnadeep Saha"
+      ],
+      "published": "2025-08-18T17:53:10Z",
+      "comment": "30 pages, 10 tables, 11 figures",
+      "journal_ref": "",
+      "abstract_head": "Thinking LLMs solve complex tasks at the expense of increased compute and overthinking on simpler problems, while non-thinking LLMs are faster and cheaper but underthink on harder reasoning problems. This has led to the development of separate thinking and non-thinking LLM variants, leaving the onus of selecting the optimal model for each query on the end user. We introduce OptimalThinkingBench, a unified benchmark that jointly evaluates overthinking and underthinking in LLMs and also encourages"
+    }
+  },
+  {
+    "slug": "09_zeng2025_pac_reasoning",
+    "bib_key": "zeng2025pac",
+    "arxiv_id": "2510.09133",
+    "claimed": "Zeng et al. (NeurIPS 2026 / arXiv:2510.09133) On the Provable Performance Guarantee of Efficient Reasoning Models (PAC Reasoning)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "09_zeng2025_pac_reasoning.pdf",
+    "size_bytes": 1166445,
+    "size_mb": 1.11,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "PAC Reasoning: Controlling the Performance Loss for Efficient Reasoning",
+      "authors": [
+        "Hao Zeng",
+        "Jianguo Huang",
+        "Bingyi Jing",
+        "Hongxin Wei",
+        "Bo An"
+      ],
+      "published": "2025-10-10T08:33:47Z",
+      "comment": "Accepted at NeurIPS 2026 (poster). Camera-ready version",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models (LRMs) have achieved remarkable progress in complex problem-solving tasks. Despite this success, LRMs typically suffer from high computational costs during deployment, highlighting a need for efficient inference. A practical direction is to switch the LRM between thinking and non-thinking modes dynamically. However, such approaches often introduce additional reasoning errors and lack statistical guarantees for the performance loss, which are critical for high-stakes applic"
+    }
+  },
+  {
+    "slug": "10_kwon2025_reasonif",
+    "bib_key": "kwon2025reasonif",
+    "arxiv_id": "2510.15211",
+    "claimed": "Kwon et al. (ACL 2026 Findings / arXiv:2510.15211) ReasonIF",
+    "ok": true,
+    "source_url": "cached",
+    "file": "10_kwon2025_reasonif.pdf",
+    "size_bytes": 530947,
+    "size_mb": 0.51,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "ReasonIF: Large Reasoning Models Fail to Follow Instructions During Reasoning",
+      "authors": [
+        "Yongchan Kwon",
+        "Shang Zhu",
+        "Federico Bianchi",
+        "Kaitlyn Zhou",
+        "James Zou"
+      ],
+      "published": "2025-10-17T00:38:28Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "The ability of large language models (LLMs) to follow user instructions is central to their reliability, safety, and usefulness. While prior studies assess instruction adherence in the model's main responses, we argue that it is also critical for large reasoning models (LRMs) to follow user instructions throughout their reasoning process. Reasoning instruction following makes LRMs more controllable and transparent, while reducing risks of undesirable shortcuts, hallucinations, or reward hacking "
+    }
+  },
+  {
+    "slug": "11_dong2025_ifevalpp",
+    "bib_key": "dong2025ifevalpp",
+    "arxiv_id": "2512.14754",
+    "claimed": "Dong et al. (2025) Revisiting the Reliability of Language Models in Instruction-Following (IFEval++)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "11_dong2025_ifevalpp.pdf",
+    "size_bytes": 948789,
+    "size_mb": 0.9,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Revisiting the Reliability of Language Models in Instruction-Following",
+      "authors": [
+        "Jianshuo Dong",
+        "Yutong Zhang",
+        "Yan Liu",
+        "Zhenyu Zhong",
+        "Tao Wei",
+        "Chao Zhang",
+        "Han Qiu"
+      ],
+      "published": "2025-12-15T02:57:55Z",
+      "comment": "ACL 2026 main oral",
+      "journal_ref": "",
+      "abstract_head": "Advanced LLMs have achieved near-ceiling instruction-following accuracy on benchmarks such as IFEval. However, these impressive scores do not necessarily translate to reliable services in real-world use, where users often vary their phrasing, contextual framing, and task formulations. In this paper, we study nuance-oriented reliability: whether models exhibit consistent competence across cousin prompts that convey analogous user intents but with subtle nuances. To quantify this, we introduce a n"
+    }
+  },
+  {
+    "slug": "12_leviathan2025_promptrep",
+    "bib_key": "leviathan2025promptrep",
+    "arxiv_id": "2512.14982",
+    "claimed": "Leviathan, Kalman, Matias (2025) Prompt Repetition Improves Non-Reasoning LLMs",
+    "ok": true,
+    "source_url": "cached",
+    "file": "12_leviathan2025_promptrep.pdf",
+    "size_bytes": 1809081,
+    "size_mb": 1.73,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Prompt Repetition Improves Non-Reasoning LLMs",
+      "authors": [
+        "Yaniv Leviathan",
+        "Matan Kalman",
+        "Yossi Matias"
+      ],
+      "published": "2025-12-17T00:37:51Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "When not using reasoning, repeating the input prompt improves performance for popular models (Gemini, GPT, Claude, and Deepseek) without increasing the number of generated tokens or latency."
+    }
+  },
+  {
+    "slug": "13_zeng2026_glimprouter",
+    "bib_key": "zeng2026glimprouter",
+    "arxiv_id": "2601.05110",
+    "claimed": "Zeng et al. (2026) GlimpRouter: Efficient Collaborative Inference by Glimpsing One Token of Thoughts",
+    "ok": true,
+    "source_url": "cached",
+    "file": "13_zeng2026_glimprouter.pdf",
+    "size_bytes": 603003,
+    "size_mb": 0.58,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "GlimpRouter: Efficient Collaborative Inference by Glimpsing One Token of Thoughts",
+      "authors": [
+        "Wenhao Zeng",
+        "Xuteng Zhang",
+        "Yuling Shi",
+        "Chao Hu",
+        "Yuting Chen",
+        "Beijun Shen",
+        "Xiaodong Gu"
+      ],
+      "published": "2026-01-08T16:58:07Z",
+      "comment": "Accepted to ACL 2026 Findings. Code available at https://github.com/Zengwh02/GlimpRouter",
+      "journal_ref": "",
+      "abstract_head": "Large Reasoning Models (LRMs) achieve remarkable performance by explicitly generating multi-step chains of thought, but this capability incurs substantial inference latency and computational cost. Collaborative inference offers a promising solution by selectively allocating work between lightweight and large models, yet a fundamental challenge remains: determining when a reasoning step requires the capacity of a large model or the efficiency of a small model. Existing routing strategies either r"
+    }
+  },
+  {
+    "slug": "14_yu2026_bpac",
+    "bib_key": "yu2026bpac",
+    "arxiv_id": "2601.22446",
+    "claimed": "Yu et al. (ICML 2026) Anytime Safe PAC Efficient Reasoning (B-PAC)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "14_yu2026_bpac.pdf",
+    "size_bytes": 16648138,
+    "size_mb": 15.88,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Anytime Safe PAC Efficient Reasoning",
+      "authors": [
+        "Chengyao Yu",
+        "Hao Zeng",
+        "Youxin Zhu",
+        "Jianguo Huang",
+        "Huajun Zeng",
+        "Bingyi Jing"
+      ],
+      "published": "2026-01-30T01:30:17Z",
+      "comment": "Accepted by ICML 2026",
+      "journal_ref": "",
+      "abstract_head": "Large Reasoning Models (LRMs) have demonstrated remarkable performance on complex tasks but suffer from high computational costs and latency. While selective thinking strategies improve efficiency by routing easy queries to non-thinking models, existing approaches often incur uncontrollable errors, especially in online settings where the performance loss of a non-thinking model is only partially observed and data are non-stationary. To address this, we propose Betting Probably Approximately Corr"
+    }
+  },
+  {
+    "slug": "15_yan2026_entrocut",
+    "bib_key": "yan2026entrocut",
+    "arxiv_id": "2601.22617",
+    "claimed": "Yan, Liu, Wang (ICASSP 2026 / arXiv:2601.22617) EntroCut",
+    "ok": true,
+    "source_url": "cached",
+    "file": "15_yan2026_entrocut.pdf",
+    "size_bytes": 1405412,
+    "size_mb": 1.34,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "EntroCut: Entropy-Guided Adaptive Truncation for Efficient Chain-of-Thought Reasoning in Small-scale Large Reasoning Models",
+      "authors": [
+        "Hongxi Yan",
+        "Qingjie Liu",
+        "Yunhong Wang"
+      ],
+      "published": "2026-01-30T06:19:16Z",
+      "comment": "Accepted by ICASSP26",
+      "journal_ref": "",
+      "abstract_head": "Large Reasoning Models (LRMs) excel at complex reasoning tasks through extended chain-of-thought generation, but their reliance on lengthy intermediate steps incurs substantial computational cost. We find that the entropy of the model's output distribution in early reasoning steps reliably distinguishes correct from incorrect reasoning. Motivated by this observation, we propose EntroCut, a training-free method that dynamically truncates reasoning by identifying high-confidence states where reaso"
+    }
+  },
+  {
+    "slug": "16_wang2026_conformal_thinking",
+    "bib_key": "wang2026conformal",
+    "arxiv_id": "2602.03814",
+    "claimed": "Wang et al. (ICML 2026 / arXiv:2602.03814) Conformal Thinking: Risk Control for Reasoning on a Compute Budget",
+    "ok": true,
+    "source_url": "cached",
+    "file": "16_wang2026_conformal_thinking.pdf",
+    "size_bytes": 914101,
+    "size_mb": 0.87,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Conformal Thinking: Risk Control for Reasoning on a Compute Budget",
+      "authors": [
+        "Xi Wang",
+        "Anushri Suresh",
+        "Alvin Zhang",
+        "Rishi More",
+        "William Jurayj",
+        "Benjamin Van Durme",
+        "Mehrdad Farajtabar",
+        "Daniel Khashabi",
+        "Eric Nalisnick"
+      ],
+      "published": "2026-02-03T18:17:22Z",
+      "comment": "ICMl 2026",
+      "journal_ref": "",
+      "abstract_head": "Reasoning Large Language Models (LLMs) enable test-time scaling, with dataset-level accuracy improving as the token budget increases, motivating adaptive reasoning -- spending tokens when they improve reliability and stopping early when additional computation is unlikely to help. However, setting the token budget, as well as the threshold for adaptive reasoning, is a practical challenge that entails a fundamental risk-accuracy trade-off. We re-frame the budget setting problem as risk control, li"
+    }
+  },
+  {
+    "slug": "17_zhao2026_bridging",
+    "bib_key": "zhao2026bridging",
+    "arxiv_id": "2606.03624",
+    "claimed": "Zhao et al. (TACL 2026 / arXiv:2606.03624) Bridging Auxiliary Constraints",
+    "ok": true,
+    "source_url": "cached",
+    "file": "17_zhao2026_bridging.pdf",
+    "size_bytes": 661529,
+    "size_mb": 0.63,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Bridging Auxiliary Constraints to Resolve Instruction Following in Large Reasoning Models",
+      "authors": [
+        "Zhengyi Zhao",
+        "Shubo Zhang",
+        "Huimin Wang",
+        "Zezhong Wang",
+        "Yutian Zhao",
+        "Yefeng Zheng",
+        "Binyang Li",
+        "Yulan He",
+        "Kam-Fai Wong",
+        "Xian Wu"
+      ],
+      "published": "2026-06-02T13:23:28Z",
+      "comment": "a pre-MIT Press publication version",
+      "journal_ref": "",
+      "abstract_head": "Large Reasoning Models (LRMs) have demonstrated impressive capabilities in many tasks, yet they struggle with reliably following multiple instructions, either by failing to satisfy individual constraints or by struggling to balance competing constraints simultaneously. We formalize this challenge as the Constraint Adherence Problem (CAP). This paper introduces a novel framework that addresses CAP by representing instructions as a structured knowledge graph of constraints. Our approach, Constrain"
+    }
+  },
+  {
+    "slug": "18_kumar2026_constraint_shifts",
+    "bib_key": "kumar2026constraint",
+    "arxiv_id": "2606.09662",
+    "claimed": "Senthil Kumar (2026) When Built-in Thinking Helps and Hurts: Constraint-Level Error Shifts",
+    "ok": true,
+    "source_url": "cached",
+    "file": "18_kumar2026_constraint_shifts.pdf",
+    "size_bytes": 1661907,
+    "size_mb": 1.58,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "When Built-in Thinking Helps and Hurts: Constraint-Level Error Shifts in Instruction Following",
+      "authors": [
+        "Sai Adith Senthil Kumar"
+      ],
+      "published": "2026-06-08T15:45:04Z",
+      "comment": "16 pages, 7 figures, 15 tables",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models (LRMs) often improve math and coding performance, but their effect on instruction following is unclear. We study IFEval with Qwen3 models (1.7B-32B), using same-weights Thinking ON/OFF controls; four Hunyuan models provide directional cross-family support. Aggregate pass-rate changes are small (-0.55 to -3.52 pp), yet 10-20% of prompts switch between pass and fail across modes, suggesting that thinking changes the pattern of errors--some prompts improve while others worsen"
+    }
+  },
+  {
+    "slug": "19_lee2026_dart",
+    "bib_key": "lee2026dart",
+    "arxiv_id": "2606.23181",
+    "claimed": "Lee et al. (EMNLP 2026 Findings) DART: Draft-Agreement Routing",
+    "ok": true,
+    "source_url": "cached",
+    "file": "19_lee2026_dart.pdf",
+    "size_bytes": 534076,
+    "size_mb": 0.51,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "DART: Draft-Agreement Routing for Training-Free Adaptive Thinking Budgets in Hybrid Reasoning Models",
+      "authors": [
+        "Jungseob Lee",
+        "Seongtae Hong",
+        "Seungjun Lee",
+        "Jaehyung Seo",
+        "Junyoung Son",
+        "Sugyeong Eo",
+        "Chanjun Park",
+        "Hyeongju Park",
+        "Hyeonseok Moon",
+        "Heuiseok Lim"
+      ],
+      "published": "2026-06-22T11:24:59Z",
+      "comment": "16 pages, 4 figures, 17 tables. Accepted to EMNLP 2026 (findings). Code: https://github.com/js-lee-AI/DART",
+      "journal_ref": "",
+      "abstract_head": "Hybrid reasoning models can answer directly or spend extra tokens on extended thinking. A practical router should choose between these modes for each query, so easy problems avoid unnecessary reasoning and hard problems receive enough budget to finish the answer. Existing routers move in this direction, but they typically require labeled training data or fix thinking budgets up front, ignoring answer-level evidence from the model itself. We introduce DART, a training-free routing framework that "
+    }
+  },
+  {
+    "slug": "20_lei2026_thinking_inertia",
+    "bib_key": "lei2026thinkinginertia",
+    "arxiv_id": "2610.11765",
+    "claimed": "Lei, Lin, Lu, Torr, Zou (NeurIPS 2026) Thinking Inertia: LLMs Keep Thinking When Told Not To",
+    "ok": true,
+    "source_url": "cached",
+    "file": "20_lei2026_thinking_inertia.pdf",
+    "size_bytes": 1694825,
+    "size_mb": 1.62,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Thinking Inertia: LLMs Keep Thinking When Told Not To",
+      "authors": [
+        "Dianqiao Lei",
+        "Kevin Qinghong Lin",
+        "Pan Lu",
+        "Philip Torr",
+        "James Zou"
+      ],
+      "published": "2026-10-08T11:49:37Z",
+      "comment": "Accepted by NeurIPS 2026. Website: https://thinking-inertia.github.io GitHub: https://github.com/thinking-inertia/code",
+      "journal_ref": "",
+      "abstract_head": "Large Language Models (LLMs) increasingly ship with explicit \"thinking modes\", yet their counterpart, \"no-thinking\", has received far less attention. We study LLMs' no-thinking behavior along two axes. a. How to measure no-thinking? Prior work typically defines no-thinking through proxies such as a disabled thinking mode or the absence of long traces. These proxies are unreliable: disabled thinking modes may still emit reasoning, while long traces may contain filler rather than genuine inference"
+    }
+  },
+  {
+    "slug": "21_zhu2026_thinking_leakage",
+    "bib_key": "zhu2026leakage",
+    "arxiv_id": "2610.14270",
+    "claimed": "Zhu et al. (2026) The Thinking Leakage in Reinforcement Learning for LLMs",
+    "ok": true,
+    "source_url": "cached",
+    "file": "21_zhu2026_thinking_leakage.pdf",
+    "size_bytes": 395846,
+    "size_mb": 0.38,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "The Thinking Leakage in Reinforcement Learning for LLMs",
+      "authors": [
+        "Wenxuan Zhu",
+        "Shuming Liu",
+        "Bang An",
+        "Aznaur Aliev",
+        "Bing Li",
+        "Yibo Yang",
+        "Bernard Ghanem"
+      ],
+      "published": "2026-10-09T19:43:51Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Hybrid reasoning models such as the Qwen3 series switch between a THINK mode and a NO-THINK mode through a few chat-template tokens. A popular recipe trains such models with reinforcement learning in NO-THINK mode and reports improved reasoning performance. We provide evidence that much of this gain can be explained by thinking leakage: the gain comes largely from partially reactivating the reasoning abilities of the original model's THINK mode instead of learning enhanced reasoning behavior. We"
+    }
+  },
+  {
+    "slug": "22_ding2026_thinkjev",
+    "bib_key": "ding2026thinkjev",
+    "arxiv_id": "2610.37732",
+    "claimed": "Ding, Yang, Liu (2026) ThinkJev: One Thought, Every Budget for Calibrated Typed Decisions",
+    "ok": true,
+    "source_url": "cached",
+    "file": "22_ding2026_thinkjev.pdf",
+    "size_bytes": 749959,
+    "size_mb": 0.72,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "ThinkJev: One Thought, Every Budget for Calibrated Typed Decisions",
+      "authors": [
+        "Xiaolu Ding",
+        "Kai Yang",
+        "Dongdong Liu"
+      ],
+      "published": "2026-10-27T12:53:04Z",
+      "comment": "31 pages, 7 figures, 10 tables",
+      "journal_ref": "",
+      "abstract_head": "Many uses of language models end in a typed decision: a choice among a closed set of options, whose probabilities code can act on. Reading those probabilities from one forward pass is fast but often wrong on decisions that take several steps, such as arithmetic, counting, and date comparison. Letting the model think first fixes most of these errors, but costs seconds per decision instead of milliseconds. To pay for thinking only where it helps, ThinkJev builds a fast and a slow system from one o"
+    }
+  },
+  {
+    "slug": "23_nguyen2026_early_stopping",
+    "bib_key": "nguyen2026early",
+    "arxiv_id": "2611.00166",
+    "claimed": "Nguyen et al. (2026) Early Stopping in Large Reasoning Models",
+    "ok": true,
+    "source_url": "cached",
+    "file": "23_nguyen2026_early_stopping.pdf",
+    "size_bytes": 2287581,
+    "size_mb": 2.18,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Early Stopping in Large Reasoning Models: A Survey and Empirical Audit of Efficiency and Reliability",
+      "authors": [
+        "Quang Hung Nguyen",
+        "Hanh Nguyen",
+        "Thanh Tam Nguyen",
+        "Quoc Viet Hung Nguyen",
+        "Trinh Pham",
+        "Thanh Trung Huynh"
+      ],
+      "published": "2026-10-30T11:39:08Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models can improve accuracy by generating longer reasoning traces, but some of this computation may be unnecessary. Early-stopping methods aim to stop once enough reasoning is available to answer. Evaluating these methods requires accounting for the cost of deciding when to stop and the reliability of the resulting answer. We evaluate different methods across five reasoning models on mathematical and scientific reasoning, code generation, and factuality tasks by using a shared ro"
+    }
+  },
+  {
+    "slug": "24_han2025_tale",
+    "bib_key": null,
+    "arxiv_id": "2412.18547",
+    "claimed": "Han et al. (ACL 2025 Findings, Ref 39) TALE-EP / TALE-PT",
+    "ok": true,
+    "source_url": "cached",
+    "file": "24_han2025_tale.pdf",
+    "size_bytes": 1116566,
+    "size_mb": 1.06,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Token-Budget-Aware LLM Reasoning",
+      "authors": [
+        "Tingxu Han",
+        "Zhenting Wang",
+        "Chunrong Fang",
+        "Shiyu Zhao",
+        "Shiqing Ma",
+        "Zhenyu Chen"
+      ],
+      "published": "2024-12-24T16:55:45Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Reasoning is critical for large language models (LLMs) to excel in a wide range of tasks. While methods like Chain-of-Thought (CoT) reasoning and enhance LLM performance by decomposing problems into intermediate steps, they also incur significant overhead in token usage, leading to increased costs. We find that the reasoning process of current LLMs is unnecessarily lengthy and it can be compressed by including a reasonable token budget in the prompt, but the choice of token budget plays a crucia"
+    }
+  },
+  {
+    "slug": "25_chen2024_overthinking_o1",
+    "bib_key": null,
+    "arxiv_id": "2412.21187",
+    "claimed": "Do NOT Think That Much for 2+3=? On the Overthinking of o1-Like LLMs (Ref 33)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "25_chen2024_overthinking_o1.pdf",
+    "size_bytes": 3232969,
+    "size_mb": 3.08,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Do NOT Think That Much for 2+3=? On the Overthinking of o1-Like LLMs",
+      "authors": [
+        "Xingyu Chen",
+        "Jiahao Xu",
+        "Tian Liang",
+        "Zhiwei He",
+        "Jianhui Pang",
+        "Dian Yu",
+        "Linfeng Song",
+        "Qiuzhi Liu",
+        "Mengfei Zhou",
+        "Zhuosheng Zhang",
+        "Rui Wang",
+        "Zhaopeng Tu",
+        "Haitao Mi",
+        "Dong Yu"
+      ],
+      "published": "2024-12-30T18:55:12Z",
+      "comment": "We have updated the results of DeepSeek-R1, and all conclusions still hold",
+      "journal_ref": "",
+      "abstract_head": "The remarkable performance of models like the OpenAI o1 can be attributed to their ability to emulate human-like long-time thinking during inference. These models employ extended chain-of-thought (CoT) processes, exploring multiple strategies to enhance problem-solving capabilities. However, a critical question remains: How to intelligently and efficiently scale computational resources during testing. This paper presents the first comprehensive study on the prevalent issue of overthinking in the"
+    }
+  },
+  {
+    "slug": "26_aggarwal2025_l1_lcpo",
+    "bib_key": null,
+    "arxiv_id": "2503.04697",
+    "claimed": "L1 (LCPO): Controlling How Long A Reasoning Model Thinks (Refs 40, 42)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "26_aggarwal2025_l1_lcpo.pdf",
+    "size_bytes": 1328188,
+    "size_mb": 1.27,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "L1: Controlling How Long A Reasoning Model Thinks With Reinforcement Learning",
+      "authors": [
+        "Pranjal Aggarwal",
+        "Sean Welleck"
+      ],
+      "published": "2025-03-06T18:43:29Z",
+      "comment": "Accepted at COLM 2025",
+      "journal_ref": "",
+      "abstract_head": "Reasoning language models have shown an uncanny ability to improve performance at test-time by ``thinking longer''-that is, by generating longer chain-of-thought sequences and hence using more compute. However, the length of their chain-of-thought reasoning is not controllable, making it impossible to allocate test-time compute to achieve a desired level of performance. We introduce Length Controlled Policy Optimization (LCPO), a simple reinforcement learning method that optimizes for accuracy a"
+    }
+  },
+  {
+    "slug": "27_chen2025_selfbudgeter",
+    "bib_key": null,
+    "arxiv_id": "2505.11274",
+    "claimed": "SelfBudgeter: Adaptive Token Allocation (Ref 48)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "27_chen2025_selfbudgeter.pdf",
+    "size_bytes": 656919,
+    "size_mb": 0.63,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "SelfBudgeter: Adaptive Token Allocation for Efficient LLM Reasoning",
+      "authors": [
+        "Zheng Li",
+        "Qingxiu Dong",
+        "Jingyuan Ma",
+        "Di Zhang",
+        "Kai Jia",
+        "Zhifang Sui"
+      ],
+      "published": "2025-05-16T14:08:04Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Recently, large reasoning models demonstrate exceptional performance on various tasks. However, reasoning models always consume excessive tokens even for simple queries, leading to resource waste and prolonged user latency. To address this challenge, we propose SelfBudgeter - a self-adaptive reasoning strategy for efficient and controllable reasoning. Specifically, we first train the model to self-estimate the required reasoning budget based on the query. We then introduce budget-guided GRPO for"
+    }
+  },
+  {
+    "slug": "28_fang2025_thinkless",
+    "bib_key": null,
+    "arxiv_id": "2505.13379",
+    "claimed": "Thinkless: LLM Learns When to Think (Refs 44, 53)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "28_fang2025_thinkless.pdf",
+    "size_bytes": 999627,
+    "size_mb": 0.95,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Thinkless: LLM Learns When to Think",
+      "authors": [
+        "Gongfan Fang",
+        "Xinyin Ma",
+        "Xinchao Wang"
+      ],
+      "published": "2025-05-19T17:24:16Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Reasoning Language Models, capable of extended chain-of-thought reasoning, have demonstrated remarkable performance on tasks requiring complex logical inference. However, applying elaborate reasoning for all queries often results in substantial computational inefficiencies, particularly when many problems admit straightforward solutions. This motivates an open question: Can LLMs learn when to think? To answer this, we propose Thinkless, a learnable framework that empowers an LLM to adaptively se"
+    }
+  },
+  {
+    "slug": "29_zhang2025_adaptthink",
+    "bib_key": null,
+    "arxiv_id": "2505.13417",
+    "claimed": "AdaptThink: Reasoning Models Can Learn When to Think (Refs 46, 47)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "29_zhang2025_adaptthink.pdf",
+    "size_bytes": 827673,
+    "size_mb": 0.79,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "AdaptThink: Reasoning Models Can Learn When to Think",
+      "authors": [
+        "Jiajie Zhang",
+        "Nianyi Lin",
+        "Lei Hou",
+        "Ling Feng",
+        "Juanzi Li"
+      ],
+      "published": "2025-05-19T17:50:52Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Recently, large reasoning models have achieved impressive performance on various tasks by employing human-like deep thinking. However, the lengthy thinking process substantially increases inference overhead, making efficiency a critical bottleneck. In this work, we first demonstrate that NoThinking, which prompts the reasoning model to skip thinking and directly generate the final solution, is a better choice for relatively simple tasks in terms of both performance and efficiency. Motivated by t"
+    }
+  },
+  {
+    "slug": "30_liang2025_thinkswitcher",
+    "bib_key": null,
+    "arxiv_id": "2505.14183",
+    "claimed": "ThinkSwitcher (Liang et al., EMNLP 2025 Findings, Refs 56-58)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "30_liang2025_thinkswitcher.pdf",
+    "size_bytes": 881596,
+    "size_mb": 0.84,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "ThinkSwitcher: When to Think Hard, When to Think Fast",
+      "authors": [
+        "Guosheng Liang",
+        "Longguang Zhong",
+        "Ziyi Yang",
+        "Xiaojun Quan"
+      ],
+      "published": "2025-05-20T10:40:41Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models (LRMs) excel at solving complex tasks by leveraging long chain-of-thought (CoT) reasoning. However, this often leads to overthinking on simple tasks, resulting in unnecessary computational overhead. We observe that LRMs inherently possess the capability for efficient short CoT reasoning, which can be reliably elicited through prompt design. To leverage this capability, we propose ThinkSwitcher, a framework that enables a single LRM to dynamically switch between short and l"
+    }
+  },
+  {
+    "slug": "31_fu2025_mathif",
+    "bib_key": null,
+    "arxiv_id": "2505.14810",
+    "claimed": "MathIF: Evaluating Instruction Following in Large Reasoning Models",
+    "ok": true,
+    "source_url": "cached",
+    "file": "31_fu2025_mathif.pdf",
+    "size_bytes": 665440,
+    "size_mb": 0.63,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Scaling Reasoning, Losing Control: Evaluating Instruction Following in Large Reasoning Models",
+      "authors": [
+        "Tingchen Fu",
+        "Jiawei Gu",
+        "Yafu Li",
+        "Xiaoye Qu",
+        "Yu Cheng"
+      ],
+      "published": "2025-05-20T18:18:01Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Instruction-following is essential for aligning large language models (LLMs) with user intent. While recent reasoning-oriented models exhibit impressive performance on complex mathematical problems, their ability to adhere to natural language instructions remains underexplored. In this work, we introduce MathIF, a dedicated benchmark for evaluating instruction-following in mathematical reasoning tasks. Our empirical analysis reveals a consistent tension between scaling up reasoning capacity and "
+    }
+  },
+  {
+    "slug": "32_wang2025_wait_removal",
+    "bib_key": null,
+    "arxiv_id": "2506.08343",
+    "claimed": "Wait, We Don't Need to Wait! (EMNLP 2025 Findings, Refs 41, 89)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "32_wang2025_wait_removal.pdf",
+    "size_bytes": 1668637,
+    "size_mb": 1.59,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Wait, We Don't Need to \"Wait\"! Removing Thinking Tokens Improves Reasoning Efficiency",
+      "authors": [
+        "Chenlong Wang",
+        "Yuanning Feng",
+        "Dongping Chen",
+        "Zhaoyang Chu",
+        "Ranjay Krishna",
+        "Tianyi Zhou"
+      ],
+      "published": "2025-06-10T01:54:04Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Recent advances in large reasoning models have enabled complex, step-by-step reasoning but often introduce significant overthinking, resulting in verbose and redundant outputs that hinder efficiency. In this study, we examine whether explicit self-reflection, signaled by tokens such as \"Wait\" and \"Hmm\", is necessary for advanced reasoning. We propose NoWait, a simple yet effective approach that disables explicit self-reflection by suppressing these tokens during inference. Extensive experiments "
+    }
+  },
+  {
+    "slug": "33_verih2025",
+    "bib_key": null,
+    "arxiv_id": "2511.04694",
+    "claimed": "VerIH: Reasoning Up the Instruction Ladder (ACL 2026 Findings)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "33_verih2025.pdf",
+    "size_bytes": 595913,
+    "size_mb": 0.57,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Reasoning Up the Instruction Ladder for Controllable Language Models",
+      "authors": [
+        "Zishuo Zheng",
+        "Vidhisha Balachandran",
+        "Chan Young Park",
+        "Faeze Brahman",
+        "Sachin Kumar"
+      ],
+      "published": "2025-10-30T22:13:31Z",
+      "comment": "",
+      "journal_ref": "Findings of the Association for Computational Linguistics: ACL 2026, pages 39332-39354",
+      "abstract_head": "As large language model (LLM) based systems take on high-stakes roles in real-world decision-making, they must reconcile competing instructions from multiple sources within a single prompt context. Enforcing an instruction hierarchy, where higher-level directives override lower-priority requests, is critical to the reliability and control of LLMs. In this work, we reframe instruction hierarchy resolution as a reasoning task. The model must first \"think\" about the relationship between a given use"
+    }
+  },
+  {
+    "slug": "34_traac_or_rlcot_2601_06052",
+    "bib_key": null,
+    "arxiv_id": "2601.06052",
+    "claimed": "Reinforcement Learning for Chain of Thought Compression (Ref 31)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "34_traac_or_rlcot_2601_06052.pdf",
+    "size_bytes": 615450,
+    "size_mb": 0.59,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Reinforcement Learning for Chain of Thought Compression with One-Domain-to-All Generalization",
+      "authors": [
+        "Hanyu Li",
+        "Jiangshan Duo",
+        "Bofei Gao",
+        "Hailin Zhang",
+        "Sujian Li",
+        "Xiaotie Deng",
+        "Liang Zhao"
+      ],
+      "published": "2025-12-19T06:30:54Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Chain-of-thought reasoning in large language models can trigger an \"overthinking trap\": longer rollouts raise cost and latency yet often yield unreliable accuracy gains. Existing methods use global, static controls that may suppress needed reasoning. We propose mastery-gated, sample-level, soft reinforcement learning compression that penalizes long rollouts only when the model already solves the problem and has produced a shorter rollout. Across benchmarks, it cuts response length by 20-40% with"
+    }
+  },
+  {
+    "slug": "35_gpac2026",
+    "bib_key": null,
+    "arxiv_id": "2601.22790",
+    "claimed": "G-PAC: Conditional Performance Guarantee for Large Reasoning Models",
+    "ok": true,
+    "source_url": "cached",
+    "file": "35_gpac2026.pdf",
+    "size_bytes": 1112759,
+    "size_mb": 1.06,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Conditional Performance Guarantee for Large Reasoning Models",
+      "authors": [
+        "Jianguo Huang",
+        "Hao Zeng",
+        "Bingyi Jing",
+        "Hongxin Wei",
+        "Bo An"
+      ],
+      "published": "2026-01-30T10:09:41Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Large reasoning models have shown strong performance through extended chain-of-thought reasoning, yet their computational cost remains significant. Probably approximately correct (PAC) reasoning provides statistical guarantees for efficient reasoning by adaptively switching between thinking and non-thinking models, but the guarantee holds only in the marginal case and does not provide exact conditional coverage. We propose G-PAC reasoning, a practical framework that provides PAC-style guarantees"
+    }
+  },
+  {
+    "slug": "36_kumar2026_circuit_condensation",
+    "bib_key": null,
+    "arxiv_id": "2608.27254",
+    "claimed": "Post-Training that Concentrates a Behavior's Causal Circuit",
+    "ok": true,
+    "source_url": "cached",
+    "file": "36_kumar2026_circuit_condensation.pdf",
+    "size_bytes": 711662,
+    "size_mb": 0.68,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Circuit Condensation: Post-Training that Concentrates a Behavior's Causal Circuit",
+      "authors": [
+        "Sai Adith Senthil Kumar"
+      ],
+      "published": "2026-08-27T15:38:58Z",
+      "comment": "31 pages, 5 figures",
+      "journal_ref": "",
+      "abstract_head": "One approach in mechanistic interpretability explains model behavior through circuits: the components and connections that carry it. Frozen discovery often returns hundreds of edges, making them hard to inspect, compare, or verify exhaustively. We introduce Circuit Condensation, which post-trains models to concentrate behaviors into smaller causal graphs. Each round prunes low-attribution edges and trains a low-rank adapter to match the original through what remains. It keeps the cut only if tas"
+    }
+  },
+  {
+    "slug": "37_iclr2026_deer_or_8df90a14",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Ref 9 cited as DEER (Yang et al., ICLR 2026)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "37_iclr2026_deer_or_8df90a14.pdf",
+    "size_bytes": 3909293,
+    "size_mb": 3.73,
+    "info": "cached",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "38_iclr2026_mago_dfdc9c54",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Ref 45 MAGO (ICLR 2026)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "38_iclr2026_mago_dfdc9c54.pdf",
+    "size_bytes": 4629463,
+    "size_mb": 4.41,
+    "info": "cached",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "39_acl2026_ccc_622",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Refs 50-51 CCC: Correct, Concise and Complete (ACL 2026 Findings)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "39_acl2026_ccc_622.pdf",
+    "size_bytes": 475484,
+    "size_mb": 0.45,
+    "info": "cached",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "40_emnlp2026_accuser_1628",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Ref 27 Do LLMs Trust the Accuser or the Accusation? (EMNLP 2026)",
+    "ok": true,
+    "source_url": "cached",
+    "file": "40_emnlp2026_accuser_1628.pdf",
+    "size_bytes": 549337,
+    "size_mb": 0.52,
+    "info": "cached",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "41_aaai2026_switchable_40799",
+    "bib_key": null,
+    "arxiv_id": "2508.10026",
+    "claimed": "Ref 55 Switchable and Balanced Training for Efficient LLM Reasoning (SABER)",
+    "ok": true,
+    "source_url": "https://arxiv.org/pdf/2508.10026",
+    "file": "41_aaai2026_switchable_40799.pdf",
+    "size_bytes": 2711064,
+    "size_mb": 2.59,
+    "info": "application/pdf",
+    "arxiv_meta": {
+      "title": "SABER: Switchable and Balanced Training for Efficient LLM Reasoning",
+      "authors": [
+        "Kai Zhao",
+        "Yanjun Zhao",
+        "Jiaming Song",
+        "Shien He",
+        "Lusheng Zhang",
+        "Qiang Zhang",
+        "Tianjiao Li"
+      ],
+      "published": "2025-08-08T11:27:48Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Large language models (LLMs) empowered by chain-of-thought reasoning have achieved impressive accuracy on complex tasks but suffer from excessive inference costs and latency when applied uniformly to all problems. We propose SABER (Switchable and Balanced Training for Efficient LLM Reasoning), a reinforcement learning framework that endows LLMs with user-controllable, token-budgeted reasoning. SABER first profiles each training example's base-model thinking token usage and assigns it to one of t"
+    }
+  },
+  {
+    "slug": "42_openreview_traac_ZSeKA0LrJg",
+    "bib_key": null,
+    "arxiv_id": "2510.01581",
+    "claimed": "Ref 49 TRAAC: Think Right - Learning to Mitigate Under-Over Thinking",
+    "ok": true,
+    "source_url": "https://arxiv.org/pdf/2510.01581",
+    "file": "42_openreview_traac_ZSeKA0LrJg.pdf",
+    "size_bytes": 568679,
+    "size_mb": 0.54,
+    "info": "application/pdf",
+    "arxiv_meta": {
+      "title": "Think Right: Learning to Mitigate Under-Over Thinking via Adaptive, Attentive Compression",
+      "authors": [
+        "Joykirat Singh",
+        "Justin Chih-Yao Chen",
+        "Archiki Prasad",
+        "Elias Stengel-Eskin",
+        "Akshay Nambi",
+        "Mohit Bansal"
+      ],
+      "published": "2025-10-02T02:00:20Z",
+      "comment": "COLM 2026 (Camera-Ready); Code: https://github.com/joykirat18/TRAAC",
+      "journal_ref": "",
+      "abstract_head": "Recent thinking models are capable of solving complex reasoning tasks by scaling test-time compute, but this scaling should be allocated in line with task difficulty. On one hand, short reasoning (underthinking) leads to errors on harder problems that require extended reasoning steps; but, excessively long reasoning (overthinking) can be token-inefficient by generating unnecessary steps even after reaching a correct intermediate solution. We refer to this as under-adaptivity, where the model fai"
+    }
+  },
+  {
+    "slug": "43_openreview_query_transfer_Pc7eA7Zb33",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Query Transfer Can Revise Rules Without Preserving the Task (OpenReview:Pc7eA7Zb33)",
+    "ok": false,
+    "source_url": "",
+    "file": null,
+    "size_bytes": 0,
+    "size_mb": 0.0,
+    "info": "https://openreview.net/pdf?id=Pc7eA7Zb33 -> HTTPError: HTTP Error 403: Forbidden | https://openreview.net/attachment?id=Pc7eA7Zb33&name=pdf -> HTTPError: HTTP Error 403: Forbidden | https://api2.openreview.net/pdf?id=Pc7eA7Zb33 -> HTTPError: HTTP Error 403: Forbidden",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "44_openreview_instaboost_xDyJVMnab8",
+    "bib_key": null,
+    "arxiv_id": "2506.13734",
+    "claimed": "InstABoost: Instruction Following by Principled Boosting Attention (OpenReview:xDyJVMnab8)",
+    "ok": true,
+    "source_url": "https://arxiv.org/pdf/2506.13734",
+    "file": "44_openreview_instaboost_xDyJVMnab8.pdf",
+    "size_bytes": 849636,
+    "size_mb": 0.81,
+    "info": "application/pdf",
+    "arxiv_meta": {
+      "title": "Instruction Following by Principled Boosting Attention of Large Language Models",
+      "authors": [
+        "Vitoria Guardieiro",
+        "Avishree Khare",
+        "Adam Stein",
+        "Eric Wong"
+      ],
+      "published": "2025-06-16T17:42:35Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Large language models' behavior is often shaped by instructions such as system prompts, refusal boundaries, privacy constraints, and tool-use rules that must hold at inference time. Yet in practice these constraints can be violated under long contexts or when user-provided context conflicts with them, creating reliability and safety risks. This motivates inference-time interventions that strengthen instruction influence without retraining. One such intervention is attention steering, which biase"
+    }
+  },
+  {
+    "slug": "45_pmlr2026_yuehhan26a",
+    "bib_key": null,
+    "arxiv_id": "2603.05706",
+    "claimed": "Yueh-Han et al. (ICML 2026 / PMLR v306) Reasoning Models Struggle to Control their Chains of Thought",
+    "ok": true,
+    "source_url": "https://arxiv.org/pdf/2603.05706",
+    "file": "45_pmlr2026_yuehhan26a.pdf",
+    "size_bytes": 1340377,
+    "size_mb": 1.28,
+    "info": "application/pdf",
+    "arxiv_meta": {
+      "title": "Reasoning Models Struggle to Control their Chains of Thought",
+      "authors": [
+        "Chen Yueh-Han",
+        "Robert McCarthy",
+        "Bruce W. Lee",
+        "He He",
+        "Ian Kivlichan",
+        "Bowen Baker",
+        "Micah Carroll",
+        "Tomek Korbak"
+      ],
+      "published": "2026-03-05T22:03:48Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "Chain-of-thought (CoT) monitoring is a promising tool for detecting misbehaviors and understanding the motivations of modern reasoning models. However, if models can control what they verbalize in their CoT, it could undermine CoT monitorability. To measure this undesirable capability -- CoT controllability -- we introduce the CoT-Control evaluation suite, which includes tasks that require models to solve problems while adhering to CoT instructions, e.g., reasoning about a genetics question with"
+    }
+  },
+  {
+    "slug": "46_hf_dhruv1000_logra_ifbench",
+    "bib_key": null,
+    "arxiv_id": null,
+    "claimed": "Ref 25 Dhruv1000/qwen35-logra-ifbench draft paper",
+    "ok": true,
+    "source_url": "cached",
+    "file": "46_hf_dhruv1000_logra_ifbench.pdf",
+    "size_bytes": 387067,
+    "size_mb": 0.37,
+    "info": "cached",
+    "arxiv_meta": null
+  },
+  {
+    "slug": "47_cobbe2021_gsm8k",
+    "bib_key": null,
+    "arxiv_id": "2110.14168",
+    "claimed": "Cobbe et al. (2021) GSM8K Benchmark",
+    "ok": true,
+    "source_url": "cached",
+    "file": "47_cobbe2021_gsm8k.pdf",
+    "size_bytes": 2935719,
+    "size_mb": 2.8,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "Training Verifiers to Solve Math Word Problems",
+      "authors": [
+        "Karl Cobbe",
+        "Vineet Kosaraju",
+        "Mohammad Bavarian",
+        "Mark Chen",
+        "Heewoo Jun",
+        "Lukasz Kaiser",
+        "Matthias Plappert",
+        "Jerry Tworek",
+        "Jacob Hilton",
+        "Reiichiro Nakano",
+        "Christopher Hesse",
+        "John Schulman"
+      ],
+      "published": "2021-10-27T04:49:45Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "State-of-the-art language models can match human performance on many tasks, but they still struggle to robustly perform multi-step mathematical reasoning. To diagnose the failures of current models and support research, we introduce GSM8K, a dataset of 8.5K high quality linguistically diverse grade school math word problems. We find that even the largest transformer models fail to achieve high test performance, despite the conceptual simplicity of this problem distribution. To increase performan"
+    }
+  },
+  {
+    "slug": "48_talmor2019_commonsenseqa",
+    "bib_key": null,
+    "arxiv_id": "1811.00937",
+    "claimed": "Talmor et al. (2019) CommonsenseQA Benchmark",
+    "ok": true,
+    "source_url": "cached",
+    "file": "48_talmor2019_commonsenseqa.pdf",
+    "size_bytes": 1340746,
+    "size_mb": 1.28,
+    "info": "cached",
+    "arxiv_meta": {
+      "title": "CommonsenseQA: A Question Answering Challenge Targeting Commonsense Knowledge",
+      "authors": [
+        "Alon Talmor",
+        "Jonathan Herzig",
+        "Nicholas Lourie",
+        "Jonathan Berant"
+      ],
+      "published": "2018-11-02T15:34:29Z",
+      "comment": "accepted as a long paper at NAACL 2019",
+      "journal_ref": "",
+      "abstract_head": "When answering a question, people often draw upon their rich world knowledge in addition to the particular context. Recent work has focused primarily on answering questions given some relevant document or context, and required very little general background. To investigate question answering with prior knowledge, we present CommonsenseQA: a challenging new dataset for commonsense question answering. To capture common sense beyond associations, we extract from ConceptNet (Speer et al., 2017) mult"
+    }
+  },
+  {
+    "slug": "49_lin2026_bagen",
+    "bib_key": null,
+    "arxiv_id": "2606.00198",
+    "claimed": "Ref 38 linked paper (BAGEN: Are LLM Agents Budget-Aware?, mistakenly cited as TALE)",
+    "ok": true,
+    "source_url": "https://arxiv.org/pdf/2606.00198",
+    "file": "49_lin2026_bagen.pdf",
+    "size_bytes": 5531825,
+    "size_mb": 5.28,
+    "info": "application/pdf",
+    "arxiv_meta": {
+      "title": "BAGEN: Are LLM Agents Budget-Aware?",
+      "authors": [
+        "Yuxiang Lin",
+        "Zihan Wang",
+        "Mengyang Liu",
+        "Yuxuan Shan",
+        "Longju Bai",
+        "Junyao Zhang",
+        "Xing Jin",
+        "Boshan Chen",
+        "Jinyan Su",
+        "Xingyao Wang",
+        "Jiaxin Pei",
+        "Manling Li"
+      ],
+      "published": "2026-05-29T17:02:17Z",
+      "comment": "",
+      "journal_ref": "",
+      "abstract_head": "While agents are increasingly spending more resources, today agent cost is mostly measured only after execution. A Budget-Aware Agent (BAGEN) should treat budget as an active control signal, rather than a passive cost metric. We first systematically define budget estimation as internal budgets (from agent computation) and external budgets (from agent actions). We then formalize budget-awareness as progressive interval estimation: at each step of a plan, an agent should predict an upper and lower"
+    }
+  }
+]
