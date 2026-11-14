@@ -133,8 +133,18 @@ class TestPhases4To7(unittest.TestCase):
                 cwd=str(ROOT),
             )
             q4_dir = tmp_out / "Qwen__Qwen3.5-4B"
-            self.assertTrue((q4_dir / "calibration_summary.json").exists())
+            calib_path = q4_dir / "calibration_summary.json"
+            self.assertTrue(calib_path.exists())
             self.assertFalse((q4_dir / "eval_450_cache.jsonl").exists())
+            calib_rep = json.loads(calib_path.read_text(encoding="utf-8"))
+            clf_m = calib_rep["classifier_metrics"]
+            for split_k in ("seed_train_at_05", "seed_train_at_tau", "dev_all_at_tau", "dev_gate2_at_tau"):
+                self.assertIn(split_k, clf_m)
+                for metric_k in ("accuracy", "precision", "recall", "f1", "roc_auc"):
+                    val = float(clf_m[split_k][metric_k])
+                    self.assertGreaterEqual(val, 0.0)
+                    self.assertLessEqual(val, 1.0)
+            self.assertGreaterEqual(len(clf_m.get("tau_sweep", [])), 10)
 
             # 2. strict341 run
             subprocess.run(
@@ -354,6 +364,139 @@ class TestPhases4To7(unittest.TestCase):
             "scripts/analyze_and_plot.py",
         ):
             self.assertIn(token, all_src)
+
+    def test_stage1_slicing_and_stage2_memo_parity(self) -> None:
+        """Stage-1 B1b token slicing and Stage-2 memoization match uncached greedy outputs bitwise."""
+        from scripts.run_matrix import cache_split_primitives
+        from src.engine import CBARRDualModeEngine, P_TERM, run_gate1_lexical
+
+        class _Tok:
+            eos_token_id = 248044
+            pad_token_id = 0
+
+            def __init__(self) -> None:
+                self._rev = {248044: "<|im_end|>"}
+
+            def convert_tokens_to_ids(self, tok_str: str) -> int:
+                return 248044 if tok_str == "<|im_end|>" else 999999
+
+            def apply_chat_template(
+                self,
+                msgs: list[dict[str, str]],
+                tokenize: bool = False,
+                add_generation_prompt: bool = True,
+                enable_thinking: bool = False,
+            ) -> str:
+                return f"SYS:{msgs[0]['content']}|THINK={enable_thinking}|<think>\n" if enable_thinking else f"SYS:{msgs[0]['content']}|FAST\n"
+
+            def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+                words = text.split()
+                return [100 + (abs(hash(w)) % 1000) for w in words]
+
+            def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+                return " ".join("</think>" if t == 5000 else ("<|im_end|>" if t == 248044 else f"w{t}") for t in token_ids)
+
+        class _DeterministicGenIdEngine(CBARRDualModeEngine):
+            def __init__(self, early_close: bool) -> None:
+                self.model_id = "Qwen/Qwen3.5-4B"
+                self.is_smollm3 = False
+                self.freeze_smollm3_date = "01 November 2026"
+                self.device = "cpu"
+                self.tok = _Tok()
+                self.eos_ids = {248044}
+                self.early_close = early_close
+                self.decode_calls = 0
+
+            def _decode_raw(
+                self, prompt_str: str, max_new_tokens: int, log_entropies: bool = False
+            ) -> dict:
+                self.decode_calls += 1
+                if P_TERM in prompt_str or "</think>" in prompt_str and "|FAST" not in prompt_str:
+                    ids = [301, 302, 303, 248044][:max_new_tokens]
+                elif "|THINK=True|" in prompt_str:
+                    if self.early_close:
+                        # 30 think tokens, </think> at idx 30, 60 post tokens, EOS at end (len 92)
+                        full = list(range(10, 40)) + [5000] + list(range(200, 260)) + [248044]
+                    else:
+                        # Long unclosed think trace (300 tokens, no EOS)
+                        full = list(range(10, 310))
+                    ids = full[:max_new_tokens]
+                else:
+                    ids = [401, 402, 248044][:max_new_tokens]
+                hit_eos = bool(ids and ids[-1] in self.eos_ids)
+                content_len = len(ids) - (1 if hit_eos else 0)
+                return {
+                    "raw_text": self.tok.decode(ids, skip_special_tokens=False),
+                    "gen_ids": ids,
+                    "total_gen_tokens": len(ids),
+                    "content_tokens": content_len,
+                    "hit_eos": hit_eos,
+                    "step_entropies": [0.4] * min(content_len, 10) if log_entropies else [],
+                    "latency_ms": float(len(ids)),
+                }
+
+        ifeval_items = [r for r in _read_jsonl(ROOT / "data/eval_450.jsonl") if r["slice"] == "ifeval_precision"][:1]
+        item = ifeval_items[0]
+        g1 = run_gate1_lexical(item["prompt"])
+        self.assertTrue(bool(g1.anchor_clause))
+
+        for early_close in (False, True):
+            eng_opt = _DeterministicGenIdEngine(early_close=early_close)
+            eng_ref = _DeterministicGenIdEngine(early_close=early_close)
+            with tempfile.TemporaryDirectory() as td:
+                cache_p = pathlib.Path(td) / "test_cache.jsonl"
+                rows = cache_split_primitives(
+                    eng_opt, [item], cache_p, full_eval_modes=True, run_calib_tiers=True
+                )
+                row = rows[0]
+                raw_jsonl_line = cache_p.read_text(encoding="utf-8").strip()
+                self.assertNotIn("gen_ids", raw_jsonl_line)
+
+            probe_t = int(row["probe"]["T_probe"])
+            b256_probe = max(64, min(250, 250 - probe_t))
+            pairs = [
+                ("m2_b64", 64, "post_stripped"),
+                ("m2_b128", 128, "post_stripped"),
+                ("m2_b256", b256_probe, "post_stripped"),
+                ("m2_b256_direct", 250, "post_stripped"),
+                ("m2_pre_b64", 64, "pre_close"),
+                ("m2_pre_b128", 128, "pre_close"),
+                ("m2_pre_b256", b256_probe, "pre_close"),
+                ("m2_pre_b256_direct", 250, "pre_close"),
+            ]
+            for key, budget, locus in pairs:
+                ref = eng_ref.run_capped_think_and_anchor(
+                    item["prompt"],
+                    budget_b=budget,
+                    anchor_clause=g1.anchor_clause,
+                    max_ans_tokens=1024,
+                    allow_budget_force=True,
+                    anchor_locus=locus,
+                )
+                for cmp_k in (
+                    "t_think",
+                    "a_final",
+                    "T_probe",
+                    "T_think",
+                    "T_wasted",
+                    "T_inj",
+                    "T_final",
+                    "T_total",
+                    "calls",
+                    "truncated",
+                    "think_exhausted",
+                ):
+                    self.assertEqual(
+                        row[key][cmp_k],
+                        ref[cmp_k],
+                        f"Mismatch on {key}.{cmp_k} (early_close={early_close})",
+                    )
+
+            # Baseline uncached calls: b0(1) + probe(1) + b1b(1) + b1a(1) + b2a(1) + 8*(s1+s2) = 21 calls.
+            # With Stage-1 slicing: zero extra Stage-1 calls across all 8 M2/M2_Pre variants!
+            # When early_close=True, Stage-2 memoization also eliminates duplicate Stage-2 decodes (<= 8 total).
+            max_expected_calls = 7 if early_close else 13
+            self.assertLessEqual(eng_opt.decode_calls, max_expected_calls)
 
 
 if __name__ == "__main__":

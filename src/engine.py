@@ -258,7 +258,7 @@ class CBARRDualModeEngine:
         )
         return _build_reanchor_block(truncated, anchor_clause, anchor_locus, post_think_bridge=bridge)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _decode_raw(
         self, prompt_str: str, max_new_tokens: int, log_entropies: bool = False
     ) -> dict[str, Any]:
@@ -291,11 +291,40 @@ class CBARRDualModeEngine:
 
         return {
             "raw_text": self.tok.decode(gen_ids, skip_special_tokens=False),
+            "gen_ids": gen_ids,
             "total_gen_tokens": len(gen_ids),
             "content_tokens": content_len,
             "hit_eos": hit_eos,
             "step_entropies": step_entropies,
             "latency_ms": latency_ms,
+        }
+
+    def _slice_precomputed_s1(
+        self, b1b_s1: dict[str, Any] | None, budget_b: int
+    ) -> dict[str, Any] | None:
+        """Slices deterministic greedy Stage-1 tokens from B1b (B=2048) down to budget_b."""
+        if not b1b_s1:
+            return None
+        full_ids = b1b_s1.get("gen_ids")
+        if not full_ids:
+            return None
+        b1b_hit_eos = bool(b1b_s1.get("hit_eos", False))
+        if len(full_ids) < budget_b and not b1b_hit_eos:
+            return None
+        s1_ids = list(full_ids[:budget_b])
+        hit_eos = bool(b1b_hit_eos and len(full_ids) <= budget_b)
+        content_len = len(s1_ids)
+        while content_len > 0 and s1_ids[content_len - 1] in self.eos_ids:
+            content_len -= 1
+        full_lat = float(b1b_s1.get("latency_ms", 0.0))
+        s1_lat = full_lat * (len(s1_ids) / max(1, len(full_ids)))
+        return {
+            "raw_text": self.tok.decode(s1_ids, skip_special_tokens=False),
+            "total_gen_tokens": len(s1_ids),
+            "content_tokens": content_len,
+            "hit_eos": hit_eos,
+            "step_entropies": [],
+            "latency_ms": s1_lat,
         }
 
     def run_direct_non_thinking(self, prompt: str, max_new_tokens: int = 1024) -> dict[str, Any]:
@@ -460,10 +489,18 @@ class CBARRDualModeEngine:
         max_ans_tokens: int = 1024,
         allow_budget_force: bool = True,
         anchor_locus: str = "post_stripped",
+        precomputed_b1b_s1: dict[str, Any] | None = None,
+        out_s1_cache: dict[str, Any] | None = None,
+        s2_memo: dict[tuple[str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Executes capped <think> (B in {64, 128, 250}) + P_TERM + Post/Pre-</think> re-anchoring."""
         pref = self.build_prompt_prefix(prompt, enable_thinking=True)
-        s1 = self._decode_raw(pref, max_new_tokens=budget_b, log_entropies=False)
+        s1 = self._slice_precomputed_s1(precomputed_b1b_s1, budget_b)
+        if s1 is None:
+            s1 = self._decode_raw(pref, max_new_tokens=budget_b, log_entropies=False)
+        if out_s1_cache is not None:
+            out_s1_cache.clear()
+            out_s1_cache.update(s1)
         raw1 = s1["raw_text"]
         clean_raw1 = re.sub(r"^\s*<think>\s*", "", raw1)
 
@@ -492,7 +529,14 @@ class CBARRDualModeEngine:
             if not anchor_clause and not s1["hit_eos"]:
                 after_clean_toks = max(0, s1["total_gen_tokens"] - t_think_toks)
                 rem_ans = max(1, max_ans_tokens - after_clean_toks)
-                s2 = self._decode_raw(pref + clean_raw1, max_new_tokens=rem_ans, log_entropies=False)
+                cont2_pref = pref + clean_raw1
+                memo2_key = (cont2_pref, int(rem_ans))
+                if s2_memo is not None and memo2_key in s2_memo:
+                    s2 = s2_memo[memo2_key]
+                else:
+                    s2 = self._decode_raw(cont2_pref, max_new_tokens=rem_ans, log_entropies=False)
+                    if s2_memo is not None:
+                        s2_memo[memo2_key] = s2
                 a_final = strip_special_end_tokens(t_after + s2["raw_text"]).lstrip("\n").strip()
                 tot = s1["total_gen_tokens"] + s2["total_gen_tokens"]
                 return {
@@ -545,7 +589,13 @@ class CBARRDualModeEngine:
             truncated = True
 
         t_inj_toks = len(self.tok.encode(close_block, add_special_tokens=False))
-        s2 = self._decode_raw(cont_prefix, max_new_tokens=max_ans_tokens, log_entropies=False)
+        memo_key = (cont_prefix, int(max_ans_tokens))
+        if s2_memo is not None and memo_key in s2_memo:
+            s2 = s2_memo[memo_key]
+        else:
+            s2 = self._decode_raw(cont_prefix, max_new_tokens=max_ans_tokens, log_entropies=False)
+            if s2_memo is not None:
+                s2_memo[memo_key] = s2
         s2_clean = strip_special_end_tokens(s2["raw_text"]).lstrip("\n").strip()
         a_final = f"{vis_prefix}{s2_clean}".strip() if vis_prefix else s2_clean
         tot = t_think_toks + t_wasted + t_inj_toks + s2["total_gen_tokens"]

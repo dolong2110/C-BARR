@@ -26,7 +26,12 @@ from src.metrics import (
     holm_bonferroni,
     wilson_ci,
 )
-from src.routers import CBARRCalibrator, CalibratedRouterParams, resolve_all_variants_for_item
+from src.routers import (
+    CBARRCalibrator,
+    CalibratedRouterParams,
+    compute_calibration_diagnostics,
+    resolve_all_variants_for_item,
+)
 
 REQUIRED_DATA_SPLITS: tuple[str, ...] = (
     "seed_60.jsonl",
@@ -115,6 +120,63 @@ def _annotate_run(item: dict[str, Any], run_dict: dict[str, Any]) -> dict[str, A
     return out
 
 
+def _format_running_metrics(rows_out: list[dict[str, Any]]) -> str:
+    """Formats running overall, IFEval-Precision, and mean-token metrics for progress logs."""
+    n = len(rows_out)
+    if n == 0:
+        return ""
+    has_m2 = "m2_b256" in rows_out[-1]
+    b0_acc = 100.0 * sum(int(r["b0"]["z"]) for r in rows_out) / n
+    fast_acc = 100.0 * sum(int(r["fast_done"]["z"]) for r in rows_out) / n
+    b1b_acc = 100.0 * sum(int(r["b1b"]["z"]) for r in rows_out) / n
+    parts = [f"Acc B0={b0_acc:.1f}% Fast={fast_acc:.1f}% B1b={b1b_acc:.1f}%"]
+    if has_m2:
+        m2_acc = 100.0 * sum(int(r["m2_b256"]["z"]) for r in rows_out) / n
+        parts[0] += f" M2_250={m2_acc:.1f}%"
+
+    prec_rows = [r for r in rows_out if r["item"].get("slice") == "ifeval_precision"]
+    if prec_rows:
+        np_r = len(prec_rows)
+        p_b0 = 100.0 * sum(int(r["b0"]["z"]) for r in prec_rows) / np_r
+        p_b1b = 100.0 * sum(int(r["b1b"]["z"]) for r in prec_rows) / np_r
+        p_str = f"IFEval-Prec(n={np_r}): B0={p_b0:.0f}% B1b={p_b1b:.0f}%"
+        if has_m2:
+            p_m2 = 100.0 * sum(int(r["m2_b256"]["z"]) for r in prec_rows) / np_r
+            p_str += f" M2_250={p_m2:.0f}%"
+        parts.append(p_str)
+
+    mean_b1b_tok = sum(int(r["b1b"]["T_total"]) for r in rows_out) / n
+    tok_str = f"MeanTok: B1b={mean_b1b_tok:.0f}"
+    if has_m2:
+        mean_m2_tok = sum(
+            int(r["probe"]["T_probe"]) + int(r["m2_b256"]["T_total"]) for r in rows_out
+        ) / n
+        tok_str += f" M2_250={mean_m2_tok:.0f}"
+    parts.append(tok_str)
+    return " | ".join(parts)
+
+
+def _format_slice_breakdown(rows_out: list[dict[str, Any]]) -> str:
+    """Formats per-slice accuracy progression (B0 -> B1b [-> M2_250]) at split completion."""
+    if not rows_out:
+        return ""
+    has_m2 = "m2_b256" in rows_out[-1]
+    segs = []
+    for sl in SLICE_ORDER:
+        sub = [r for r in rows_out if r["item"].get("slice") == sl]
+        if not sub:
+            continue
+        ns = len(sub)
+        a_b0 = 100.0 * sum(int(r["b0"]["z"]) for r in sub) / ns
+        a_b1b = 100.0 * sum(int(r["b1b"]["z"]) for r in sub) / ns
+        if has_m2:
+            a_m2 = 100.0 * sum(int(r["m2_b256"]["z"]) for r in sub) / ns
+            segs.append(f"{sl}({ns}): {a_b0:.0f}/{a_b1b:.0f}/{a_m2:.0f}%")
+        else:
+            segs.append(f"{sl}({ns}): {a_b0:.0f}/{a_b1b:.0f}%")
+    return " | ".join(segs)
+
+
 def cache_split_primitives(
     engine: CBARRDualModeEngine,
     items: list[dict[str, Any]],
@@ -124,13 +186,20 @@ def cache_split_primitives(
     include_b512: bool = False,
 ) -> list[dict[str, Any]]:
     """Executes and incrementally caches atomic primitives per item to prevent GPU re-runs (with D13-D16)."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     existing: dict[str, dict[str, Any]] = {}
     if cache_path.exists():
         for row in _load_jsonl(cache_path):
             existing[row["item"]["uid"]] = row
 
     def _run_or_reuse_m2_row(
-        item: dict[str, Any], g1: Any, b1b: dict[str, Any], budget_val: int, locus: str
+        item: dict[str, Any],
+        g1: Any,
+        b1b: dict[str, Any],
+        budget_val: int,
+        locus: str,
+        b1b_s1: dict[str, Any] | None = None,
+        s2_memo: dict[tuple[str, int], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if (
             not g1.anchor_clause
@@ -148,6 +217,8 @@ def cache_split_primitives(
                 max_ans_tokens=1024,
                 allow_budget_force=True,
                 anchor_locus=locus,
+                precomputed_b1b_s1=b1b_s1,
+                s2_memo=s2_memo,
             ),
         )
 
@@ -158,13 +229,18 @@ def cache_split_primitives(
     total_items = len(items)
     n_new = 0
     n_cached = 0
+    cum_new_sec = 0.0
     t_start = time.perf_counter()
     t_last_log = t_start
     split_tag = cache_path.stem.replace("_cache", "")
+    log_stride = 4 if total_items < 40 else (10 if total_items <= 100 else 25)
 
     with cache_path.open("a", encoding="utf-8") as f_append:
         for idx, item in enumerate(items, start=1):
             uid = item["uid"]
+            item_slice = str(item.get("slice", ""))
+            is_new_item = False
+            dt_item = 0.0
             try:
                 if uid in existing:
                     cached_row = existing[uid]
@@ -175,8 +251,11 @@ def cache_split_primitives(
                         )
                         upgraded_existing = True
                     n_cached += 1
+                    rec = cached_row
                     rows_out.append(cached_row)
                 else:
+                    is_new_item = True
+                    t_item_start = time.perf_counter()
                     prompt = item["prompt"]
                     g1 = run_gate1_lexical(prompt)
                     # Patch D14: max_new_tokens=1024
@@ -192,6 +271,10 @@ def cache_split_primitives(
                             item, engine.complete_fast_probe(probe, max_ans_tokens=1024)
                         )
                     )
+                    # Capture greedy B1b Stage-1 token IDs in memory to slice M2 caps without regenerating <think>,
+                    # plus per-item s2_memo to skip duplicate Stage-2 decoding when </think> closes early.
+                    b1b_s1: dict[str, Any] = {}
+                    s2_memo: dict[tuple[str, int], dict[str, Any]] = {}
                     b1b = _annotate_run(
                         item,
                         engine.run_capped_think_and_anchor(
@@ -200,10 +283,12 @@ def cache_split_primitives(
                             anchor_clause="",
                             max_ans_tokens=1024,
                             allow_budget_force=False,
+                            out_s1_cache=b1b_s1,
+                            s2_memo=s2_memo,
                         ),
                     )
 
-                    rec: dict[str, Any] = {
+                    rec = {
                         "item": item,
                         "b0": b0,
                         "probe": {k: v for k, v in probe.items() if k != "step_entropies"},
@@ -214,14 +299,24 @@ def cache_split_primitives(
                     if run_calib_tiers or full_eval_modes:
                         # Patch D13: Deduct T_probe at B=250 when escalated from Gate 2 so T_probe + T_think <= 250 (OAA_250)
                         b256_after_probe = max(64, min(250, 250 - int(probe["T_probe"])))
-                        rec["m2_b64"] = _run_or_reuse_m2_row(item, g1, b1b, 64, "post_stripped")
-                        rec["m2_b128"] = _run_or_reuse_m2_row(item, g1, b1b, 128, "post_stripped")
+                        rec["m2_b64"] = _run_or_reuse_m2_row(
+                            item, g1, b1b, 64, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
+                        )
+                        rec["m2_b128"] = _run_or_reuse_m2_row(
+                            item, g1, b1b, 128, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
+                        )
                         rec["m2_b256"] = _run_or_reuse_m2_row(
-                            item, g1, b1b, b256_after_probe, "post_stripped"
+                            item,
+                            g1,
+                            b1b,
+                            b256_after_probe,
+                            "post_stripped",
+                            b1b_s1=b1b_s1,
+                            s2_memo=s2_memo,
                         )
                         # Patch D13: Cap m2_b256_direct at budget_b=250
                         rec["m2_b256_direct"] = _run_or_reuse_m2_row(
-                            item, g1, b1b, 250, "post_stripped"
+                            item, g1, b1b, 250, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
                         )
 
                     if full_eval_modes:
@@ -242,34 +337,63 @@ def cache_split_primitives(
                                 (250, "b256_direct"),
                             ):
                                 rec[f"m2_pre_{k_suf}"] = _run_or_reuse_m2_row(
-                                    item, g1, b1b, b_val, "pre_close"
+                                    item,
+                                    g1,
+                                    b1b,
+                                    b_val,
+                                    "pre_close",
+                                    b1b_s1=b1b_s1,
+                                    s2_memo=s2_memo,
                                 )
                         if include_b512:
                             rec["m2_b512"] = _run_or_reuse_m2_row(
-                                item, g1, b1b, 512, "post_stripped"
+                                item, g1, b1b, 512, "post_stripped", b1b_s1=b1b_s1, s2_memo=s2_memo
                             )
 
                     f_append.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     f_append.flush()
                     existing[uid] = rec
                     n_new += 1
+                    dt_item = time.perf_counter() - t_item_start
+                    cum_new_sec += dt_item
                     rows_out.append(rec)
 
                 now = time.perf_counter()
-                if (
-                    total_items >= 40
-                    and (idx % 25 == 0 or (now - t_last_log) >= 30.0)
-                    and idx < total_items
-                ):
+                should_log = False
+                if idx < total_items:
+                    if is_new_item:
+                        should_log = (
+                            idx == 1
+                            or (idx % log_stride == 0)
+                            or ((now - t_last_log) >= 20.0)
+                        )
+                    elif idx % 50 == 0 and (now - t_last_log) >= 15.0:
+                        should_log = True
+
+                if should_log:
                     elapsed = now - t_start
+                    avg_s = (cum_new_sec / n_new) if n_new > 0 else 0.0
                     eta_str = (
-                        f" | eta={(elapsed / n_new) * (total_items - idx):.0f}s"
-                        if n_new > 0 and n_cached == 0
+                        f" | avg={avg_s:.1f}s/it eta={avg_s * (total_items - idx):.0f}s"
+                        if n_new > 0
                         else ""
                     )
+                    if is_new_item:
+                        verdict = f"{int(rec['b0']['z'])}/{int(rec['fast_done']['z'])}/{int(rec['b1b']['z'])}"
+                        tok_tag = f"b1b={int(rec['b1b']['T_total'])}t"
+                        if "m2_b256" in rec:
+                            verdict += f"/{int(rec['m2_b256']['z'])}"
+                            tok_tag += f",m2={int(rec['probe']['T_probe']) + int(rec['m2_b256']['T_total'])}t"
+                        item_info = (
+                            f" | {item_slice}:{uid} dt={dt_item:.1f}s "
+                            f"z={verdict} {tok_tag}"
+                        )
+                    else:
+                        item_info = f" | {item_slice}:{uid} (cached)"
                     print(
                         f"[{split_tag} {idx}/{total_items}] new={n_new} cached={n_cached} "
-                        f"elapsed={elapsed:.1f}s{eta_str}",
+                        f"elapsed={elapsed:.1f}s{eta_str}{item_info}\n"
+                        f"  {_format_running_metrics(rows_out)}",
                         flush=True,
                     )
                     t_last_log = now
@@ -292,9 +416,13 @@ def cache_split_primitives(
     total_elapsed = time.perf_counter() - t_start
     print(
         f"[{split_tag}] completed {total_items} items (new={n_new}, cached={n_cached}) "
-        f"in {total_elapsed:.1f}s",
+        f"in {total_elapsed:.1f}s | {_format_running_metrics(rows_out)}",
         flush=True,
     )
+    slice_line = _format_slice_breakdown(rows_out)
+    if slice_line:
+        fmt_tag = "B0/B1b/M2_250" if (rows_out and "m2_b256" in rows_out[-1]) else "B0/B1b"
+        print(f"[{split_tag} slices ({fmt_tag})] {slice_line}", flush=True)
     return rows_out
 
 
@@ -445,8 +573,9 @@ def _build_calibration_summary(
     seed_rows: list[dict[str, Any]],
     dev_rows: list[dict[str, Any]],
     params: CalibratedRouterParams,
+    tau_sweep: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Summarizes Stage-0/1 calibration, Gate 2 escalation rate, and Contingency R1 status."""
+    """Summarizes Stage-0/1 calibration, Gate 2 classification metrics, and Contingency R1 status."""
     dev_items = [r["item"] for r in dev_rows]
     # Note: dev_rows lack full_eval_modes ('b1a'/'b2a'/'m2_pre_*'), so evaluate dev M2/B0/B1b directly
     dev_m2_runs: list[dict[str, Any]] = []
@@ -485,6 +614,7 @@ def _build_calibration_summary(
     dev_m2_table = evaluate_system_table(dev_items, dev_m2_runs)
     dev_b1b_table = evaluate_system_table(dev_items, dev_b1b_runs)
     dev_b0_table = evaluate_system_table(dev_items, dev_b0_runs)
+    clf_diag = compute_calibration_diagnostics(seed_rows, dev_rows, params, tau_sweep=tau_sweep)
 
     r1_in_range = 0.20 <= params.m2_escalation_rate_dev <= 0.85
     tau_at_boundary = params.tau_prob <= 0.16 or params.tau_prob >= 0.84
@@ -493,6 +623,7 @@ def _build_calibration_summary(
         "n_seed": len(seed_rows),
         "n_dev": len(dev_rows),
         "calibrated_params": params.__dict__,
+        "classifier_metrics": clf_diag,
         "dev_gate1_skip_rate": gate1_skip_dev / max(1, len(dev_rows)),
         "dev_escalation_rate": gate2_esc_dev / max(1, len(dev_rows)),
         "contingency_r1_ok": r1_in_range,
@@ -503,6 +634,70 @@ def _build_calibration_summary(
             "M2": {k: v for k, v in dev_m2_table.items() if k not in ("z_vec", "u_vec")},
         },
     }
+
+
+def _print_calibration_report(calib_summary: dict[str, Any]) -> None:
+    """Prints human-readable Gate-2 training Precision/Recall/F1/ROC-AUC and dev router scores."""
+    params_d = calib_summary["calibrated_params"]
+    cm = calib_summary.get("classifier_metrics", {})
+    tr05 = cm.get("seed_train_at_05", {})
+    tr_t = cm.get("seed_train_at_tau", {})
+    dv_all = cm.get("dev_all_at_tau", {})
+    dv_g2 = cm.get("dev_gate2_at_tau", {})
+    tau_val = params_d["tau_prob"]
+    print(
+        f"[calib] {calib_summary['model']} | tau_prob={tau_val:.3f} "
+        f"tau_h_high={params_d['tau_h_high']:.3f} dev_esc={params_d['m2_escalation_rate_dev']:.3f} "
+        f"g1_skip={calib_summary['dev_gate1_skip_rate']:.3f} "
+        f"(R1={'OK' if calib_summary['contingency_r1_ok'] else 'WARN'})",
+        flush=True,
+    )
+    if tr05:
+        print(
+            f"  Gate-2 Train (seed_{calib_summary['n_seed']}, thr=0.50): "
+            f"Acc={100*tr05['accuracy']:.1f}% Prec={100*tr05['precision']:.1f}% "
+            f"Rec={100*tr05['recall']:.1f}% F1={100*tr05['f1']:.1f}% "
+            f"ROC-AUC={tr05['roc_auc']:.3f} (pos={tr05['pos_count']}/{tr05['n']})",
+            flush=True,
+        )
+    if tr_t:
+        print(
+            f"  Gate-2 Train (seed_{calib_summary['n_seed']}, tau={tau_val:.3f}): "
+            f"Acc={100*tr_t['accuracy']:.1f}% Prec={100*tr_t['precision']:.1f}% "
+            f"Rec={100*tr_t['recall']:.1f}% F1={100*tr_t['f1']:.1f}% "
+            f"pred_pos={100*tr_t['pred_pos_rate']:.1f}%",
+            flush=True,
+        )
+    if dv_all:
+        best_u = cm.get("best_dev_utility_u005")
+        u_str = f" | Best U_0.05={100*best_u:.1f}%" if best_u is not None else ""
+        print(
+            f"  Gate-2 Val   (dev_{calib_summary['n_dev']} all, tau={tau_val:.3f}): "
+            f"Acc={100*dv_all['accuracy']:.1f}% Prec={100*dv_all['precision']:.1f}% "
+            f"Rec={100*dv_all['recall']:.1f}% F1={100*dv_all['f1']:.1f}% "
+            f"ROC-AUC={dv_all['roc_auc']:.3f}{u_str}",
+            flush=True,
+        )
+    if dv_g2 and dv_g2.get("n", 0) > 0:
+        print(
+            f"  Gate-2 Val   (Gate-2 subset n={dv_g2['n']}, tau={tau_val:.3f}): "
+            f"Acc={100*dv_g2['accuracy']:.1f}% Prec={100*dv_g2['precision']:.1f}% "
+            f"Rec={100*dv_g2['recall']:.1f}% F1={100*dv_g2['f1']:.1f}% "
+            f"ROC-AUC={dv_g2['roc_auc']:.3f}",
+            flush=True,
+        )
+    ds = calib_summary.get("dev_summary", {})
+    for name in ("B0", "B1b", "M2"):
+        if name in ds:
+            t = ds[name]
+            ip = 100.0 * float(t["slice_acc"].get("ifeval_precision", 0.0))
+            print(
+                f"  Dev {name:3s}: Macro={100*t['macro_acc']:.1f}% | "
+                f"IFEval-Prec={ip:.1f}% | OAA_250={100*t['oaa_250']:.1f}% | "
+                f"U_0.05={100*t['u_005']:.1f}% | MeanTok={t['mean_t_tot']:.0f} "
+                f"(calls={t['mean_calls']:.2f})",
+                flush=True,
+            )
 
 
 def main() -> None:
@@ -583,11 +778,14 @@ def main() -> None:
     calibrator = CBARRCalibrator()
     params = calibrator.fit(seed_rows, dev_rows)
     t_calib_sec = round(time.perf_counter() - t_calib_start, 2)
-    calib_summary = _build_calibration_summary(args.model, seed_rows, dev_rows, params)
+    calib_summary = _build_calibration_summary(
+        args.model, seed_rows, dev_rows, params, tau_sweep=calibrator.last_tau_sweep_
+    )
     calib_summary["wall_time_sec"] = t_calib_sec
     calib_summary["runtime"] = {"device": str(resolved_runtime[0]), "dtype": str(resolved_runtime[1])}
     calib_path = out_dir / "calibration_summary.json"
     calib_path.write_text(json.dumps(calib_summary, indent=2) + "\n", encoding="utf-8")
+    _print_calibration_report(calib_summary)
 
     if not calib_summary["contingency_r1_ok"]:
         print(
@@ -647,6 +845,18 @@ def main() -> None:
     adj_p = holm_bonferroni(raw_p)
     for k, p_adj in zip(comp_keys, adj_p):
         tables[k]["p_holm_vs_b1b"] = p_adj
+
+    print(f"[eval_matrix] {args.model} ({len(eval_rows)} items, {t_eval_sec:.1f}s):", flush=True)
+    for k in ("B0", "B1a", "B1b", "B2a", "M1c", "M2_Pre", "M2"):
+        t = tables[k]
+        ip = 100.0 * float(t["slice_acc"].get("ifeval_precision", 0.0))
+        p_s = f" p={t['p_holm_vs_b1b']:.3g}" if k != "B1b" else ""
+        print(
+            f"  {k:7s}: Macro={100*t['macro_acc']:.1f}% | Prec={ip:.1f}% | "
+            f"OAA_250={100*t['oaa_250']:.1f}% | U_0.05={100*t['u_005']:.1f}% | "
+            f"Tok={t['mean_t_tot']:.0f} calls={t['mean_calls']:.2f}{p_s}",
+            flush=True,
+        )
 
     # Evaluate M2_B512 separately under auxiliary_systems so Contingency R3 never alters
     # the 12-hypothesis Holm-Bonferroni FWER correction of the pre-registered table.

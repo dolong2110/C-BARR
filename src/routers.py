@@ -60,6 +60,71 @@ def _get_slow_rec(rec: dict[str, Any], b_val: int, direct: bool, prefix: str = "
     return rec[f"{prefix}_b{b_val}"]
 
 
+def _gate2_target_label(rec: dict[str, Any]) -> int:
+    """Computes binary Gate-2 training/eval label: slow thinking helps or fast probe showed inertia."""
+    z_fast = int(rec["fast_done"]["z"])
+    z_slow = int(rec["m2_b128"]["z"])
+    return int((z_slow > z_fast) or (z_fast == 0 and int(rec["probe"]["I_inertia"]) == 1))
+
+
+def _binary_clf_metrics(
+    y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5
+) -> dict[str, Any]:
+    """Computes binary classification Accuracy, Precision, Recall, F1, and pairwise ROC-AUC."""
+    n = int(len(y_true))
+    if n == 0:
+        return {
+            "n": 0,
+            "threshold": float(threshold),
+            "pos_count": 0,
+            "pos_rate": 0.0,
+            "pred_pos_rate": 0.0,
+            "accuracy": 0.0,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "roc_auc": 0.5,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+        }
+    y_pred = (y_prob >= float(threshold)).astype(int)
+    tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+    fp = int(np.sum((y_true == 0) & (y_pred == 1)))
+    tn = int(np.sum((y_true == 0) & (y_pred == 0)))
+    fn = int(np.sum((y_true == 1) & (y_pred == 0)))
+    acc = float((tp + tn) / n)
+    prec = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    rec = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+    f1 = float(2.0 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+
+    pos_scores = y_prob[y_true == 1]
+    neg_scores = y_prob[y_true == 0]
+    if len(pos_scores) > 0 and len(neg_scores) > 0:
+        diff = pos_scores[:, None] - neg_scores[None, :]
+        roc_auc = float(np.mean((diff > 0).astype(np.float64) + 0.5 * (diff == 0)))
+    else:
+        roc_auc = 0.5
+
+    return {
+        "n": n,
+        "threshold": float(threshold),
+        "pos_count": int(np.sum(y_true == 1)),
+        "pos_rate": float(np.mean(y_true)),
+        "pred_pos_rate": float(np.mean(y_pred)),
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "roc_auc": roc_auc,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+    }
+
+
 class CBARRCalibrator:
     """Two-stage zero-leakage calibrator using seed_60 for weights and dev_60 for tau*."""
 
@@ -67,6 +132,7 @@ class CBARRCalibrator:
         self.lam_utility = lam_utility
         self.norm_tokens = norm_tokens
         self.seed = seed
+        self.last_tau_sweep_: list[dict[str, float]] = []
 
     def fit(
         self,
@@ -80,11 +146,9 @@ class CBARRCalibrator:
         # Positive label: thinking strictly beats fast probe, or fast probe failed with Thinking Inertia
         for rec in seed_records:
             X_seed.append(_build_gate2_feature_vec(rec["g1"], rec["probe"]))
-            z_fast = int(rec["fast_done"]["z"])
-            z_slow = int(rec["m2_b128"]["z"])
-            need_slow = int((z_slow > z_fast) or (z_fast == 0 and rec["probe"]["I_inertia"] == 1))
+            need_slow = _gate2_target_label(rec)
             y_seed.append(need_slow)
-            if z_slow > z_fast:
+            if int(rec["m2_b128"]["z"]) > int(rec["fast_done"]["z"]):
                 h_max_thinking_helped.append(float(rec["probe"]["H_max"]))
 
         X_arr = np.vstack(X_seed)
@@ -108,6 +172,7 @@ class CBARRCalibrator:
         best_tau = 0.50
         best_u = -1e9
         best_esc_rate = 0.35
+        tau_sweep: list[dict[str, float]] = []
 
         # Grid-search Gate-2 escalation threshold tau in [0.15, 0.85] to maximize utility on dev_60
         w_vec = np.asarray(coef, dtype=np.float64)
@@ -144,11 +209,20 @@ class CBARRCalibrator:
                 utilities.append(float(z_sel) - self.lam_utility * (float(t_sel) / self.norm_tokens))
 
             mean_u = float(np.mean(utilities))
+            esc_rate_tau = float(np.mean(escalations))
+            tau_sweep.append(
+                {
+                    "tau": float(tau),
+                    "utility_u005": mean_u,
+                    "esc_rate": esc_rate_tau,
+                }
+            )
             if mean_u > best_u:
                 best_u = mean_u
                 best_tau = float(tau)
-                best_esc_rate = float(np.mean(escalations))
+                best_esc_rate = esc_rate_tau
 
+        self.last_tau_sweep_ = tau_sweep
         return CalibratedRouterParams(
             coef=coef,
             intercept=intercept,
@@ -164,6 +238,40 @@ def score_gate2_probability(
     feat = _build_gate2_feature_vec(g1, probe)
     logit = float(np.dot(np.asarray(params.coef), feat) + params.intercept)
     return float(1.0 / (1.0 + np.exp(-logit)))
+
+
+def compute_calibration_diagnostics(
+    seed_records: list[dict[str, Any]],
+    dev_records: list[dict[str, Any]],
+    params: CalibratedRouterParams,
+    tau_sweep: list[dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Computes Gate-2 classifier Precision/Recall/F1/ROC-AUC across seed train and dev validation."""
+    def _eval_split(records: list[dict[str, Any]], gate2_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
+        y_true_l, y_prob_l = [], []
+        for rec in records:
+            g1 = rec.get("g1") or run_gate1_lexical(rec["item"]["prompt"])
+            if gate2_only and ((g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0) or g1.phi_plan == 1):
+                continue
+            y_true_l.append(_gate2_target_label(rec))
+            y_prob_l.append(score_gate2_probability(g1, rec["probe"], params))
+        return np.asarray(y_true_l, dtype=int), np.asarray(y_prob_l, dtype=np.float64)
+
+    y_seed, p_seed = _eval_split(seed_records, gate2_only=False)
+    y_dev_all, p_dev_all = _eval_split(dev_records, gate2_only=False)
+    y_dev_g2, p_dev_g2 = _eval_split(dev_records, gate2_only=True)
+
+    diag: dict[str, Any] = {
+        "seed_train_at_05": _binary_clf_metrics(y_seed, p_seed, threshold=0.5),
+        "seed_train_at_tau": _binary_clf_metrics(y_seed, p_seed, threshold=params.tau_prob),
+        "dev_all_at_tau": _binary_clf_metrics(y_dev_all, p_dev_all, threshold=params.tau_prob),
+        "dev_gate2_at_tau": _binary_clf_metrics(y_dev_g2, p_dev_g2, threshold=params.tau_prob),
+    }
+    if tau_sweep:
+        best_pt = max(tau_sweep, key=lambda x: x["utility_u005"])
+        diag["best_dev_utility_u005"] = best_pt["utility_u005"]
+        diag["tau_sweep"] = tau_sweep
+    return diag
 
 
 def resolve_all_variants_for_item(
