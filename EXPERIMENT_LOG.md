@@ -186,3 +186,41 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `Qwen/Qwen3.5-4B` | 12 | True | True | False |
 | `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
 <!-- CBARR_RUN_END:20261114T231920Z -->
+
+<!-- CBARR_RUN_START:20261116T155617Z -->
+### Run `20261116T155617Z` — **RUNNING (after Step 0a: Hardware & Kernel Probe)** (Updated 2026-11-16 16:04:30 UTC)
+- **Code Version**: `v0.5.5` | **Git Commit**: `8d43898-dirty` | **Last Loop**: `Step 0a: Hardware & Kernel Probe` | **Wall Time**: `8m 06.0s` (486.0s)
+- **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=False`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push`
+- **Raw Log**: `outputs/logs/cbarr_20261116T155617Z.log`
+
+#### 1. Training & Experiment Parameters
+```json
+{
+  "auto_commit": true,
+  "auto_push": true,
+  "code_version": "0.5.5",
+  "dtype": "auto",
+  "git_branch": "",
+  "is_mock": false,
+  "lam_utility": 0.05,
+  "logreg_C": 1.0,
+  "norm_tokens": 250.0,
+  "seed": 42,
+  "setup_mode": "auto",
+  "tau_grid": [
+    0.15,
+    0.85,
+    29
+  ],
+  "with_9b": true,
+  "with_w7": true
+}
+```
+
+#### 2. Stage Timings
+| Stage | Status | Wall Time |
+| :--- | :--- | :--- |
+| Gate 0: Preflight Tests | PASS | 7.0s (7.0s) |
+| Step 0a: Hardware & Kernel Probe | PASS | 8.0s (8.0s) |
+<!-- CBARR_RUN_END:20261116T155617Z -->
