@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Phases 4-7 GPU Orchestration for C-BARR (all-in-one or 4 independent GPU workers + Step 5 combiner)
+# Phases 1-7 GPU Orchestration for C-BARR (all-in-one A-Z, 4 parallel workers, or Step 5 combiner)
 #
 # Common usage:
-#   CBARR_COLOR=1 bash scripts/run_gpu_phases_4_to_6.sh --gpu 0 --push --with-9b --with-w7
+#   GITHUB_TOKEN=... bash scripts/run_all_a_to_z.sh
+#   CBARR_COLOR=1 bash scripts/run_gpu_phases_4_to_6.sh --setup auto --shards auto --auto-9b --with-w7 --commit --push
 #   bash scripts/run_part1_worker_qwen4b.sh --shards auto --push
 #   bash scripts/run_part2_worker_smollm3.sh --shards auto --push
 #   bash scripts/run_part3_worker_qwen2b.sh --shards auto --push
@@ -13,9 +14,12 @@ set -euo pipefail
 #   bash scripts/run_gpu_phases_4_to_6.sh --mock --out-dir /tmp/mock_out --exp-log /tmp/mock_log.md
 #
 # Key flags:
-#   --part <all|1|2|3|4|5|combine>  Select full pipeline, Parts 1-4 parallel GPU workers, or Part 5 combiner (default: all)
-#   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, 4) when >=2 GPUs visible (default: 1)
-#   --gpu <id>              Pin CUDA_VISIBLE_DEVICES (default: auto)
+#   --part <all|1|2|3|4|5|combine>  Select full A-Z pipeline, Parts 1-4 parallel GPU workers, or Part 5 combiner (default: all)
+#   --setup / --setup-mode <auto|on|off>  Provision packages, fast DeltaNet kernels, IFEval, NLTK, and frozen splits (default: off)
+#   --no-setup              Disable environment provisioning checks before running
+#   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, --max-shards) when >=2 GPUs visible (default: 1)
+#   --max-shards <N>        Maximum GPUs used when --shards auto is active (default: 8)
+#   --gpu <id[,id...]>      Pin CUDA_VISIBLE_DEVICES (e.g. 0 or 0,1,2,3; default: auto)
 #   --device <dev>          Compute device override: auto, cuda, mps, cpu (default: auto)
 #   --dtype <auto|bf16|fp16|fp32>  Model precision override (default: auto -> bf16 on sm>=80 & Apple Silicon MPS BF16)
 #   --models "<m1 m2>"      Optional space-separated subset of models (default: part-specific models)
@@ -23,11 +27,17 @@ set -euo pipefail
 #   --calibrate-only        Run Step 0a + Gate-2 calibration only (seed_60 + dev_60)
 #   --strict-only           Skip the second diag491 pass and run strict341 only
 #   --offline               Set HF_HUB_OFFLINE=1 and load locally cached checkpoints without Hub network checks
-#   --push                  Sync results cleanly (workers: disjoint outputs/<model>/* with --no-ledger; part 4/all: Phase 7 + ledger)
-#   --unpack / --no-unpack  Control unpacking repo outputs/*/*_cache.jsonl.gz in --part 4 (default: auto when present)
+#   --commit / --commit-only  Commit synced caches, tables, figures, and EXPERIMENT_LOG.md locally to git
+#   --push / --no-push      Commit and push synced results to GitHub (--push enables --commit)
+#   --branch <name>         Target git branch when committing/pushing (default: current branch or master)
+#   --github-token <PAT>    Transient GitHub PAT exported into GITHUB_TOKEN (scrubbed from logs)
+#   --hf-token <TOKEN>      Transient Hugging Face token exported into HF_TOKEN (scrubbed from logs)
+#   --git-name / --git-email  Optional local git author identity override for automated commits
+#   --unpack / --no-unpack  Control unpacking repo outputs/*/*_cache.jsonl.gz in --part 5/all (default: auto when present)
 #   --strict-version-match  Fail Phase 7 analysis if combined model versions differ
 #   --checkpoint-every <N>  Mid-eval_450 checkpoint cadence in new items (default: 150 live, 0 mock)
-#   --with-9b / --with-w7   Enable Qwen3.5-9B scale sweep / optional W7 extensions
+#   --with-9b / --auto-9b / --no-9b  Enable Qwen3.5-9B always, automatically on >=22 GB GPUs, or disable
+#   --with-w7 / --no-w7     Enable/disable optional W7 DeltaNet blend & prefill MLP probe extensions
 #   --include-b512          Include Contingency R3 B=512 sweep
 #   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
 #   --skip-preflight        Skip Gate 0 offline unittest discovery
@@ -40,8 +50,10 @@ export PYTHONUNBUFFERED=1
 export CBARR_COLOR="${CBARR_COLOR:-0}"
 
 PART_MODE="all"
+SETUP_MODE="off"
 SHARDS_ARG="1"
-WITH_9B=0
+MAX_SHARDS_ARG=8
+WITH_9B="0"
 WITH_W7=0
 IS_MOCK=0
 SKIP_SMOKE=0
@@ -54,6 +66,10 @@ STRICT_VERSION_MATCH=0
 UNPACK_MODE="auto"
 OFFLINE_MODE=0
 AUTO_PUSH="${CBARR_AUTO_PUSH:-0}"
+AUTO_COMMIT=0
+GIT_BRANCH=""
+GIT_USER_NAME=""
+GIT_USER_EMAIL=""
 DATA_DIR="data"
 OUT_DIR="outputs"
 FIG_DIR="paper/figures"
@@ -74,7 +90,30 @@ TAU_MAX="0.85"
 TAU_STEPS=29
 CHECKPOINT_EVERY=""
 EXTRA_FLAGS=()
-RAW_CMD="$0 $*"
+
+# Mask any transient secret arguments before recording RAW_CMD into logs/ledger
+SAFE_ARGS=()
+_mask_next=0
+for _arg in "$@"; do
+  if [ "$_mask_next" -eq 1 ]; then
+    SAFE_ARGS+=("***")
+    _mask_next=0
+    continue
+  fi
+  case "$_arg" in
+    --github-token|--hf-token)
+      SAFE_ARGS+=("$_arg")
+      _mask_next=1
+      ;;
+    --github-token=*|--hf-token=*)
+      SAFE_ARGS+=("${_arg%%=*}=***")
+      ;;
+    *)
+      SAFE_ARGS+=("$_arg")
+      ;;
+  esac
+done
+RAW_CMD="$0 ${SAFE_ARGS[*]:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -83,13 +122,35 @@ while [ "$#" -gt 0 ]; do
       shift
       PART_MODE="$1"
       ;;
+    --setup)
+      if [ "$#" -ge 2 ] && { [ "$2" = "on" ] || [ "$2" = "off" ] || [ "$2" = "auto" ]; }; then
+        shift
+        SETUP_MODE="$1"
+      else
+        SETUP_MODE="on"
+      fi
+      ;;
+    --no-setup) SETUP_MODE="off" ;;
+    --setup-mode)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      SETUP_MODE="$1"
+      ;;
     --shards)
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
       SHARDS_ARG="$1"
       ;;
-    --with-9b) WITH_9B=1 ;;
+    --max-shards)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      MAX_SHARDS_ARG="$1"
+      ;;
+    --with-9b) WITH_9B="1" ;;
+    --auto-9b) WITH_9B="auto" ;;
+    --no-9b) WITH_9B="0" ;;
     --with-w7) WITH_W7=1 ;;
+    --no-w7) WITH_W7=0 ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
     --full-preflight) FULL_PREFLIGHT=1 ;;
@@ -100,7 +161,34 @@ while [ "$#" -gt 0 ]; do
     --no-unpack) UNPACK_MODE="off" ;;
     --offline) OFFLINE_MODE=1; export HF_HUB_OFFLINE=1; EXTRA_FLAGS+=("--offline") ;;
     --no-exp-log) NO_EXP_LOG=1 ;;
-    --push) AUTO_PUSH=1 ;;
+    --commit|--commit-only) AUTO_COMMIT=1 ;;
+    --push) AUTO_COMMIT=1; AUTO_PUSH=1 ;;
+    --no-push) AUTO_PUSH=0 ;;
+    --branch)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      GIT_BRANCH="$1"
+      ;;
+    --github-token)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      export GITHUB_TOKEN="$1"
+      ;;
+    --hf-token)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      export HF_TOKEN="$1"
+      ;;
+    --git-name)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      GIT_USER_NAME="$1"
+      ;;
+    --git-email)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      GIT_USER_EMAIL="$1"
+      ;;
     --include-b512) EXTRA_FLAGS+=("$1") ;;
     --mock) IS_MOCK=1; EXTRA_FLAGS+=("$1") ;;
     --data-dir)
@@ -218,8 +306,22 @@ if [ "$PART_MODE" = "1" ] || [ "$PART_MODE" = "2" ] || [ "$PART_MODE" = "3" ] ||
   WORKER_MODE=1
 fi
 
+case "$SETUP_MODE" in
+  on|off|auto) ;;
+  *) echo "Unknown --setup-mode '$SETUP_MODE' (expected on, off, or auto)" >&2; exit 1 ;;
+esac
+case "$WITH_9B" in
+  0|1|auto) ;;
+  *) echo "Unknown WITH_9B value '$WITH_9B' (expected 0, 1, or auto)" >&2; exit 1 ;;
+esac
+
 if [ -n "$GPU_ID" ]; then
   export CUDA_VISIBLE_DEVICES="$GPU_ID"
+fi
+
+VISIBLE_GPUS=()
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  IFS=',' read -r -a VISIBLE_GPUS <<< "$CUDA_VISIBLE_DEVICES"
 fi
 
 if [ -z "$LOG_DIR" ]; then
@@ -230,19 +332,6 @@ mkdir -p "$OUT_DIR" "$LOG_DIR"
 PY_BIN="${PYTHON_BIN:-python3}"
 if [ -x ".venv/bin/python" ] && [ -z "${PYTHON_BIN:-}" ]; then
   PY_BIN=".venv/bin/python"
-fi
-
-if [ "$SHARDS_ARG" = "auto" ]; then
-  if [ -n "$GPU_ID" ] && [[ "$GPU_ID" != *","* ]]; then
-    N_SHARDS=1
-  else
-    N_SHARDS="$("$PY_BIN" -c "import torch; print(min(torch.cuda.device_count(), 4) if torch.cuda.is_available() else 1)" 2>/dev/null || echo 1)"
-  fi
-else
-  N_SHARDS="$SHARDS_ARG"
-fi
-if [ "${N_SHARDS:-1}" -lt 1 ] 2>/dev/null; then
-  N_SHARDS=1
 fi
 
 if [ -n "$RUN_ID_ARG" ]; then
@@ -273,6 +362,104 @@ PIPELINE_START_EPOCH="$(date -u +%s)"
 CURRENT_STAGE="Init"
 FINALIZED=0
 
+log_banner() {
+  local ts
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "[$ts] $*" | tee -a "$RUN_LOG"
+}
+
+check_git_sync_readiness() {
+  if [ "$IS_MOCK" -ne 0 ]; then
+    return 0
+  fi
+  if [ "$AUTO_COMMIT" -eq 0 ] && [ "$AUTO_PUSH" -eq 0 ]; then
+    return 0
+  fi
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "ERROR: --commit/--push requested, but current directory is not a git repository." >&2
+    exit 1
+  fi
+  if [ -n "$GIT_USER_NAME" ]; then
+    git config user.name "$GIT_USER_NAME"
+  fi
+  if [ -n "$GIT_USER_EMAIL" ]; then
+    git config user.email "$GIT_USER_EMAIL"
+  fi
+  "$PY_BIN" -c "import pathlib; from scripts.log_experiment import _ensure_git_identity; _ensure_git_identity(pathlib.Path('.'))"
+  if [ "$AUTO_PUSH" -eq 1 ] && [ "$OFFLINE_MODE" -eq 0 ]; then
+    local remote_url
+    remote_url="$(git remote get-url origin 2>/dev/null || true)"
+    if [ -z "$remote_url" ]; then
+      echo "ERROR: --push requested, but git remote 'origin' is not configured." >&2
+      exit 1
+    fi
+    if ! "$PY_BIN" -c "import os, pathlib, sys; from scripts.log_experiment import _has_git_push_auth; sys.exit(0 if _has_git_push_auth(pathlib.Path('.'), sys.argv[1], os.environ.get('GITHUB_TOKEN', '').strip()) else 1)" "$remote_url"; then
+      echo "ERROR: --push requested for HTTPS remote '$remote_url', but GITHUB_TOKEN is unset and no git credential.helper was found." >&2
+      echo "Set GITHUB_TOKEN=<your_PAT> (or use SSH / credential helper, or pass --no-push / --commit-only)." >&2
+      exit 1
+    fi
+  fi
+}
+
+bootstrap_environment_and_data() {
+  if [ "$IS_MOCK" -ne 0 ]; then
+    return 0
+  fi
+  local need_setup=0
+  if [ "$SETUP_MODE" = "on" ]; then
+    need_setup=1
+  elif [ "$SETUP_MODE" = "auto" ]; then
+    if ! "$PY_BIN" -c "
+import importlib, pathlib, nltk, torch
+reqs = ['torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
+for m in reqs:
+    importlib.import_module(m)
+assert pathlib.Path('instruction_following_eval').is_dir()
+for res in ('tokenizers/punkt', 'tokenizers/punkt_tab', 'corpora/stopwords', 'taggers/averaged_perceptron_tagger_eng'):
+    nltk.data.find(res)
+if torch.cuda.is_available():
+    cc = torch.cuda.get_device_capability(0)[:2]
+    if cc >= (7, 5):
+        importlib.import_module('fla')
+" 2>/dev/null || [ ! -f "${DATA_DIR}/manifest_sha256.json" ]; then
+      need_setup=1
+    fi
+  fi
+  if [ "$need_setup" -eq 1 ]; then
+    log_banner "=== [Step 0: Environment Setup & Kernel Provisioning] ==="
+    PYTHON_BIN="$PY_BIN" bash scripts/setup_env.sh 2>&1 | tee -a "$RUN_LOG"
+  fi
+  if [ "$DATA_DIR" = "data" ] && [ ! -f "${DATA_DIR}/manifest_sha256.json" ]; then
+    log_banner "=== [Step 0: Freezing Deterministic Splits (${DATA_DIR})] ==="
+    "$PY_BIN" data/freeze_datasets.py 2>&1 | tee -a "$RUN_LOG"
+  fi
+  "$PY_BIN" -c "import pathlib, sys; from scripts.run_matrix import verify_manifest_integrity; m = verify_manifest_integrity(pathlib.Path(sys.argv[1])); print(f'Verified {len(m)} frozen dataset splits in {sys.argv[1]}')" "$DATA_DIR" 2>&1 | tee -a "$RUN_LOG"
+}
+
+check_git_sync_readiness
+bootstrap_environment_and_data
+
+if [ "$SHARDS_ARG" = "auto" ]; then
+  if [ -n "$GPU_ID" ] && [[ "$GPU_ID" != *","* ]]; then
+    N_SHARDS=1
+  else
+    N_SHARDS="$("$PY_BIN" -c "import sys, torch; cap = max(1, int(sys.argv[1])); print(min(torch.cuda.device_count(), cap) if torch.cuda.is_available() else 1)" "$MAX_SHARDS_ARG" 2>/dev/null || echo 1)"
+  fi
+else
+  N_SHARDS="$SHARDS_ARG"
+fi
+if [ "${N_SHARDS:-1}" -lt 1 ] 2>/dev/null; then
+  N_SHARDS=1
+fi
+
+if [ "$WITH_9B" = "auto" ]; then
+  if [ "$IS_MOCK" -ne 0 ]; then
+    WITH_9B=0
+  else
+    WITH_9B="$("$PY_BIN" -c "import torch; ok = torch.cuda.is_available() and (torch.cuda.get_device_properties(0).total_memory / (1024**3) >= 22.0); print(1 if ok else 0)" 2>/dev/null || echo 0)"
+  fi
+fi
+
 if [ -z "$CHECKPOINT_EVERY" ]; then
   if [ "$IS_MOCK" -eq 1 ] || [ "$WORKER_MODE" -eq 1 ]; then
     CHECKPOINT_EVERY=0
@@ -301,6 +488,9 @@ if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
   MATRIX_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
   if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ]; then
     MATRIX_PARAM_FLAGS+=(--git-push)
+    if [ -n "$GIT_BRANCH" ]; then
+      MATRIX_PARAM_FLAGS+=(--git-branch "$GIT_BRANCH")
+    fi
   fi
 fi
 
@@ -317,16 +507,13 @@ payload = {
     'with_9b': bool(int(sys.argv[9])),
     'with_w7': bool(int(sys.argv[10])),
     'is_mock': bool(int(sys.argv[11])),
-    'auto_push': bool(int(sys.argv[12])),
+    'auto_commit': bool(int(sys.argv[12])),
+    'auto_push': bool(int(sys.argv[13])),
+    'git_branch': sys.argv[14],
+    'setup_mode': sys.argv[15],
 }
-pathlib.Path(sys.argv[13]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_PUSH" "$PARAMS_FILE"
-
-log_banner() {
-  local ts
-  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "[$ts] $*" | tee -a "$RUN_LOG"
-}
+pathlib.Path(sys.argv[16]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
+" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE"
 
 record_stage_timing() {
   local stage_name="$1"
@@ -343,14 +530,18 @@ with pathlib.Path(sys.argv[4]).open('a', encoding='utf-8') as f:
 checkpoint_exp_log() {
   local loop_label="$1"
   local run_status="$2"
+  local allow_push="${3:-1}"
   local now_end total_sec md_args=() push_args=() smoke_args=()
   now_end="$(date -u +%s)"
   total_sec=$((now_end - PIPELINE_START_EPOCH))
   if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
     md_args=(--md-log "$EXP_LOG")
   fi
-  if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ] && [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
+  if [ "$allow_push" -eq 1 ] && [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ] && [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
     push_args=(--git-push)
+    if [ -n "$GIT_BRANCH" ]; then
+      push_args+=(--git-branch "$GIT_BRANCH")
+    fi
   fi
   if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ] && [ "$RAN_LIVE_SMOKE" -eq 1 ]; then
     if [ -f "${OUT_DIR}/smoke_test_gate3_report.json" ]; then
@@ -379,7 +570,10 @@ run_stage() {
   local stage_name="$1"
   shift
   CURRENT_STAGE="$stage_name"
-  local t0 t1 dur rc
+  local t0 t1 dur rc stage_push=1
+  case "$stage_name" in
+    "Gate 0:"*|"Submission Audit"*|"GitHub Sync"*) stage_push=0 ;;
+  esac
   t0="$(date -u +%s)"
   log_banner "=== [$stage_name] START ==="
   set +e
@@ -391,7 +585,7 @@ run_stage() {
   if [ "$rc" -eq 0 ]; then
     record_stage_timing "$stage_name" "PASS" "$dur"
     log_banner "=== [$stage_name] DONE (${dur}s) ==="
-    checkpoint_exp_log "$stage_name" "RUNNING (after ${stage_name})"
+    checkpoint_exp_log "$stage_name" "RUNNING (after ${stage_name})" "$stage_push"
   else
     record_stage_timing "$stage_name" "FAIL(exit=${rc})" "$dur"
     log_banner "=== [$stage_name] FAILED (exit=${rc}, ${dur}s) ==="
@@ -437,15 +631,20 @@ run_matrix_sharded() {
     return $?
   fi
 
-  local pids=() s_idx slug s_log rc_all=0
+  local pids=() s_idx shard_cuda_dev slug s_log rc_all=0
   slug="${model_id//\//__}"
   CURRENT_STAGE="$stage_name"
   local t0 t1 dur
   t0="$(date -u +%s)"
   log_banner "=== [$stage_name] START (${N_SHARDS}-GPU sharded) ==="
   for ((s_idx = 0; s_idx < N_SHARDS; s_idx++)); do
+    if [ "${#VISIBLE_GPUS[@]}" -gt "$s_idx" ]; then
+      shard_cuda_dev="${VISIBLE_GPUS[$s_idx]}"
+    else
+      shard_cuda_dev="$s_idx"
+    fi
     s_log="${LOG_DIR}/cbarr_${RUN_ID}_gpu${s_idx}_${slug}.log"
-    CUDA_VISIBLE_DEVICES="$s_idx" "${base_args[@]}" \
+    CUDA_VISIBLE_DEVICES="$shard_cuda_dev" "${base_args[@]}" \
       --device "$DEVICE_ARG" \
       --seed "$SEED" \
       --lam-utility "$LAM_UTILITY" \
@@ -565,16 +764,27 @@ sync_part_results() {
   local sync_label="$1"
   local include_phase7="$2"
   shift 2
-  if [ "$AUTO_PUSH" -ne 1 ] || [ "$IS_MOCK" -ne 0 ]; then
+  if { [ "$AUTO_COMMIT" -ne 1 ] && [ "$AUTO_PUSH" -ne 1 ]; } || [ "$IS_MOCK" -ne 0 ]; then
     return 0
   fi
+  # Mark ledger PASSED locally first so sync_results.py commits & pushes final state atomically
+  FINALIZED=1
+  checkpoint_exp_log "$CURRENT_STAGE" "PASSED" 0
+
   local sync_flags=(
     --mode push
     --repo-dir .
     --out-dir "$OUT_DIR"
     --label "${sync_label}:${RUN_ID}"
-    --git-push
   )
+  if [ "$AUTO_PUSH" -eq 1 ]; then
+    sync_flags+=(--git-push --strict)
+  else
+    sync_flags+=(--no-git-push)
+  fi
+  if [ -n "$GIT_BRANCH" ]; then
+    sync_flags+=(--git-branch "$GIT_BRANCH")
+  fi
   if [ "$include_phase7" -eq 0 ]; then
     sync_flags+=(--no-phase7)
   fi
@@ -585,17 +795,22 @@ sync_part_results() {
     sync_flags+=(--models "$@")
   fi
   run_stage "GitHub Sync (${sync_label})" "$PY_BIN" scripts/sync_results.py "${sync_flags[@]}"
+  local t_end total_sec
+  t_end="$(date -u +%s)"
+  total_sec=$((t_end - PIPELINE_START_EPOCH))
+  log_banner "Run ${RUN_ID} finished with status=PASSED (total=${total_sec}s). Full log: ${RUN_LOG}"
 }
 
 # Log environment snapshot upfront for debugging & reproducibility
 {
   echo "========================================================================"
-  echo "C-BARR Run ID      : ${RUN_ID} (part=${PART_MODE}, shards=${N_SHARDS})"
+  echo "C-BARR Run ID      : ${RUN_ID} (part=${PART_MODE}, shards=${N_SHARDS}, with_9b=${WITH_9B}, with_w7=${WITH_W7})"
   echo "UTC Start          : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "Code Version       : v$(cat VERSION 2>/dev/null || echo 0.0.0) (git=$(git rev-parse --short HEAD 2>/dev/null || echo unknown))"
   echo "Python Binary      : ${PY_BIN}"
   echo "DATA_DIR / OUT_DIR : ${DATA_DIR} / ${OUT_DIR} -> FIG_DIR=${FIG_DIR}"
   echo "DTYPE / CUDA_DEV   : ${DTYPE} / ${CUDA_VISIBLE_DEVICES:-auto}"
+  echo "GIT COMMIT / PUSH  : commit=${AUTO_COMMIT} push=${AUTO_PUSH} branch=${GIT_BRANCH:-current}"
   echo "HF_HOME / HF_TOKEN : ${HF_HOME:-default} / $([ -n "${HF_TOKEN:-}" ] && echo set || echo unset)"
   echo "Command            : ${RAW_CMD}"
   echo "--- Disk Space ---"
@@ -614,9 +829,11 @@ case "$PART_MODE" in
     run_matrix_sharded "Step 0b: Primary 4B Gate-2 Calibration" Qwen/Qwen3.5-4B --calibrate-only
     if [ "$CALIBRATE_ONLY" -eq 0 ]; then
       run_model_eval_pair "Phase 4 / W4" Qwen/Qwen3.5-4B
-      sync_part_results "script-part1-4b" 0 Qwen/Qwen3.5-4B
     fi
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+      sync_part_results "script-part1-4b" 0 Qwen/Qwen3.5-4B
+    fi
     ;;
 
   2)
@@ -625,9 +842,11 @@ case "$PART_MODE" in
       run_matrix_sharded "Calibrate: HuggingFaceTB/SmolLM3-3B" HuggingFaceTB/SmolLM3-3B --calibrate-only
     else
       run_model_eval_pair "Phase 5 / W5" HuggingFaceTB/SmolLM3-3B
-      sync_part_results "script-part2-smollm3" 0 HuggingFaceTB/SmolLM3-3B
     fi
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+      sync_part_results "script-part2-smollm3" 0 HuggingFaceTB/SmolLM3-3B
+    fi
     ;;
 
   3)
@@ -636,9 +855,11 @@ case "$PART_MODE" in
       run_matrix_sharded "Calibrate: Qwen/Qwen3.5-2B" Qwen/Qwen3.5-2B --calibrate-only
     else
       run_matrix_sharded "Phase 6 / W6: Qwen/Qwen3.5-2B (strict341)" Qwen/Qwen3.5-2B --strict-diag
-      sync_part_results "script-part3-2b" 0 Qwen/Qwen3.5-2B
     fi
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+      sync_part_results "script-part3-2b" 0 Qwen/Qwen3.5-2B
+    fi
     ;;
 
   4)
@@ -655,9 +876,11 @@ case "$PART_MODE" in
       for _sm in "${SCALE4_MODELS[@]}"; do
         run_matrix_sharded "Phase 6 / W6: ${_sm} (strict341)" "$_sm" --strict-diag
       done
-      sync_part_results "script-part4-08b" 0 "${SCALE4_MODELS[@]}"
     fi
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+      sync_part_results "script-part4-08b" 0 "${SCALE4_MODELS[@]}"
+    fi
     ;;
 
   5|combine)
@@ -672,6 +895,9 @@ case "$PART_MODE" in
     ;;
 
   all)
+    if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
+      run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
+    fi
     run_gate0_preflight
     run_hw_probe_and_smoke 1
     if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
@@ -687,6 +913,9 @@ case "$PART_MODE" in
         run_phase7_stage
       fi
       run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+      if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+        sync_part_results "script-all-in-one" 1 "${MODELS_ARG[@]}"
+      fi
       exit 0
     fi
 

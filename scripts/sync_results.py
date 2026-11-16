@@ -26,7 +26,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.log_experiment import _ensure_git_identity, _run_git_with_askpass, _sanitize_text
+from scripts.log_experiment import _ensure_git_identity, _has_git_push_auth, _run_git_with_askpass, _sanitize_text
 from scripts.versioning import (
     RESULTS_MANIFEST_REL,
     RESULTS_VERSION_REL,
@@ -707,10 +707,11 @@ def sync_and_push_results(
     if remote_proc.returncode != 0:
         return False, f"committed locally, but git remote '{remote}' is not configured"
     remote_url = remote_proc.stdout.strip()
-    if remote_url.startswith("https://") and not token:
+    if not _has_git_push_auth(repo_root, remote_url, token):
         return (
             False,
-            f"committed locally, but HTTPS remote '{remote}' requires env var {token_env} to push",
+            f"committed locally, but HTTPS remote '{remote}' requires env var {token_env} "
+            "(or configured git credential.helper / SSH remote) to push",
         )
 
     target_branch = branch.strip()

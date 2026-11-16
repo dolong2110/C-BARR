@@ -658,6 +658,18 @@ def _ensure_git_identity(repo_root: pathlib.Path) -> None:
             subprocess.run(["git", "-C", str(repo_root), "config", key, fallback], check=True)
 
 
+def _has_git_push_auth(repo_root: pathlib.Path, remote_url: str, token: str) -> bool:
+    """Returns True if pushing to remote_url has SSH/local transport, token, or git credential helper."""
+    if not remote_url.startswith("https://") or bool(token):
+        return True
+    cred_chk = subprocess.run(
+        ["git", "-C", str(repo_root), "config", "--get-all", "credential.helper"],
+        capture_output=True,
+        text=True,
+    )
+    return bool(cred_chk.stdout.strip()) or (pathlib.Path.home() / ".git-credentials").is_file()
+
+
 def _run_git_with_askpass(
     args: list[str], repo_root: pathlib.Path, token: str
 ) -> subprocess.CompletedProcess[str]:
@@ -722,8 +734,8 @@ def _git_commit_and_push_ledger(
     if remote_proc.returncode != 0:
         return False, f"git remote '{remote}' not configured"
     remote_url = remote_proc.stdout.strip()
-    if remote_url.startswith("https://") and not token:
-        return False, f"HTTPS remote '{remote}' requires env var {token_env} to push"
+    if not _has_git_push_auth(repo_root, remote_url, token):
+        return False, f"HTTPS remote '{remote}' requires env var {token_env} (or git credential.helper) to push"
 
     target_branch = branch.strip()
     if not target_branch:

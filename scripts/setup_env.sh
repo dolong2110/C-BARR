@@ -1,13 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Section 6.1 & Phase 1 (W1): Validated Environment Setup
-pip install --upgrade pip
-pip install "torch>=2.6" "transformers>=4.53.0" accelerate datasets matplotlib scipy scikit-learn \
-    nltk immutabledict langdetect absl-py
+# Section 6.1 & Phase 1 (W1): Validated Environment Setup (container/CUDA-safe)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$REPO_ROOT"
+
+PY_BIN="${PYTHON_BIN:-}"
+if [ -z "$PY_BIN" ]; then
+    if [ -x ".venv/bin/python" ]; then
+        PY_BIN=".venv/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        PY_BIN="python3"
+    else
+        PY_BIN="python"
+    fi
+fi
+
+# Preserve preinstalled CUDA container PyTorch >= 2.6; install torch only when absent or too old
+MISSING_PKGS="$("$PY_BIN" -c '
+import importlib.metadata, re
+def ver_tuple(pkg):
+    try:
+        v = importlib.metadata.version(pkg)
+        return tuple(int(x) for x in re.findall(r"\d+", v)[:2])
+    except importlib.metadata.PackageNotFoundError:
+        return None
+pkgs = [
+    ("transformers", "transformers>=4.53.0", (4, 53)),
+    ("accelerate", "accelerate", None),
+    ("datasets", "datasets", None),
+    ("matplotlib", "matplotlib", None),
+    ("scipy", "scipy", None),
+    ("scikit-learn", "scikit-learn", None),
+    ("nltk", "nltk", None),
+    ("immutabledict", "immutabledict", None),
+    ("langdetect", "langdetect", None),
+    ("absl-py", "absl-py", None),
+]
+tv = ver_tuple("torch")
+need = []
+if tv is None or tv < (2, 6):
+    need.append("torch>=2.6")
+for dist, spec, min_v in pkgs:
+    cur = ver_tuple(dist)
+    if cur is None or (min_v is not None and cur < min_v):
+        need.append(spec)
+print(" ".join(need))
+')"
+if [ -n "$MISSING_PKGS" ]; then
+    "$PY_BIN" -m pip install --upgrade pip -q
+    read -r -a _PKGS <<< "$MISSING_PKGS"
+    "$PY_BIN" -m pip install -q "${_PKGS[@]}"
+fi
 
 # Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test
-python3 scripts/setup_fast_kernels.py --mode auto --allow-source-build || true
+"$PY_BIN" scripts/setup_fast_kernels.py --mode auto --allow-source-build || true
 
 # Vendor upstream Google Research instruction_following_eval if not already present
 if [ ! -d "./instruction_following_eval" ]; then
@@ -19,6 +67,13 @@ if [ ! -d "./instruction_following_eval" ]; then
 fi
 
 # Download NLTK sentence/POS resources required by google-research instruction_following_eval
-python3 -m nltk.downloader punkt punkt_tab stopwords averaged_perceptron_tagger_eng
+"$PY_BIN" -m nltk.downloader -q punkt punkt_tab stopwords averaged_perceptron_tagger_eng
+
+# Ensure frozen dataset splits and manifest integrity exist cleanly
+if [ ! -f "data/manifest_sha256.json" ]; then
+    "$PY_BIN" data/freeze_datasets.py
+fi
+"$PY_BIN" -c "import pathlib; from scripts.run_matrix import verify_manifest_integrity; verify_manifest_integrity(pathlib.Path('data'))"
+
 # Verify seeded langdetect import (Patch D3) before running any evaluation
-python3 -c "from langdetect import DetectorFactory; DetectorFactory.seed = 0; print('Environment setup OK')"
+"$PY_BIN" -c "from langdetect import DetectorFactory; DetectorFactory.seed = 0; print('Environment setup OK')"

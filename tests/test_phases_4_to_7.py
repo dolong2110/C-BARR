@@ -761,7 +761,8 @@ class TestPhases4To7(unittest.TestCase):
 
     def test_log_experiment_git_push_to_bare_remote(self) -> None:
         """Experiment logger commits and pushes EXPERIMENT_LOG.md cleanly without leaving dirty git state."""
-        from scripts.log_experiment import _git_commit_and_push_ledger, _upsert_run_block
+        import os
+        from scripts.log_experiment import _git_commit_and_push_ledger, _has_git_push_auth, _upsert_run_block
 
         with tempfile.TemporaryDirectory() as td:
             root_tmp = pathlib.Path(td)
@@ -796,6 +797,26 @@ class TestPhases4To7(unittest.TestCase):
                 text=True,
             )
             self.assertIn("CBARR_RUN_START:r1", remote_show)
+
+            # Verify _has_git_push_auth cleanly detects SSH, PAT, and git credential.helper
+            fake_home = root_tmp / "empty_home"
+            fake_home.mkdir()
+            prev_env = {k: os.environ.get(k) for k in ("HOME", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL")}
+            try:
+                os.environ["HOME"] = str(fake_home)
+                os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+                os.environ["GIT_CONFIG_GLOBAL"] = str(fake_home / ".gitconfig")
+                self.assertTrue(_has_git_push_auth(work_repo, "git@github.com:org/repo.git", ""))
+                self.assertTrue(_has_git_push_auth(work_repo, "https://github.com/org/repo.git", "tok"))
+                self.assertFalse(_has_git_push_auth(work_repo, "https://github.com/org/repo.git", ""))
+                subprocess.run(["git", "-C", str(work_repo), "config", "credential.helper", "store"], check=True)
+                self.assertTrue(_has_git_push_auth(work_repo, "https://github.com/org/repo.git", ""))
+            finally:
+                for k, v in prev_env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
 
     def test_run_matrix_per_step_checkpoints(self) -> None:
         """run_matrix.py updates progress_checkpoint, timings JSONL, and EXPERIMENT_LOG.md at every internal step."""
@@ -2396,6 +2417,68 @@ class TestPhases4To7(unittest.TestCase):
             self.assertTrue((tmp_figs / "fig1_pareto_frontier.pdf").is_file())
             self.assertTrue((tmp_figs / "fig2_bsr_sla_curve.pdf").is_file())
             self.assertTrue((tmp_figs / "fig3_ehurt_causal_recovery.pdf").is_file())
+
+    def test_run_all_a_to_z_script_mock_and_git_auth(self) -> None:
+        """A-Z runner script runs full pipeline end-to-end in mock mode and scrubs token secrets."""
+        import os
+
+        a2z_path = ROOT / "scripts" / "run_all_a_to_z.sh"
+        self.assertTrue(a2z_path.is_file())
+        self.assertTrue(os.access(a2z_path, os.X_OK))
+        for s_name in ("run_all_a_to_z.sh", "run_gpu_phases_4_to_6.sh", "setup_env.sh"):
+            syn = subprocess.run(["bash", "-n", str(ROOT / "scripts" / s_name)], capture_output=True, text=True)
+            self.assertEqual(syn.returncode, 0, syn.stderr)
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_figs = root_tmp / "figs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            secret_tok = "ghp_test_super_secret_token_xyz"
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(a2z_path),
+                    "--mock",
+                    "--no-push",
+                    "--no-setup",
+                    "--skip-preflight",
+                    "--strict-only",
+                    "--models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--github-token",
+                    secret_tok,
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--run-id",
+                    "a2z_mock_01",
+                ],
+                cwd=str(ROOT),
+                env={**os.environ, "PYTHON_BIN": sys.executable, "CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"A-Z failed:\n{proc.stdout}\n{proc.stderr}")
+            self.assertTrue((tmp_out / "Qwen__Qwen3.5-0.8B" / "matrix_summary_strict341.json").is_file())
+            self.assertTrue((tmp_out / "Qwen__Qwen3.5-0.8B" / "ext_deltanet_blend.json").is_file())
+            self.assertTrue((tmp_out / "Qwen__Qwen3.5-0.8B" / "prefill_mlp_summary.json").is_file())
+            self.assertTrue((tmp_out / "stats_summary.json").is_file())
+            self.assertTrue((tmp_out / "paper_tables.tex").is_file())
+            self.assertTrue((tmp_figs / "fig1_pareto_frontier.pdf").is_file())
+
+            log_txt = (tmp_out / "logs" / "cbarr_a2z_mock_01.log").read_text(encoding="utf-8")
+            md_txt = (tmp_out / "experiment_log.md").read_text(encoding="utf-8")
+            self.assertNotIn(secret_tok, log_txt)
+            self.assertNotIn(secret_tok, md_txt)
+            self.assertIn("***", md_txt)
+            self.assertIn("PASSED", md_txt)
 
 
 if __name__ == "__main__":
