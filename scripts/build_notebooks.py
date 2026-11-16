@@ -784,7 +784,7 @@ def run_logged_loop(loop_name: str, fn, *args, push: bool = True, **kwargs):
 def _pkg_ver(name: str) -> tuple[int, ...] | None:
     try:
         v = importlib.metadata.version(name)
-        nums = [int(x) for x in re.findall(r"\\d+", v)[:2]]
+        nums = [int(x) for x in re.findall(r"\\d+", v)[:3]]
         return tuple(nums)
     except importlib.metadata.PackageNotFoundError:
         return None
@@ -792,6 +792,7 @@ def _pkg_ver(name: str) -> tuple[int, ...] | None:
 
 required_pkgs = [
     "transformers>=4.53.0",
+    "jinja2>=3.1.6",
     "accelerate",
     "datasets",
     "matplotlib",

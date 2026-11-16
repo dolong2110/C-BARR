@@ -27,6 +27,9 @@ set -euo pipefail
 #   --calibrate-only        Run Step 0a + Gate-2 calibration only (seed_60 + dev_60)
 #   --strict-only           Skip the second diag491 pass and run strict341 only
 #   --offline               Set HF_HUB_OFFLINE=1 and load locally cached checkpoints without Hub network checks
+#   --hf-home <dir>         Override HF_HOME weight cache directory (helpful if / is nearly full)
+#   --prune-hf-cache-below-gb <N>  Auto-prune cached HF model weights between models when free disk < N GB (default: 25; 0=off)
+#   --allow-kernel-source-build  Allow compiling causal-conv1d C++/CUDA from source during setup (slow; off by default)
 #   --commit / --commit-only  Commit synced caches, tables, figures, and EXPERIMENT_LOG.md locally to git
 #   --push / --no-push      Commit and push synced results to GitHub (--push enables --commit)
 #   --branch <name>         Target git branch when committing/pushing (default: current branch or master)
@@ -65,6 +68,7 @@ STRICT_ONLY=0
 STRICT_VERSION_MATCH=0
 UNPACK_MODE="auto"
 OFFLINE_MODE=0
+PRUNE_HF_BELOW_GB="25"
 AUTO_PUSH="${CBARR_AUTO_PUSH:-0}"
 AUTO_COMMIT=0
 GIT_BRANCH=""
@@ -291,6 +295,19 @@ while [ "$#" -gt 0 ]; do
       shift
       CHECKPOINT_EVERY="$1"
       ;;
+    --hf-home)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      export HF_HOME="$1"
+      ;;
+    --prune-hf-cache-below-gb)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      PRUNE_HF_BELOW_GB="$1"
+      ;;
+    --allow-kernel-source-build)
+      export CBARR_ALLOW_KERNEL_SOURCE_BUILD=1
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -414,10 +431,15 @@ bootstrap_environment_and_data() {
     need_setup=1
   elif [ "$SETUP_MODE" = "auto" ]; then
     if ! "$PY_BIN" -c "
-import importlib, pathlib, nltk, torch
-reqs = ['numpy', 'torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
+import importlib, importlib.metadata, pathlib, re, nltk, torch
+def _vt(p):
+    return tuple(int(x) for x in re.findall(r'\d+', importlib.metadata.version(p))[:3])
+reqs = ['numpy', 'jinja2', 'torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
 for m in reqs:
     importlib.import_module(m)
+assert _vt('torch') >= (2, 6, 0)
+assert _vt('transformers') >= (4, 53, 0)
+assert _vt('jinja2') >= (3, 1, 6)
 assert pathlib.Path('instruction_following_eval').is_dir()
 for res in ('tokenizers/punkt', 'tokenizers/punkt_tab', 'corpora/stopwords', 'taggers/averaged_perceptron_tagger_eng'):
     nltk.data.find(res)
@@ -443,6 +465,28 @@ if torch.cuda.is_available():
     "$PY_BIN" data/freeze_datasets.py 2>&1 | tee -a "$RUN_LOG"
   fi
   "$PY_BIN" -c "import pathlib, sys; from scripts.run_matrix import verify_manifest_integrity; m = verify_manifest_integrity(pathlib.Path(sys.argv[1])); print(f'Verified {len(m)} frozen dataset splits in {sys.argv[1]}')" "$DATA_DIR" 2>&1 | tee -a "$RUN_LOG"
+}
+
+prune_hf_cache_if_low_disk() {
+  local thresh_gb="${1:-$PRUNE_HF_BELOW_GB}"
+  if [ "$IS_MOCK" -ne 0 ] || [ "$OFFLINE_MODE" -eq 1 ]; then
+    return 0
+  fi
+  "$PY_BIN" -c "
+import os, pathlib, shutil, sys
+thresh = float(sys.argv[1])
+if thresh <= 0:
+    sys.exit(0)
+hf_hub = pathlib.Path(os.environ.get('HF_HOME') or (pathlib.Path.home() / '.cache' / 'huggingface')) / 'hub'
+if not hf_hub.is_dir():
+    sys.exit(0)
+free_gb = shutil.disk_usage(str(hf_hub)).free / (1024**3)
+if free_gb < thresh:
+    print(f'[Disk Guard] Free disk {free_gb:.1f} GB < {thresh:.1f} GB; pruning cached HF weights under {hf_hub}...', flush=True)
+    for item in hf_hub.iterdir():
+        if item.is_dir() and item.name.startswith('models--'):
+            shutil.rmtree(item, ignore_errors=True)
+" "$thresh_gb" 2>&1 | tee -a "$RUN_LOG" || true
 }
 
 check_git_sync_readiness
@@ -581,7 +625,7 @@ run_stage() {
   CURRENT_STAGE="$stage_name"
   local t0 t1 dur rc stage_push=1
   case "$stage_name" in
-    "Gate 0:"*|"Submission Audit"*|"GitHub Sync"*) stage_push=0 ;;
+    "Gate 0:"*|"Step 0a:"*|"Unpack "*|"Submission Audit"*|"GitHub Sync"*) stage_push=0 ;;
   esac
   t0="$(date -u +%s)"
   log_banner "=== [$stage_name] START ==="
@@ -820,10 +864,20 @@ sync_part_results() {
   echo "DATA_DIR / OUT_DIR : ${DATA_DIR} / ${OUT_DIR} -> FIG_DIR=${FIG_DIR}"
   echo "DTYPE / CUDA_DEV   : ${DTYPE} / ${CUDA_VISIBLE_DEVICES:-auto}"
   echo "GIT COMMIT / PUSH  : commit=${AUTO_COMMIT} push=${AUTO_PUSH} branch=${GIT_BRANCH:-current}"
-  echo "HF_HOME / HF_TOKEN : ${HF_HOME:-default} / $([ -n "${HF_TOKEN:-}" ] && echo set || echo unset)"
+  echo "HF_HOME / PRUNE    : ${HF_HOME:-default} (prune below ${PRUNE_HF_BELOW_GB} GB) | HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset)"
   echo "Command            : ${RAW_CMD}"
   echo "--- Disk Space ---"
   df -h . || true
+  "$PY_BIN" -c "
+import os, pathlib, shutil
+hf = pathlib.Path(os.environ.get('HF_HOME') or pathlib.Path.home())
+if not hf.exists():
+    hf = hf.parent if hf.parent.exists() else pathlib.Path('.')
+free_gb = shutil.disk_usage(str(hf)).free / (1024**3)
+print(f'HF Cache Free Disk : {free_gb:.1f} GB ({hf})')
+if free_gb < 45.0:
+    print(f'[Disk Guard] Free space {free_gb:.1f} GB < 45 GB; auto-pruning between models below ${PRUNE_HF_BELOW_GB} GB (use --hf-home <dir> if another mount has more space).')
+" 2>/dev/null || true
   if command -v nvidia-smi >/dev/null 2>&1; then
     echo "--- nvidia-smi ---"
     nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv,noheader || nvidia-smi || true
@@ -910,15 +964,21 @@ case "$PART_MODE" in
     run_gate0_preflight
     run_hw_probe_and_smoke 1
     if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
-      for _m in "${MODELS_ARG[@]}"; do
+      for _idx in "${!MODELS_ARG[@]}"; do
+        _m="${MODELS_ARG[$_idx]}"
+        if [ "$_idx" -gt 0 ]; then
+          prune_hf_cache_if_low_disk
+        fi
         if [ "$CALIBRATE_ONLY" -eq 1 ]; then
           run_matrix_sharded "Calibrate: ${_m}" "$_m" --calibrate-only
         else
           run_model_eval_pair "Matrix" "$_m"
+          if [ "$_idx" -eq 0 ]; then
+            run_w7_stage "$_m"
+          fi
         fi
       done
       if [ "$CALIBRATE_ONLY" -eq 0 ]; then
-        run_w7_stage "${MODELS_ARG[0]}"
         run_phase7_stage
       fi
       run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
@@ -928,21 +988,24 @@ case "$PART_MODE" in
       exit 0
     fi
 
-    run_matrix_sharded "Step 0b: Primary 4B Gate-2 Calibration" Qwen/Qwen3.5-4B --calibrate-only
     if [ "$CALIBRATE_ONLY" -eq 1 ]; then
+      run_matrix_sharded "Step 0b: Primary 4B Gate-2 Calibration" Qwen/Qwen3.5-4B --calibrate-only
       run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
       exit 0
     fi
 
-    # Run strict341 first so its cached diag_ehurt/controls entries are reused during diag491
+    # Run strict341 first so calibration & cached diag_ehurt/controls entries are reused during diag491
     run_model_eval_pair "Phase 4 / W4" Qwen/Qwen3.5-4B
+    run_w7_stage Qwen/Qwen3.5-4B
+    prune_hf_cache_if_low_disk
     run_model_eval_pair "Phase 5 / W5" HuggingFaceTB/SmolLM3-3B
+    prune_hf_cache_if_low_disk
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-0.8B (strict341)" Qwen/Qwen3.5-0.8B --strict-diag
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-2B (strict341)" Qwen/Qwen3.5-2B --strict-diag
     if [ "$WITH_9B" -eq 1 ]; then
+      prune_hf_cache_if_low_disk 28
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
     fi
-    run_w7_stage Qwen/Qwen3.5-4B
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     sync_part_results "script-all-in-one" 1

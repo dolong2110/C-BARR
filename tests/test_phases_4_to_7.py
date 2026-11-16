@@ -460,6 +460,7 @@ class TestPhases4To7(unittest.TestCase):
         shared_tokens = (
             "dolong2110/C-BARR",
             "verify_manifest_integrity",
+            "jinja2>=3.1.6",
             "scripts/run_matrix.py",
             "scripts/analyze_and_plot.py",
             "scripts/log_experiment.py",

@@ -40,12 +40,13 @@ import importlib.metadata, re
 def ver_tuple(pkg):
     try:
         v = importlib.metadata.version(pkg)
-        return tuple(int(x) for x in re.findall(r"\d+", v)[:2])
+        return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
     except importlib.metadata.PackageNotFoundError:
         return None
 pkgs = [
     ("numpy", "numpy", None),
-    ("transformers", "transformers>=4.53.0", (4, 53)),
+    ("jinja2", "jinja2>=3.1.6", (3, 1, 6)),
+    ("transformers", "transformers>=4.53.0", (4, 53, 0)),
     ("accelerate", "accelerate", None),
     ("datasets", "datasets", None),
     ("matplotlib", "matplotlib", None),
@@ -72,8 +73,13 @@ if [ -n "$MISSING_PKGS" ]; then
     "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "${_PKGS[@]}"
 fi
 
-# Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test
-"$PY_BIN" scripts/setup_fast_kernels.py --mode auto --allow-source-build || true
+# Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test.
+# Try prebuilt binary wheels by default (fast); opt-in C++ source build via CBARR_ALLOW_KERNEL_SOURCE_BUILD=1.
+KERNEL_EXTRA=()
+if [ "${CBARR_ALLOW_KERNEL_SOURCE_BUILD:-0}" = "1" ]; then
+    KERNEL_EXTRA+=(--allow-source-build)
+fi
+"$PY_BIN" scripts/setup_fast_kernels.py --mode auto ${KERNEL_EXTRA[@]+"${KERNEL_EXTRA[@]}"} || true
 
 # Vendor upstream Google Research instruction_following_eval if not already present
 if [ ! -d "./instruction_following_eval" ]; then
@@ -84,8 +90,8 @@ if [ ! -d "./instruction_following_eval" ]; then
     rm -rf /tmp/gr
 fi
 
-# Download NLTK sentence/POS resources required by google-research instruction_following_eval
-"$PY_BIN" -m nltk.downloader -q punkt punkt_tab stopwords averaged_perceptron_tagger_eng
+# Download NLTK sentence/POS resources cleanly without runpy RuntimeWarning
+"$PY_BIN" -c "import nltk; [nltk.download(r, quiet=True) for r in ('punkt', 'punkt_tab', 'stopwords', 'averaged_perceptron_tagger_eng')]"
 
 # Ensure frozen dataset splits and manifest integrity exist cleanly
 if [ ! -f "data/manifest_sha256.json" ]; then

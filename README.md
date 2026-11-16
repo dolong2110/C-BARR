@@ -137,7 +137,8 @@ bash scripts/run_gpu_phases_4_to_6.sh --device auto --models Qwen/Qwen3.5-0.8B -
 
 Key flags for `scripts/run_all_a_to_z.sh` & `scripts/run_gpu_phases_4_to_6.sh`:
 - `--part <all|1|2|3|4|5|combine>` / `--shards <N|auto>` / `--max-shards <N>`: Select full A–Z run, one of the 4 independent parallel workers, or the Step 5 combiner, and intra-model GPU sharding (`auto` uses up to `min(GPU_COUNT, --max-shards)`, default cap `8`).
-- `--setup` / `--setup-mode <auto|on|off>` / `--no-setup`: Provision missing packages, fast DeltaNet/CUDA kernels, IFEval, NLTK, and frozen dataset splits cleanly while preserving container PyTorch ($\ge 2.6$).
+- `--setup` / `--setup-mode <auto|on|off>` / `--no-setup` / `--allow-kernel-source-build`: Provision missing packages (including `jinja2>=3.1.6`), prebuilt fast DeltaNet kernels (wheel-first by default), IFEval, NLTK, and frozen dataset splits cleanly while preserving container PyTorch ($\ge 2.6$).
+- `--hf-home <dir>` / `--prune-hf-cache-below-gb <N>`: Override Hugging Face cache directory or auto-prune finished model weights between stages when free disk drops below `<N>` GB (default `25`; `0` disables).
 - `--gpu <id[,id...]>` / `--device <auto|cuda|mps|cpu>` / `--dtype <auto|bf16|fp16|fp32>`: Select CUDA index/list (mapped accurately per shard), backend (`auto` picks CUDA -> MPS -> CPU), and precision (`auto` picks `bfloat16` on Ampere/Ada/Hopper `sm >= 80` and BF16-capable Apple Silicon MPS, or `float16` on `T4`/`P100`).
 - `--models "<space-separated list>"` / `--model <id>` / `--data-dir <dir>`: Override the default model list or frozen data directory (e.g., `--models Qwen/Qwen3.5-0.8B`).
 - `--calibrate-only` / `--strict-only` / `--offline` / `--strict-version-match`: Run only Phase 4 calibration, run only strict341, force offline HF cache loading, or fail Part 5/Phase 7 if worker code versions mismatch.
