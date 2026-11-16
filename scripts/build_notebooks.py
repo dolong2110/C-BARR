@@ -793,6 +793,7 @@ def _pkg_ver(name: str) -> tuple[int, ...] | None:
 required_pkgs = [
     "transformers>=4.53.0",
     "jinja2>=3.1.6",
+    "Brotli>=1.2.0",
     "accelerate",
     "datasets",
     "matplotlib",

@@ -431,7 +431,7 @@ bootstrap_environment_and_data() {
     need_setup=1
   elif [ "$SETUP_MODE" = "auto" ]; then
     if ! "$PY_BIN" -c "
-import importlib, importlib.metadata, pathlib, re, nltk, torch
+import importlib, importlib.metadata, importlib.util, pathlib, re, nltk, torch
 def _vt(p):
     return tuple(int(x) for x in re.findall(r'\d+', importlib.metadata.version(p))[:3])
 reqs = ['numpy', 'jinja2', 'torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
@@ -440,6 +440,9 @@ for m in reqs:
 assert _vt('torch') >= (2, 6, 0)
 assert _vt('transformers') >= (4, 53, 0)
 assert _vt('jinja2') >= (3, 1, 6)
+if importlib.util.find_spec('httpx2') is not None and importlib.util.find_spec('brotli') is not None:
+    import brotli
+    brotli.Decompressor().process(b'', output_buffer_limit=1024)
 assert pathlib.Path('instruction_following_eval').is_dir()
 for res in ('tokenizers/punkt', 'tokenizers/punkt_tab', 'corpora/stopwords', 'taggers/averaged_perceptron_tagger_eng'):
     nltk.data.find(res)

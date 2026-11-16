@@ -36,7 +36,7 @@ fi
 
 # Preserve preinstalled CUDA container PyTorch >= 2.6; install torch only when absent or too old
 MISSING_PKGS="$("$PY_BIN" -c '
-import importlib.metadata, re
+import importlib.metadata, importlib.util, re
 def ver_tuple(pkg):
     try:
         v = importlib.metadata.version(pkg)
@@ -65,12 +65,21 @@ for dist, spec, min_v in pkgs:
     cur = ver_tuple(dist)
     if cur is None or (min_v is not None and cur < min_v):
         need.append(spec)
+if importlib.util.find_spec("httpx2") is not None and importlib.util.find_spec("brotli") is not None:
+    import brotli
+    try:
+        brotli.Decompressor().process(b"", output_buffer_limit=1024)
+    except TypeError:
+        need.append("Brotli>=1.2.0")
 print(" ".join(need))
 ')"
 if [ -n "$MISSING_PKGS" ]; then
     "$PY_BIN" -m pip install --upgrade pip -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"}
     read -r -a _PKGS <<< "$MISSING_PKGS"
-    "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "${_PKGS[@]}"
+    "$PY_BIN" -m pip install -q --upgrade ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "${_PKGS[@]}"
+    if [[ " ${MISSING_PKGS} " == *" Brotli>=1.2.0 "* ]]; then
+        "$PY_BIN" -m pip install -q --upgrade --force-reinstall --no-deps ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "Brotli>=1.2.0"
+    fi
 fi
 
 # Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test.

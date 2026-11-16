@@ -204,8 +204,8 @@ def setup_and_verify_kernels(
             )
             if res_cc.returncode == 0:
                 report["actions"].append("install_causal_conv1d_wheel=ok")
-            elif has_nvcc and (allow_source_build or n_cpus >= 8):
-                # Source builds invoke nvcc C++/CUDA extensions (~15-20 min on 2-vCPU VMs), so gate on 8+ CPUs or --allow-source-build.
+            elif has_nvcc and allow_source_build:
+                # Source builds compile C++/CUDA extensions (~10-20 min and can fail on bleeding-edge PyTorch/CUDA); require --allow-source-build.
                 res_src = _pip_cmd(
                     "install",
                     "-q",
