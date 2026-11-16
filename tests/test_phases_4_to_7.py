@@ -764,6 +764,19 @@ class TestPhases4To7(unittest.TestCase):
         import os
         from scripts.log_experiment import _git_commit_and_push_ledger, _has_git_push_auth, _upsert_run_block
 
+        # Pre-setup hosts run git auth checks before numpy is installed; import must succeed without numpy.
+        bare_import = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.modules['numpy'] = None; from scripts.log_experiment import _ensure_git_identity, _has_git_push_auth",
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(bare_import.returncode, 0, bare_import.stderr)
+
         with tempfile.TemporaryDirectory() as td:
             root_tmp = pathlib.Path(td)
             bare_repo = root_tmp / "origin.git"

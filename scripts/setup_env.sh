@@ -17,6 +17,23 @@ if [ -z "$PY_BIN" ]; then
     fi
 fi
 
+# On PEP 668 externally-managed host Pythons (e.g., macOS Homebrew / Ubuntu 24.04),
+# create .venv with --system-site-packages so system CUDA PyTorch stays visible.
+PIP_EXTRA_ARGS=()
+IS_EXT_MANAGED="$("$PY_BIN" -c 'import pathlib, sys, sysconfig; p = pathlib.Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED"; print(1 if (sys.prefix == sys.base_prefix and p.is_file()) else 0)')"
+if [ "$IS_EXT_MANAGED" -eq 1 ]; then
+    if [ ! -x ".venv/bin/python" ]; then
+        echo "[setup_env] Creating .venv (--system-site-packages) for externally-managed Python..."
+        if "$PY_BIN" -m venv --system-site-packages .venv; then
+            PY_BIN=".venv/bin/python"
+        else
+            PIP_EXTRA_ARGS+=(--break-system-packages)
+        fi
+    else
+        PY_BIN=".venv/bin/python"
+    fi
+fi
+
 # Preserve preinstalled CUDA container PyTorch >= 2.6; install torch only when absent or too old
 MISSING_PKGS="$("$PY_BIN" -c '
 import importlib.metadata, re
@@ -27,6 +44,7 @@ def ver_tuple(pkg):
     except importlib.metadata.PackageNotFoundError:
         return None
 pkgs = [
+    ("numpy", "numpy", None),
     ("transformers", "transformers>=4.53.0", (4, 53)),
     ("accelerate", "accelerate", None),
     ("datasets", "datasets", None),
@@ -49,9 +67,9 @@ for dist, spec, min_v in pkgs:
 print(" ".join(need))
 ')"
 if [ -n "$MISSING_PKGS" ]; then
-    "$PY_BIN" -m pip install --upgrade pip -q
+    "$PY_BIN" -m pip install --upgrade pip -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"}
     read -r -a _PKGS <<< "$MISSING_PKGS"
-    "$PY_BIN" -m pip install -q "${_PKGS[@]}"
+    "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "${_PKGS[@]}"
 fi
 
 # Optional fast CUDA/Triton kernels for GPU hosts (Qwen3.5 Gated DeltaNet layers) with live self-test

@@ -113,7 +113,11 @@ for _arg in "$@"; do
       ;;
   esac
 done
-RAW_CMD="$0 ${SAFE_ARGS[*]:-}"
+if [ "${#SAFE_ARGS[@]}" -gt 0 ]; then
+  RAW_CMD="$0 ${SAFE_ARGS[*]}"
+else
+  RAW_CMD="$0"
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -411,7 +415,7 @@ bootstrap_environment_and_data() {
   elif [ "$SETUP_MODE" = "auto" ]; then
     if ! "$PY_BIN" -c "
 import importlib, pathlib, nltk, torch
-reqs = ['torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
+reqs = ['numpy', 'torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
 for m in reqs:
     importlib.import_module(m)
 assert pathlib.Path('instruction_following_eval').is_dir()
@@ -426,8 +430,13 @@ if torch.cuda.is_available():
     fi
   fi
   if [ "$need_setup" -eq 1 ]; then
+    local had_venv=0
+    [ -x ".venv/bin/python" ] && had_venv=1
     log_banner "=== [Step 0: Environment Setup & Kernel Provisioning] ==="
     PYTHON_BIN="$PY_BIN" bash scripts/setup_env.sh 2>&1 | tee -a "$RUN_LOG"
+    if [ "$had_venv" -eq 0 ] && [ -x ".venv/bin/python" ]; then
+      PY_BIN=".venv/bin/python"
+    fi
   fi
   if [ "$DATA_DIR" = "data" ] && [ ! -f "${DATA_DIR}/manifest_sha256.json" ]; then
     log_banner "=== [Step 0: Freezing Deterministic Splits (${DATA_DIR})] ==="

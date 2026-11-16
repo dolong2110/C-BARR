@@ -20,7 +20,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts.versioning import read_repo_version, read_results_seq
 from src.logfmt import hl
-from src.metrics import SLICE_ORDER
 
 VARIANT_DISPLAY_ORDER = (
     "B0",
@@ -361,9 +360,20 @@ def _format_variant_table_lines(report: dict[str, Any]) -> list[str]:
     if isinstance(oracle_sum, dict) and "macro_acc" in oracle_sum:
         rows_to_render.append(("Oracle_UB", oracle_sum, "-"))
 
+    try:
+        from src.metrics import SLICE_ORDER as slice_order
+    except ModuleNotFoundError:
+        slice_order = (
+            "gsm8k_easy",
+            "gsm8k_hard",
+            "csqa",
+            "ifeval_planning",
+            "ifeval_precision",
+            "ifeval_conflict",
+        )
     for label, t, p_col in rows_to_render:
         sa = t.get("slice_acc", {})
-        slice_cells = " | ".join(_fmt_pct(sa.get(s)) for s in SLICE_ORDER)
+        slice_cells = " | ".join(_fmt_pct(sa.get(s)) for s in slice_order)
         lbl_md = f"**{label}**" if label in ("B1b", "M2", "Oracle_UB") else label
         lines.append(
             f"| {lbl_md} | {_fmt_pct(t.get('macro_acc'))} | {slice_cells} | "
