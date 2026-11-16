@@ -266,8 +266,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261116T164629Z -->
 
 <!-- CBARR_RUN_START:20261116T173652Z -->
-### Run `20261116T173652Z` — **RUNNING (Calibration: Qwen/Qwen3.5-4B)** (Updated 2026-11-16 22:29:55 UTC)
-- **Code Version**: `v0.5.7` | **Git Commit**: `d95a532-dirty` | **Last Loop**: `Calibration: Qwen/Qwen3.5-4B` | **Wall Time**: `2.7s` (2.7s)
+### Run `20261116T173652Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-4B (strict341))** (Updated 2026-11-16 22:30:05 UTC)
+- **Code Version**: `v0.5.7` | **Git Commit**: `ebbdde3-dirty` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-4B (strict341)` | **Wall Time**: `16.1s` (16.1s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=False`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261116T173652Z.log`
@@ -324,4 +324,27 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `Qwen/Qwen3.5-4B` | `v0.5.7` (`d95a532-dirty`) | 0.475 | 2.537 | 80.0% (OK) | 16.7% | -0.18 | [-0.27, 0.02, -0.16, 0.95, 0.31] | 63/25/88/39/0.702 | 37/12/71/21/0.412 | 23/0.251 (n=40) | 28.3%->75.8% (1744->459t) | 0.1s |
+
+#### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
+
+- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.7` (`d95a532-dirty`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`16.1s` (calib=0.1s, eval=0.2s, diag=0.0s) | tau=0.475, esc=80.0%
+  - **4-Regime**: Helped=1.1%, Hurt=51.8%, Flip=52.9%, TiePass=30.9%, TieFail=16.2%
+  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+
+| Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| B0 | 82.1% | 86.7% | 84.0% | 82.0% | 80.0% | 83.3% | 76.7% | 82.7% | 82.7% | 76.4% | 312 | 1.00 | 1.98e-61 |
+| B1a | 80.4% | 93.3% | 92.0% | 84.0% | 66.7% | 76.7% | 70.0% | 36.7% | 71.7% | 74.8% | 395 | 1.00 | 1.39e-63 |
+| **B1b** | 26.9% | 45.3% | 34.7% | 41.3% | 11.7% | 21.7% | 6.7% | 0.2% | 16.3% | -2.7% | 1735 | 1.00 | - |
+| B2a | 82.4% | 97.3% | 94.7% | 80.7% | 80.0% | 75.0% | 66.7% | 51.6% | 75.3% | 77.8% | 310 | 1.00 | 1.55e-66 |
+| B2b | 36.9% | 49.3% | 40.0% | 52.0% | 21.7% | 38.3% | 20.0% | 16.4% | 29.0% | 11.9% | 1485 | 1.80 | 2.27e-13 |
+| M1a | 49.0% | 58.7% | 40.0% | 82.0% | 16.7% | 76.7% | 20.0% | 43.8% | 50.7% | 38.0% | 979 | 1.00 | 1.93e-34 |
+| M1b | 57.1% | 46.7% | 34.7% | 46.0% | 75.0% | 73.3% | 66.7% | 26.0% | 40.0% | 28.9% | 1209 | 1.67 | 1.51e-28 |
+| M1c | 40.1% | 46.7% | 34.7% | 46.0% | 15.0% | 78.3% | 20.0% | 14.2% | 28.7% | 13.3% | 1467 | 1.63 | 1.42e-14 |
+| M2_B64 | 81.1% | 85.3% | 76.0% | 83.3% | 80.0% | 81.7% | 80.0% | 81.6% | 78.6% | 73.5% | 402 | 1.63 | 4.06e-60 |
+| M2_B128 | 82.2% | 85.3% | 81.3% | 83.3% | 83.3% | 83.3% | 76.7% | 82.9% | 77.8% | 74.3% | 431 | 1.63 | 4.35e-65 |
+| M2_B256 | 82.1% | 85.3% | 80.0% | 84.0% | 85.0% | 81.7% | 76.7% | 82.9% | 74.5% | 73.2% | 486 | 1.63 | 7.84e-64 |
+| M2_Pre | 80.4% | 85.3% | 78.7% | 83.3% | 83.3% | 81.7% | 70.0% | 81.8% | 76.1% | 73.1% | 435 | 1.63 | 2.08e-61 |
+| **M2** | 82.0% | 85.3% | 80.0% | 83.3% | 83.3% | 83.3% | 76.7% | 82.7% | 76.9% | 74.0% | 432 | 1.63 | 1.39e-63 |
+| **Oracle_UB** | 92.1% | 96.0% | 96.0% | 90.7% | 91.7% | 91.7% | 86.7% | 92.2% | 90.7% | 86.4% | 300 | 1.00 | - |
 <!-- CBARR_RUN_END:20261116T173652Z -->
