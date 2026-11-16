@@ -16,8 +16,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sklearn.linear_model import LogisticRegression
-
 from scripts.versioning import get_version_provenance
 from src.engine import run_gate1_lexical
 from src.logfmt import banner, hl
@@ -31,7 +29,13 @@ from src.metrics import (
     holm_bonferroni,
     wilson_ci,
 )
-from src.routers import CalibratedRouterParams, _gate2_target_label, resolve_all_variants_for_item
+from src.routers import (
+    CalibratedRouterParams,
+    _gate2_target_label,
+    fit_gate2_logistic_weights,
+    resolve_all_variants_for_item,
+    select_cost_aware_tau,
+)
 
 VARIANT_ORDER: tuple[str, ...] = (
     "B0",
@@ -325,25 +329,22 @@ def _probe_horizon_ablation(
     for k_val, hm_k, hx_k, in_k in horizons:
         x_s = np.vstack([_feat(r, run_gate1_lexical(r["item"]["prompt"]), hm_k, hx_k, in_k) for r in seed_rows])
         y_s = np.asarray([_gate2_target_label(r) for r in seed_rows], dtype=int)
-        if len(np.unique(y_s)) < 2:
-            coef = np.array([0.6, 0.8, 0.4, 1.0, 0.5], dtype=np.float64)
-            intercept = -1.0
-        else:
-            clf = LogisticRegression(C=1.0, class_weight="balanced", random_state=42)
-            clf.fit(x_s, y_s)
-            coef = clf.coef_[0].astype(np.float64)
-            intercept = float(clf.intercept_[0])
+        coef_list, intercept = fit_gate2_logistic_weights(x_s, y_s, seed=42, reg_c=1.0)
+        coef = np.asarray(coef_list, dtype=np.float64)
 
         # Calibrate tau on dev_60 matching CBARRCalibrator (adjusting effective Gate-2 probe tax to <= k_val)
-        best_tau, best_u = 0.50, -1e9
+        tau_sweep: list[dict[str, float]] = []
         for tau in np.linspace(0.15, 0.85, 29):
             u_list = []
+            esc_list = []
             for r in dev_rows:
                 g1 = run_gate1_lexical(r["item"]["prompt"])
                 if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
                     chosen = r["b0"]
+                    esc_list.append(0)
                 elif g1.phi_plan == 1:
                     chosen = r.get("m2_b256_direct", r["m2_b256"])
+                    esc_list.append(1)
                 else:
                     fv = _feat(r, g1, hm_k, hx_k, in_k)
                     prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
@@ -352,13 +353,19 @@ def _probe_horizon_ablation(
                         chosen = dict(slow)
                         eff_probe = min(int(r["probe"].get("T_probe", 32)), k_val)
                         chosen["T_total"] = eff_probe + int(slow["T_total"])
+                        esc_list.append(1)
                     else:
                         chosen = r["fast_done"]
+                        esc_list.append(0)
                 u_list.append(float(chosen["z"]) - lam_utility * (float(chosen["T_total"]) / norm_tokens))
-            mu = float(np.mean(u_list))
-            if mu > best_u:
-                best_u = mu
-                best_tau = float(tau)
+            tau_sweep.append(
+                {
+                    "tau": float(tau),
+                    "utility_u005": float(np.mean(u_list)),
+                    "esc_rate": float(np.mean(esc_list)),
+                }
+            )
+        best_tau = float(select_cost_aware_tau(tau_sweep)["tau"])
 
         eval_runs = []
         for r in eval_rows:

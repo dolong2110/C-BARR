@@ -5,6 +5,7 @@ import argparse
 import json
 import pathlib
 import sys
+import time
 from typing import Any
 
 import numpy as np
@@ -338,7 +339,13 @@ def main() -> None:
             eos_ids.add(int(tid))
 
     alpha_summary: dict[str, Any] = {}
-    for a in args.alphas:
+    print(
+        f"[deltanet_blend] Model={args.model} | E_hurt={len(e_hurt)} items | "
+        f"alphas={args.alphas} on device={device} ({dtype})",
+        flush=True,
+    )
+    for idx_a, a in enumerate(args.alphas, start=1):
+        t_alpha = time.perf_counter()
         all_pass, inh_pass, str_pass = [], [], []
         n_blended = 0
         n_blended_conv = 0
@@ -381,6 +388,12 @@ def main() -> None:
             "inhibition_recovery_pct": 100.0 * float(np.mean(inh_pass)) if inh_pass else 0.0,
             "structural_recovery_pct": 100.0 * float(np.mean(str_pass)) if str_pass else 0.0,
         }
+        print(
+            f"[deltanet_blend] ({idx_a}/{len(args.alphas)}) alpha={a:.2f}: "
+            f"recovery={alpha_summary[f'{a:.2f}']['overall_recovery_pct']:.1f}% "
+            f"({sum(all_pass)}/{len(e_hurt)}) in {time.perf_counter() - t_alpha:.1f}s",
+            flush=True,
+        )
 
     payload = {
         "model": args.model,

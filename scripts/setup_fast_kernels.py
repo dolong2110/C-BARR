@@ -34,11 +34,15 @@ def should_attempt_kernels(cc: tuple[int, int] | None, mode: str) -> tuple[bool,
     return False, f"sm_{cc[0]}{cc[1]} < sm_75 (PyTorch fallback required)"
 
 
-def _pip_cmd(*args: str) -> subprocess.CompletedProcess[str]:
+def _pip_cmd(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-m", "pip", *args],
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -205,7 +209,8 @@ def setup_and_verify_kernels(
             if res_cc.returncode == 0:
                 report["actions"].append("install_causal_conv1d_wheel=ok")
             elif has_nvcc and allow_source_build:
-                # Source builds compile C++/CUDA extensions (~10-20 min and can fail on bleeding-edge PyTorch/CUDA); require --allow-source-build.
+                # Source builds compile C++/CUDA extensions (~2-15 min depending on CPU count); bound MAX_JOBS to avoid host OOM on 256-CPU boxes.
+                max_jobs = str(min(32, max(4, n_cpus // 4)))
                 res_src = _pip_cmd(
                     "install",
                     "-q",
@@ -213,10 +218,15 @@ def setup_and_verify_kernels(
                     "--constraint",
                     str(constraint_path),
                     "causal-conv1d>=1.4.0",
+                    extra_env={"MAX_JOBS": max_jobs, "CAUSAL_CONV1D_FORCE_BUILD": "TRUE"},
                 )
                 report["actions"].append(
                     f"build_causal_conv1d_src={'ok' if res_src.returncode == 0 else 'failed'}"
                 )
+                if res_src.returncode != 0:
+                    err_lines = (res_src.stderr or res_src.stdout).strip().splitlines()
+                    if err_lines:
+                        report["causal_conv1d_build_error"] = err_lines[-1][:240]
             else:
                 report["actions"].append(
                     f"skip_causal_conv1d_src(nvcc={has_nvcc},cpus={n_cpus})"

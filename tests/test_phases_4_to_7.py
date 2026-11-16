@@ -2495,6 +2495,428 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("***", md_txt)
             self.assertIn("PASSED", md_txt)
 
+    def test_sharded_live_progress_monitor_and_error_tail(self) -> None:
+        """Multi-GPU sharded runner streams GPU0/milestones, prints progress snapshots, and surfaces shard errors."""
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_logs = tmp_out / "logs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--mock",
+                    "--part",
+                    "3",
+                    "--shards",
+                    "3",
+                    "--shard-progress-sec",
+                    "0.2",
+                    "--shard-log",
+                    "auto",
+                    "--skip-preflight",
+                    "--skip-smoke",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--run-id",
+                    "shard_mon_ok",
+                ],
+                cwd=str(ROOT),
+                env={**os.environ, "PYTHON_BIN": sys.executable, "CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"Sharded run failed:\n{proc.stdout}\n{proc.stderr}")
+            self.assertTrue((tmp_out / "Qwen__Qwen3.5-2B" / "matrix_summary_strict341.json").is_file())
+            self.assertFalse((tmp_out / "Qwen__Qwen3.5-2B" / "shards").exists())
+
+            unified_log = (tmp_logs / "cbarr_shard_mon_ok.log").read_text(encoding="utf-8")
+            self.assertIn("[sharded] GPU map (3):", unified_log)
+            self.assertIn("[sharded] Live follow : tail -f", unified_log)
+            self.assertIn("[GPU0]", unified_log)
+            self.assertIn("GPU0 (dev=0) DONE in", unified_log)
+            self.assertIn("GPU2 (dev=2) DONE in", unified_log)
+            for s_idx in range(3):
+                s_log = tmp_logs / f"cbarr_shard_mon_ok_gpu{s_idx}_Qwen__Qwen3.5-2B.log"
+                self.assertTrue(s_log.is_file(), f"Missing per-GPU log {s_log}")
+                self.assertIn(f"COMPLETED SHARD {s_idx}/3", s_log.read_text(encoding="utf-8"))
+
+            # Multi-worker per GPU round-robin test (--shards 2 --workers-per-gpu 2 => 4 shards on devs 0,1,0,1)
+            out_rr = root_tmp / "out_rr"
+            logs_rr = out_rr / "logs"
+            proc_rr = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--mock",
+                    "--part",
+                    "3",
+                    "--shards",
+                    "2",
+                    "--workers-per-gpu",
+                    "2",
+                    "--shard-progress-sec",
+                    "0",
+                    "--shard-log",
+                    "milestones",
+                    "--skip-preflight",
+                    "--skip-smoke",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(out_rr),
+                    "--run-id",
+                    "shard_rr_ok",
+                ],
+                cwd=str(ROOT),
+                env={**os.environ, "PYTHON_BIN": sys.executable, "CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc_rr.returncode, 0, f"Round-robin sharded run failed:\n{proc_rr.stdout}\n{proc_rr.stderr}")
+            log_rr = (logs_rr / "cbarr_shard_rr_ok.log").read_text(encoding="utf-8")
+            self.assertIn("4 shards across 2 GPU(s), 2 workers/GPU", log_rr)
+            self.assertIn("GPU map (4): shard0->dev0, shard1->dev1, shard2->dev0, shard3->dev1", log_rr)
+            self.assertTrue((out_rr / "Qwen__Qwen3.5-2B" / "matrix_summary_strict341.json").is_file())
+
+            # Direct unit check of snapshot rendering + immediate error tailing on failing shard & thread caps
+            dummy_worker = root_tmp / "dummy_shard.py"
+            dummy_worker.write_text(
+                "\n".join(
+                    [
+                        "import json, os, pathlib, sys, time",
+                        "args = sys.argv[1:]",
+                        "s_idx = int(args[args.index('--shard-idx') + 1])",
+                        "n_sh = int(args[args.index('--num-shards') + 1])",
+                        "out_dir = pathlib.Path(args[args.index('--out-dir') + 1])",
+                        "s_dir = out_dir / 'Qwen__Qwen3.5-2B' / 'shards' / f'shard_{s_idx}_of_{n_sh}'",
+                        "s_dir.mkdir(parents=True, exist_ok=True)",
+                        "if s_idx == 0:",
+                        "    print(f\"OMP={os.environ.get('OMP_NUM_THREADS')} [eval_450 1/5] running ok\", flush=True)",
+                        "    (s_dir / 'eval_450_cache.jsonl').write_text(json.dumps({'item': {'uid': 'u0'}}) + '\\n', encoding='utf-8')",
+                        "    time.sleep(0.35)",
+                        "    print('COMPLETED SHARD 0/2', flush=True)",
+                        "else:",
+                        "    sys.stdout.write('Loading shards: 50%\\rLoading shards: 100%\\r\\n')",
+                        "    sys.stdout.flush()",
+                        "    time.sleep(0.15)",
+                        "    print('Simulated OOM failure on GPU1', flush=True)",
+                        "    sys.exit(2)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            fail_out = root_tmp / "fail_out"
+            fail_logs = root_tmp / "fail_logs"
+            fail_proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_sharded.py"),
+                    "--stage-name",
+                    "Test Sharded Monitor",
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(fail_out),
+                    "--log-dir",
+                    str(fail_logs),
+                    "--run-id",
+                    "fail_case",
+                    "--shards",
+                    "2",
+                    "--progress-sec",
+                    "0.12",
+                    "--shard-log",
+                    "auto",
+                    "--",
+                    sys.executable,
+                    str(dummy_worker),
+                    "--out-dir",
+                    str(fail_out),
+                    "--strict-diag",
+                ],
+                cwd=str(ROOT),
+                env={k: v for k, v in os.environ.items() if k != "OMP_NUM_THREADS"} | {"CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(fail_proc.returncode, 0)
+            self.assertIn("[Shards Progress | Test Sharded Monitor]", fail_proc.stdout)
+            self.assertIn("Total (canon+shards):", fail_proc.stdout)
+            self.assertIn("OMP=4", fail_proc.stdout)
+            self.assertIn("GPU1 (dev=1) FAILED exit=2", fail_proc.stdout)
+            self.assertIn("Simulated OOM failure on GPU1", fail_proc.stdout)
+            gpu1_log = (fail_logs / "cbarr_fail_case_gpu1_Qwen__Qwen3.5-2B.log").read_text(encoding="utf-8")
+            self.assertIn("Loading shards: 100%", gpu1_log)
+
+    def test_tokenizer_only_merge_finalizes_cached_section6_without_gpu(self) -> None:
+        """Tokenizer-only --merge-shards finalization succeeds when 100% cached without _decode_raw."""
+        from unittest import mock
+
+        from scripts import run_matrix as rm
+        from scripts.run_smoke_test import MockDualModeEngine
+
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            mock_eng = MockDualModeEngine("Qwen/Qwen3.5-2B")
+            tok_only = object.__new__(rm._TokenizerOnlyEngine)
+            tok_only.model_id = "Qwen/Qwen3.5-2B"
+            tok_only.device = "cpu"
+            tok_only.tok = mock_eng.tok
+            self.assertFalse(rm._is_native_engine(tok_only))
+
+            # 1) Populate shards via mock mode, then patch a cached E_hurt + controls entry
+            for s_idx in range(2):
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "run_matrix.py"),
+                        "--model",
+                        "Qwen/Qwen3.5-2B",
+                        "--data-dir",
+                        str(tmp_data),
+                        "--out-dir",
+                        str(tmp_out),
+                        "--shard-idx",
+                        str(s_idx),
+                        "--num-shards",
+                        "2",
+                        "--strict-diag",
+                        "--mock",
+                    ],
+                    check=True,
+                    cwd=str(ROOT),
+                )
+
+            model_dir = tmp_out / "Qwen__Qwen3.5-2B"
+            diag_cache_0 = model_dir / "shards" / "shard_0_of_2" / "diag_ehurt_cache.jsonl"
+            diag_rows_0 = _read_jsonl(diag_cache_0)
+            self.assertGreater(len(diag_rows_0), 0)
+            diag_rows_0[0]["b0"]["z"] = 1
+            diag_rows_0[0]["b1b"]["z"] = 0
+            diag_rows_0[0]["b1b"]["t_think"] = "Let me check constraint carefully."
+            _write_jsonl(diag_cache_0, diag_rows_0)
+            ehurt_uid = str(diag_rows_0[0]["item"]["uid"])
+            ctrl_rows = [
+                {
+                    "uid": ehurt_uid,
+                    "mode": m,
+                    "a_final": "ok",
+                    "grade": {"z": 1, "inhibition_strict_all": 1, "structural_strict_all": 1},
+                }
+                for m in rm._DIAG_MODES
+            ]
+            _write_jsonl(model_dir / "shards" / "shard_0_of_2" / "diag_controls_cache.jsonl", ctrl_rows)
+
+            def _fake_tok_init(inst: object, model_id: str, local_files_only: bool = False) -> None:
+                inst.model_id = model_id
+                inst.device = "cpu"
+                inst.tok = mock_eng.tok
+
+            with mock.patch.object(rm._TokenizerOnlyEngine, "__init__", _fake_tok_init):
+                with mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "run_matrix.py",
+                        "--model",
+                        "Qwen/Qwen3.5-2B",
+                        "--data-dir",
+                        str(tmp_data),
+                        "--out-dir",
+                        str(tmp_out),
+                        "--merge-shards",
+                        "--strict-diag",
+                    ],
+                ):
+                    rm.main()
+
+            self.assertFalse((model_dir / "shards").exists())
+            summary = json.loads((model_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["section6_diagnostics"]["A1_strip"]["n_ehurt"], 1)
+            self.assertEqual(summary["section6_diagnostics"]["B2b_post_raw"]["overall_recovery_pct"], 100.0)
+
+    def test_gate2_clean_labels_cost_aware_tau_and_m2_prec(self) -> None:
+        import numpy as np
+
+        from scripts import run_matrix as rm
+        from src.routers import (
+            _gate2_target_label,
+            fit_gate2_logistic_weights,
+            resolve_m2_prec_variant,
+            select_cost_aware_tau,
+        )
+
+        # Clean label ignores false positives where fast=0, slow=0, I_inertia=1
+        self.assertEqual(
+            _gate2_target_label({"fast_done": {"z": 0}, "m2_b128": {"z": 0}, "probe": {"I_inertia": 1}}),
+            0,
+        )
+        self.assertEqual(
+            _gate2_target_label({"fast_done": {"z": 0}, "m2_b128": {"z": 1}, "probe": {"I_inertia": 0}}),
+            1,
+        )
+
+        # Near-tie threshold selection prefers lower escalation rate within tie_tol
+        sweep = [
+            {"tau": 0.45, "utility_u005": 0.7700, "esc_rate": 0.80},
+            {"tau": 0.70, "utility_u005": 0.7695, "esc_rate": 0.20},
+            {"tau": 0.80, "utility_u005": 0.7650, "esc_rate": 0.10},
+        ]
+        chosen = select_cost_aware_tau(sweep, tie_tol=0.002)
+        self.assertEqual(chosen["tau"], 0.70)
+
+        # Standardized LogisticRegression projection preserves predicted probability sign
+        x = np.array(
+            [
+                [0.1, 0.1, 0.2, 0.0, 0.0],
+                [0.2, 0.15, 0.25, 0.0, 0.0],
+                [1.4, 1.2, 1.9, 1.0, 1.0],
+                [1.5, 1.3, 2.0, 1.0, 1.0],
+            ],
+            dtype=np.float64,
+        )
+        y = np.array([0, 0, 1, 1], dtype=int)
+        coef, intercept = fit_gate2_logistic_weights(x, y, seed=42, reg_c=1.0)
+        p_lo = 1.0 / (1.0 + np.exp(-float(np.dot(coef, x[0]) + intercept)))
+        p_hi = 1.0 / (1.0 + np.exp(-float(np.dot(coef, x[3]) + intercept)))
+        self.assertGreater(p_hi, p_lo)
+
+        # M2_Prec routes pure phi_prec items to m2_b128 while resolve_all_variants stays 13-key table
+        prec_row = {
+            "item": {
+                "uid": "prec_1",
+                "dataset": "ifeval",
+                "slice": "ifeval_precision",
+                "prompt": "Do not include any commas in your explanation of gravity.",
+                "gold": {},
+            },
+            "b0": {"z": 0, "T_total": 80, "calls": 1, "T_probe": 0, "T_think": 0, "latency_ms": 1.0},
+            "b1a": {"z": 0, "T_total": 80, "calls": 1, "T_probe": 0, "T_think": 0, "latency_ms": 1.0},
+            "b1b": {"z": 0, "T_total": 300, "calls": 1, "T_probe": 0, "T_think": 200, "latency_ms": 2.0},
+            "b2a": {"z": 0, "T_total": 80, "calls": 1, "T_probe": 0, "T_think": 0, "latency_ms": 1.0},
+            "fast_done": {"z": 0, "T_total": 80, "calls": 1, "T_probe": 32, "T_think": 0, "latency_ms": 1.0},
+            "probe": {"H_first": 0.2, "H_mean": 0.2, "H_max": 0.4, "I_inertia": 0, "T_probe": 32, "latency_ms": 0.5},
+            "m2_b64": {"z": 1, "T_total": 120, "calls": 1, "T_probe": 0, "T_think": 64, "latency_ms": 1.5},
+            "m2_b128": {"z": 1, "T_total": 140, "calls": 1, "T_probe": 0, "T_think": 90, "latency_ms": 1.5},
+            "m2_b256": {"z": 1, "T_total": 200, "calls": 1, "T_probe": 0, "T_think": 150, "latency_ms": 2.0},
+            "m2_b256_direct": {"z": 1, "T_total": 200, "calls": 1, "T_probe": 0, "T_think": 150, "latency_ms": 2.0},
+            "m2_pre_b64": {"z": 0, "T_total": 120, "calls": 1, "T_probe": 0, "T_think": 64, "latency_ms": 1.5},
+            "m2_pre_b128": {"z": 0, "T_total": 140, "calls": 1, "T_probe": 0, "T_think": 90, "latency_ms": 1.5},
+            "m2_pre_b256": {"z": 0, "T_total": 200, "calls": 1, "T_probe": 0, "T_think": 150, "latency_ms": 2.0},
+            "m2_pre_b256_direct": {"z": 0, "T_total": 200, "calls": 1, "T_probe": 0, "T_think": 150, "latency_ms": 2.0},
+        }
+        dummy_params = rm.CalibratedRouterParams(
+            coef=[0.1, 0.1, 0.1, 0.1, 0.1],
+            intercept=-1.0,
+            tau_prob=0.5,
+            tau_h_high=0.8,
+            m2_escalation_rate_dev=0.2,
+        )
+        base_vars = rm.resolve_all_variants_for_item(
+            prec_row, dummy_params, np.random.default_rng(42), target_esc_prob=0.2
+        )
+        self.assertEqual(len(base_vars), 13)
+        self.assertNotIn("M2_Prec", base_vars)
+        self.assertEqual(base_vars["M2"]["z"], 0)
+        self.assertEqual(resolve_m2_prec_variant(prec_row, dummy_params)["z"], 1)
+
+    def test_stage2_solve_first_bridge_and_compare_m2_v2_mock(self) -> None:
+        from unittest import mock
+
+        from scripts import run_matrix as rm
+        from scripts.compare_m2_v2 import replay_stage2_with_bridge, run_comparison
+        from scripts.run_smoke_test import MockDualModeEngine
+        from src.engine import P_TERM, run_gate1_lexical
+
+        eng_classic = MockDualModeEngine("Qwen/Qwen3.5-4B", stage2_bridge="classic")
+        eng_v2 = MockDualModeEngine("Qwen/Qwen3.5-4B", stage2_bridge="solve_first")
+        c_classic, v_classic = eng_classic._build_reanchor_for_engine(True, "", "post_stripped")
+        c_v2, v_v2 = eng_v2._build_reanchor_for_engine(True, "", "post_stripped")
+        self.assertEqual(c_classic, f"{P_TERM}\n</think>\n")
+        self.assertEqual(v_classic, "")
+        self.assertIn("work through any remaining steps", c_v2)
+        self.assertIn("<|im_start|>assistant", c_v2)
+        self.assertEqual(v_v2, "")
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_data = tmp / "data"
+            tmp_out = tmp / "outputs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+            with mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "run_matrix.py",
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--mock",
+                ],
+            ):
+                rm.main()
+
+            model_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            eval_cache_p = model_dir / "eval_450_cache.jsonl"
+            eval_rows = _read_jsonl(eval_cache_p)
+            # Inject a stale GSM8K false-negative row matching the real bug + truncated m2_b256
+            gsm_idx = next(i for i, r in enumerate(eval_rows) if r["item"]["dataset"] == "gsm8k")
+            gold_val = float(eval_rows[gsm_idx]["item"]["gold"])
+            gold_str = str(int(gold_val)) if gold_val.is_integer() else str(gold_val)
+            for sk in ("b0", "b1b", "m2_b128", "m2_b256"):
+                eval_rows[gsm_idx][sk]["a_final"] = f"She will be **{gold_str}** years old in 3 years."
+                eval_rows[gsm_idx][sk]["z"] = 0
+                eval_rows[gsm_idx][sk]["pred"] = "3"
+            eval_rows[gsm_idx]["m2_b256"]["truncated"] = True
+            _write_jsonl(eval_cache_p, eval_rows)
+            orig_eval_text = eval_cache_p.read_text(encoding="utf-8")
+
+            report = run_comparison(
+                "Qwen/Qwen3.5-4B",
+                model_dir,
+                use_mock=True,
+            )
+            self.assertGreaterEqual(report["gsm8k_cache_rows_regraded"], 1)
+            replayed_row = replay_stage2_with_bridge(
+                eng_v2,
+                eval_rows[gsm_idx]["item"],
+                eval_rows[gsm_idx]["m2_b256"],
+                run_gate1_lexical(eval_rows[gsm_idx]["item"]["prompt"]),
+            )
+            self.assertTrue(replayed_row["truncated"])
+            self.assertGreater(replayed_row["T_inj"], 0)
+            self.assertIn("M2_classic", report["systems"])
+            self.assertIn("M2_solve_first", report["systems"])
+            self.assertIn("M2_Prec_solve_first", report["systems"])
+            self.assertTrue((model_dir / "eval_450_m2v2_comparison.json").is_file())
+            self.assertEqual(eval_cache_p.read_text(encoding="utf-8"), orig_eval_text)
+
+            # Verify run_matrix.py itself logs M2_Prec under auxiliary_systems and re-grades cached GSM8K
+            summary = json.loads((model_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
+            self.assertIn("M2_Prec", summary["auxiliary_systems"])
+
 
 if __name__ == "__main__":
     unittest.main()

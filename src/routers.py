@@ -61,10 +61,56 @@ def _get_slow_rec(rec: dict[str, Any], b_val: int, direct: bool, prefix: str = "
 
 
 def _gate2_target_label(rec: dict[str, Any]) -> int:
-    """Computes binary Gate-2 training/eval label: slow thinking helps or fast probe showed inertia."""
+    """Computes binary Gate-2 training/eval label: slow thinking strictly improves over fast."""
     z_fast = int(rec["fast_done"]["z"])
     z_slow = int(rec["m2_b128"]["z"])
-    return int((z_slow > z_fast) or (z_fast == 0 and int(rec["probe"]["I_inertia"]) == 1))
+    return int(z_slow > z_fast)
+
+
+def fit_gate2_logistic_weights(
+    x_arr: np.ndarray,
+    y_arr: np.ndarray,
+    seed: int = 42,
+    reg_c: float = 1.0,
+) -> tuple[list[float], float]:
+    """Fits standardized L2 logistic regression and projects weights back to raw 5-feature space."""
+    if len(np.unique(y_arr)) < 2:
+        return [0.6, 0.8, 0.4, 1.0, 0.5], -1.0
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    x_scaled = scaler.fit_transform(x_arr)
+    clf = LogisticRegression(
+        C=min(float(reg_c), 0.25),
+        class_weight="balanced",
+        random_state=seed,
+    )
+    clf.fit(x_scaled, y_arr)
+    scales = np.where(np.abs(scaler.scale_) > 1e-9, scaler.scale_, 1.0)
+    coef_raw = clf.coef_[0] / scales
+    intercept_raw = float(clf.intercept_[0] - np.dot(coef_raw, scaler.mean_))
+    return [float(c) for c in coef_raw], intercept_raw
+
+
+def select_cost_aware_tau(
+    tau_sweep: list[dict[str, float]],
+    tie_tol: float = 0.002,
+) -> dict[str, float]:
+    """Picks minimal-escalation threshold within `tie_tol` of peak dev utility U_0.05."""
+    if not tau_sweep:
+        raise ValueError("tau_sweep must be non-empty")
+    max_u = max(float(row["utility_u005"]) for row in tau_sweep)
+    near_ties = [
+        row for row in tau_sweep if float(row["utility_u005"]) >= max_u - float(tie_tol)
+    ]
+    return min(
+        near_ties,
+        key=lambda r: (
+            round(float(r["esc_rate"]), 9),
+            -round(float(r["utility_u005"]), 9),
+            -float(r["tau"]),
+        ),
+    )
 
 
 def _binary_clf_metrics(
@@ -167,24 +213,13 @@ class CBARRCalibrator:
         X_arr = np.vstack(X_seed)
         y_arr = np.asarray(y_seed, dtype=int)
 
-        # Deterministic prior weights fallback if synthetic/small seed split happens to be single-class
-        if len(np.unique(y_arr)) < 2:
-            coef = [0.6, 0.8, 0.4, 1.0, 0.5]
-            intercept = -1.0
-        else:
-            clf = LogisticRegression(C=self.reg_c, class_weight="balanced", random_state=self.seed)
-            clf.fit(X_arr, y_arr)
-            coef = [float(c) for c in clf.coef_[0]]
-            intercept = float(clf.intercept_[0])
+        coef, intercept = fit_gate2_logistic_weights(X_arr, y_arr, seed=self.seed, reg_c=self.reg_c)
 
         # High-uncertainty entropy threshold is anchored at the median H_max where thinking helped
         tau_h_high = (
             float(np.median(h_max_thinking_helped)) if h_max_thinking_helped else 0.85
         )
 
-        best_tau = 0.50
-        best_u = -1e9
-        best_esc_rate = 0.35
         tau_sweep: list[dict[str, float]] = []
 
         # Grid-search Gate-2 escalation threshold tau across configured range to maximize utility on dev_60
@@ -230,18 +265,15 @@ class CBARRCalibrator:
                     "esc_rate": esc_rate_tau,
                 }
             )
-            if mean_u > best_u:
-                best_u = mean_u
-                best_tau = float(tau)
-                best_esc_rate = esc_rate_tau
 
+        best_row = select_cost_aware_tau(tau_sweep)
         self.last_tau_sweep_ = tau_sweep
         return CalibratedRouterParams(
             coef=coef,
             intercept=intercept,
-            tau_prob=best_tau,
+            tau_prob=float(best_row["tau"]),
             tau_h_high=tau_h_high,
-            m2_escalation_rate_dev=best_esc_rate,
+            m2_escalation_rate_dev=float(best_row["esc_rate"]),
         )
 
 
@@ -282,10 +314,63 @@ def compute_calibration_diagnostics(
         "dev_gate2_at_tau": _binary_clf_metrics(y_dev_g2, p_dev_g2, threshold=params.tau_prob),
     }
     if tau_sweep:
-        best_pt = max(tau_sweep, key=lambda x: x["utility_u005"])
+        best_pt = select_cost_aware_tau(tau_sweep)
+        diag["selected_tau"] = best_pt["tau"]
         diag["best_dev_utility_u005"] = best_pt["utility_u005"]
         diag["tau_sweep"] = tau_sweep
     return diag
+
+
+def _merge_probe_and_slow(
+    probe: dict[str, Any], slow_run: dict[str, Any]
+) -> dict[str, Any]:
+    """Accounts for both the initial Gate-2 probe call and the escalated slow-thinking call."""
+    merged = dict(slow_run)
+    merged["T_probe"] = probe["T_probe"]
+    merged["T_total"] = probe["T_probe"] + slow_run["T_total"]
+    merged["calls"] = 2
+    merged["latency_ms"] = probe["latency_ms"] + slow_run["latency_ms"]
+    return merged
+
+
+def _route_with_cascade(
+    cache_row: dict[str, Any],
+    g1: Gate1Output,
+    probe: dict[str, Any],
+    gate2_esc: bool,
+    direct_slow: dict[str, Any],
+    esc_slow: dict[str, Any],
+    *,
+    prec_direct_slow: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Executes C-BARR's 3-branch cascade: Gate-1 precision -> Gate-1 plan -> Gate-2 probe."""
+    if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+        return prec_direct_slow if prec_direct_slow is not None else cache_row["b0"]
+    if g1.phi_plan == 1:
+        return direct_slow
+    return _merge_probe_and_slow(probe, esc_slow) if gate2_esc else cache_row["fast_done"]
+
+
+def resolve_m2_prec_variant(
+    cache_row: dict[str, Any],
+    params: CalibratedRouterParams,
+) -> dict[str, Any]:
+    """Resolves auxiliary M2_Prec (routes pure precision prompts to Turn-2 bridged M2_B128)."""
+    prompt_str = cache_row["item"]["prompt"]
+    g1 = run_gate1_lexical(prompt_str)
+    probe = cache_row["probe"]
+    gate2_esc = score_gate2_probability(g1, probe, params) >= params.tau_prob
+    b_dir = select_tiered_budget(prompt_str, g1, None, params.tau_h_high)
+    b_esc = select_tiered_budget(prompt_str, g1, probe, params.tau_h_high)
+    return _route_with_cascade(
+        cache_row,
+        g1,
+        probe,
+        gate2_esc,
+        _get_slow_rec(cache_row, b_dir, direct=True, prefix="m2"),
+        _get_slow_rec(cache_row, b_esc, direct=False, prefix="m2"),
+        prec_direct_slow=cache_row["m2_b128"],
+    )
 
 
 def resolve_all_variants_for_item(
@@ -301,53 +386,35 @@ def resolve_all_variants_for_item(
     p_esc = score_gate2_probability(g1, probe, params)
     gate2_esc = p_esc >= params.tau_prob
 
-    def _merge_probe_and_slow(slow_run: dict[str, Any]) -> dict[str, Any]:
-        """Accounts for both the initial Gate-2 probe call and the escalated slow-thinking call."""
-        merged = dict(slow_run)
-        merged["T_probe"] = probe["T_probe"]
-        merged["T_total"] = probe["T_probe"] + slow_run["T_total"]
-        merged["calls"] = 2
-        merged["latency_ms"] = probe["latency_ms"] + slow_run["latency_ms"]
-        return merged
-
-    def _route_with_slow_target(
-        direct_slow: dict[str, Any], esc_slow: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Executes C-BARR's 3-branch cascade: Gate-1 bypass -> Gate-1 plan direct -> Gate-2 probe."""
-        if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
-            # Pure precision rules regress under thinking; bypass deliberation immediately (1.0 call)
-            return cache_row["b0"]
-        if g1.phi_plan == 1:
-            # Planning rules benefit reliably from deliberation; escalate directly without probe tax
-            return direct_slow
-        return _merge_probe_and_slow(esc_slow) if gate2_esc else cache_row["fast_done"]
+    def _route(direct_slow: dict[str, Any], esc_slow: dict[str, Any]) -> dict[str, Any]:
+        return _route_with_cascade(cache_row, g1, probe, gate2_esc, direct_slow, esc_slow)
 
     # M1a: Gate-1 zero-cost lexical router; M1b: Gate-2 fast-pass entropy+inertia; M1c: Cascade
     m1a = cache_row["b1b"] if (g1.phi_sym == 1 or g1.phi_plan == 1) else cache_row["b0"]
-    m1b = _merge_probe_and_slow(cache_row["b1b"]) if gate2_esc else cache_row["fast_done"]
-    m1c = _route_with_slow_target(cache_row["b1b"], cache_row["b1b"])
+    m1b = _merge_probe_and_slow(probe, cache_row["b1b"]) if gate2_esc else cache_row["fast_done"]
+    m1c = _route(cache_row["b1b"], cache_row["b1b"])
 
     # Fixed-cap M2 sweeps across B in {64, 128, 250}
-    m2_b64 = _route_with_slow_target(cache_row["m2_b64"], cache_row["m2_b64"])
-    m2_b128 = _route_with_slow_target(cache_row["m2_b128"], cache_row["m2_b128"])
-    m2_b256 = _route_with_slow_target(cache_row["m2_b256_direct"], cache_row["m2_b256"])
+    m2_b64 = _route(cache_row["m2_b64"], cache_row["m2_b64"])
+    m2_b128 = _route(cache_row["m2_b128"], cache_row["m2_b128"])
+    m2_b256 = _route(cache_row["m2_b256_direct"], cache_row["m2_b256"])
 
     # Adaptive tiered M2 (B in {64, 128, 250} + Post-Think Stripped Re-Anchoring)
     b_dir = select_tiered_budget(prompt_str, g1, None, params.tau_h_high)
     b_esc = select_tiered_budget(prompt_str, g1, probe, params.tau_h_high)
-    m2 = _route_with_slow_target(
+    m2 = _route(
         _get_slow_rec(cache_row, b_dir, direct=True, prefix="m2"),
         _get_slow_rec(cache_row, b_esc, direct=False, prefix="m2"),
     )
 
     # Locus ablation M2_Pre (Pre-</think> Re-Anchoring under identical routing & caps)
-    m2_pre = _route_with_slow_target(
+    m2_pre = _route(
         _get_slow_rec(cache_row, b_dir, direct=True, prefix="m2_pre"),
         _get_slow_rec(cache_row, b_esc, direct=False, prefix="m2_pre"),
     )
 
     b2b = (
-        _merge_probe_and_slow(cache_row["b1b"])
+        _merge_probe_and_slow(probe, cache_row["b1b"])
         if rng_b2b.random() < target_esc_prob
         else cache_row["fast_done"]
     )

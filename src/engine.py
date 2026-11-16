@@ -221,6 +221,8 @@ def _build_reanchor_block(
     """Returns (injected_close_block, visible_prefix_kept_in_scored_answer)."""
     term = P_TERM if truncated else ""
     if not anchor_clause:
+        if post_think_bridge and anchor_locus == "post_stripped":
+            return f"{term}\n</think>{post_think_bridge}", ""
         return f"{term}\n</think>\n", ""
 
     reminder_line = f"[Reminder: strictly follow: {anchor_clause}]"
@@ -350,14 +352,20 @@ class CBARRDualModeEngine:
         presence_penalty: float = 0.0,
         sampling_seed: int = 42,
         local_files_only: bool = False,
+        stage2_bridge: str = "classic",
     ):
         if temperature < 0.0:
             raise ValueError(f"temperature must be >= 0.0, got {temperature}")
         if not (0.0 < top_p <= 1.0):
             raise ValueError(f"top_p must lie in (0.0, 1.0], got {top_p}")
+        if stage2_bridge not in ("classic", "solve_first"):
+            raise ValueError(
+                f"Unsupported stage2_bridge: {stage2_bridge!r}; choose 'classic' or 'solve_first'"
+            )
         self.model_id = model_id
         self.is_smollm3 = "smollm3" in model_id.lower()
         self.freeze_smollm3_date = freeze_smollm3_date
+        self.stage2_bridge = str(stage2_bridge)
         self.device = device
         if not str(device).lower().startswith("cuda"):
             ensure_qwen35_device_safe_kernels()
@@ -455,9 +463,9 @@ class CBARRDualModeEngine:
             rendered += "<think>\n"
         return rendered
 
-    def _build_post_think_user_bridge(self, anchor_clause: str) -> str | None:
-        """Wraps a post-</think> reminder inside a turn-delimited user message so greedy decoding never echoes it."""
-        if not anchor_clause or not hasattr(self.tok, "apply_chat_template"):
+    def _render_turn2_user_bridge(self, user_instruction: str) -> str | None:
+        """Wraps a post-</think> Turn-2 user instruction so greedy decoding never echoes it."""
+        if not user_instruction or not hasattr(self.tok, "apply_chat_template"):
             return None
         sentinel_a = "__CBARR_PREV_ASST__"
         sentinel_u = "__CBARR_REANCHOR__"
@@ -477,21 +485,41 @@ class CBARRDualModeEngine:
         if sentinel_a not in rendered or sentinel_u not in rendered:
             return None
         bridge = rendered.split(sentinel_a, 1)[1]
-        # Use natural Turn-2 imperative wording (without bracket tags or negative "do not repeat" priming)
-        # so small models never echo wrapper tokens or mistake the reminder for repeat_prompt's target.
-        reminder_msg = (
-            "Now provide the complete final response to my first message above while "
-            f"strictly following: {anchor_clause}"
-        )
-        return bridge.replace(sentinel_u, reminder_msg, 1)
+        return bridge.replace(sentinel_u, user_instruction, 1)
+
+    def _build_post_think_user_bridge(
+        self, anchor_clause: str, truncated: bool = False
+    ) -> str | None:
+        """Builds Turn-2 non-thinking user bridge for constraint re-anchoring or truncated solve-first."""
+        if anchor_clause:
+            # Natural Turn-2 imperative (no bracket tags / negative priming) prevents echo & rule drift.
+            msg = (
+                "Now provide the complete final response to my first message above while "
+                f"strictly following: {anchor_clause}"
+            )
+            return self._render_turn2_user_bridge(msg)
+        if truncated and getattr(self, "stage2_bridge", "classic") == "solve_first":
+            msg = (
+                "Based on my original request and your notes above, work through any remaining "
+                "steps clearly and concisely before stating your final answer."
+            )
+            return self._render_turn2_user_bridge(msg)
+        return None
 
     def _build_reanchor_for_engine(
         self, truncated: bool, anchor_clause: str, anchor_locus: str
     ) -> tuple[str, str]:
         """Shared re-anchor builder used by both M2 (Phase 4-6) and Section 6 diagnostic controls."""
+        want_anchor_bridge = bool(anchor_clause and anchor_locus in ("post_stripped", "post_raw"))
+        want_solve_bridge = bool(
+            not anchor_clause
+            and truncated
+            and anchor_locus == "post_stripped"
+            and getattr(self, "stage2_bridge", "classic") == "solve_first"
+        )
         bridge = (
-            self._build_post_think_user_bridge(anchor_clause)
-            if anchor_clause and anchor_locus in ("post_stripped", "post_raw")
+            self._build_post_think_user_bridge(anchor_clause, truncated=truncated)
+            if (want_anchor_bridge or want_solve_bridge)
             else None
         )
         return _build_reanchor_block(truncated, anchor_clause, anchor_locus, post_think_bridge=bridge)

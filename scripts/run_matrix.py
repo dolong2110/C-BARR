@@ -41,6 +41,7 @@ from src.routers import (
     CalibratedRouterParams,
     compute_calibration_diagnostics,
     resolve_all_variants_for_item,
+    resolve_m2_prec_variant,
 )
 
 REQUIRED_DATA_SPLITS: tuple[str, ...] = (
@@ -150,6 +151,24 @@ def _annotate_run(item: dict[str, Any], run_dict: dict[str, Any]) -> dict[str, A
     return out
 
 
+def _regrade_cached_gsm8k_row(row: dict[str, Any]) -> bool:
+    """Re-grades cached GSM8K runs in-place using current grade_item; returns True if changed."""
+    item = row.get("item")
+    if not isinstance(item, dict) or item.get("dataset") != "gsm8k":
+        return False
+    changed = False
+    for key, val in row.items():
+        if key in ("item", "g1", "probe") or not isinstance(val, dict):
+            continue
+        if "a_final" not in val or "z" not in val:
+            continue
+        verdict = grade_item(item, val["a_final"])
+        if int(val.get("z", -1)) != int(verdict["z"]) or val.get("pred") != verdict.get("pred"):
+            val.update(verdict)
+            changed = True
+    return changed
+
+
 def _format_running_metrics(rows_out: list[dict[str, Any]]) -> str:
     """Formats running overall, IFEval-Precision, and mean-token metrics for progress logs."""
     n = len(rows_out)
@@ -205,6 +224,11 @@ def _format_slice_breakdown(rows_out: list[dict[str, Any]]) -> str:
         else:
             segs.append(f"{sl}({ns}): {a_b0:.0f}/{a_b1b:.0f}%")
     return " | ".join(segs)
+
+
+def _is_native_engine(engine: Any) -> bool:
+    """Returns True only when engine runs the live HuggingFace CBARRDualModeEngine decode path."""
+    return getattr(type(engine), "_decode_raw", None) is CBARRDualModeEngine._decode_raw
 
 
 def cache_split_primitives(
@@ -282,6 +306,8 @@ def cache_split_primitives(
             try:
                 if uid in existing:
                     cached_row = existing[uid]
+                    if _regrade_cached_gsm8k_row(cached_row) and uid in local_rows:
+                        upgraded_existing = True
                     if include_b512 and full_eval_modes and "m2_b512" not in cached_row:
                         g1 = run_gate1_lexical(item["prompt"])
                         cached_row["m2_b512"] = _run_or_reuse_m2_row(
@@ -300,7 +326,7 @@ def cache_split_primitives(
                     # On native greedy HF backend, run Gate-2 32-token probe first and continue from
                     # its live KV/DeltaNet cache to get identical b0/fast_done in 1 pass instead of 2.
                     native_greedy = (
-                        type(engine)._decode_raw is CBARRDualModeEngine._decode_raw
+                        _is_native_engine(engine)
                         and float(getattr(engine, "temperature", 0.0)) == 0.0
                     )
                     if native_greedy:
@@ -588,7 +614,7 @@ def run_section6_diagnostics(
     per_mode_z: dict[str, list[int]] = {}
     summary: dict[str, Any] = {}
 
-    can_reuse_b2_post = type(engine)._decode_raw is CBARRDualModeEngine._decode_raw
+    can_reuse_b2_post = _is_native_engine(engine)
     b2a_raw_cache: dict[str, str] = {}
     with controls_cache_path.open("a", encoding="utf-8") as f_ctrl:
         print(
@@ -693,6 +719,7 @@ def _build_engine(
     presence_penalty: float = 0.0,
     sampling_seed: int = 42,
     local_files_only: bool = False,
+    stage2_bridge: str = "classic",
 ) -> Any:
     if use_mock:
         from scripts.run_smoke_test import MockDualModeEngine
@@ -703,6 +730,7 @@ def _build_engine(
             top_p=top_p,
             presence_penalty=presence_penalty,
             sampling_seed=sampling_seed,
+            stage2_bridge=stage2_bridge,
         )
     dev, dtype = resolve_device_and_dtype(device_arg, dtype_arg)
     return CBARRDualModeEngine(
@@ -714,6 +742,7 @@ def _build_engine(
         presence_penalty=presence_penalty,
         sampling_seed=sampling_seed,
         local_files_only=local_files_only,
+        stage2_bridge=stage2_bridge,
     )
 
 
@@ -1200,6 +1229,13 @@ def main() -> None:
         action="store_true",
         help="Retain out_dir/shards after --merge-shards completes (default removes temp shards).",
     )
+    parser.add_argument(
+        "--stage2-bridge",
+        type=str,
+        choices=["classic", "solve_first"],
+        default="classic",
+        help="Stage-2 close bridge for truncated <think> runs ('classic' preserves v0.5.7 caches; 'solve_first' adds a Turn-2 reasoning instruction).",
+    )
     args = parser.parse_args()
 
     if args.num_shards < 1:
@@ -1258,6 +1294,7 @@ def main() -> None:
         "gate2_probe_tokens": 32,
         "tiered_budgets": [64, 128, 250] + ([512] if args.include_b512 else []),
         "include_b512": bool(args.include_b512),
+        "stage2_bridge": str(args.stage2_bridge),
         "b0_max_new_tokens": 1024,
         "b1b_max_new_tokens": 2048,
     }
@@ -1310,6 +1347,7 @@ def main() -> None:
             presence_penalty=args.presence_penalty,
             sampling_seed=args.seed,
             local_files_only=args.offline,
+            stage2_bridge=args.stage2_bridge,
         )
 
     if shard_mode:
@@ -1525,9 +1563,36 @@ def main() -> None:
         )
         print(hl(row_txt, "green") if k == "M2" else (hl(row_txt, "bold") if k in ("B0", "B1b") else row_txt), flush=True)
 
-    # Evaluate M2_B512 separately under auxiliary_systems so Contingency R3 never alters
-    # the 12-hypothesis Holm-Bonferroni FWER correction of the pre-registered table.
+    # Evaluate M2_B512 (R3) and M2_Prec separately under auxiliary_systems so auxiliary variants
+    # never alter the 12-hypothesis Holm-Bonferroni FWER correction of the pre-registered table.
     aux_systems: dict[str, Any] = {}
+    m2_prec_runs = [resolve_m2_prec_variant(r, params) for r in eval_rows]
+    m2_prec_table = evaluate_system_table(
+        eval_items,
+        m2_prec_runs,
+        lam_utility=args.lam_utility,
+        norm_tokens=args.norm_tokens,
+    )
+    m2_prec_table["mcnemar_vs_b1b"] = exact_and_midp_mcnemar(
+        tables["B1b"]["z_vec"], m2_prec_table["z_vec"]
+    )
+    m2_prec_table["mcnemar_vs_b0"] = exact_and_midp_mcnemar(
+        tables["B0"]["z_vec"], m2_prec_table["z_vec"]
+    )
+    aux_systems["M2_Prec"] = {
+        mk: mv for mk, mv in m2_prec_table.items() if mk not in ("z_vec", "u_vec")
+    }
+    prec_ip = 100.0 * float(m2_prec_table["slice_acc"].get("ifeval_precision", 0.0))
+    print(
+        hl(
+            f"  {'M2_Prec':7s}: Macro={100*m2_prec_table['macro_acc']:.1f}% | Prec={prec_ip:.1f}% | "
+            f"OAA_250={100*m2_prec_table['oaa_250']:.1f}% | U_0.05={100*m2_prec_table['u_005']:.1f}% | "
+            f"Tok={m2_prec_table['mean_t_tot']:.0f} calls={m2_prec_table['mean_calls']:.2f} "
+            f"(aux, p_vs_B0={m2_prec_table['mcnemar_vs_b0']['p_exact']:.3g})",
+            "cyan",
+        ),
+        flush=True,
+    )
     if args.include_b512:
         m2_b512_runs = [_resolve_m2_b512(r, params) for r in eval_rows]
         m2_b512_table = evaluate_system_table(
@@ -1608,6 +1673,8 @@ def main() -> None:
             sig = r"$^\dagger$" if tables[k].get("p_holm_vs_b1b", 1.0) < 0.05 else ""
             disp_k = "M2_B250" if k == "M2_B256" else k
             tex_lines.append(_format_latex_row(disp_k, tables[k], sig=sig))
+        if "M2_Prec" in aux_systems:
+            tex_lines.append(_format_latex_row(r"M2\_Prec (Aux.)", aux_systems["M2_Prec"]))
         if "M2_B512" in aux_systems:
             tex_lines.append(_format_latex_row(r"M2\_B512 (R3)", aux_systems["M2_B512"]))
         tex_lines.append(_format_latex_row(r"\textit{Oracle\_UB}", oracle_info["oracle_summary"]))
@@ -1640,7 +1707,11 @@ def main() -> None:
         diag_items,
         gsm_seed,
         out_dir,
-        mode_cb=_on_diag_mode_done if (args.exp_log or args.run_id) else None,
+        mode_cb=(
+            None
+            if isinstance(engine, _TokenizerOnlyEngine)
+            else (_on_diag_mode_done if (args.exp_log or args.run_id) else None)
+        ),
     )
     t_diag_sec = round(time.perf_counter() - t_diag_start, 2)
     t_total_sec = round(time.perf_counter() - t_run_start, 2)

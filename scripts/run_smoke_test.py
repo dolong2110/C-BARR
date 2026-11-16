@@ -81,10 +81,12 @@ class MockDualModeEngine(CBARRDualModeEngine):
         top_p: float = 1.0,
         presence_penalty: float = 0.0,
         sampling_seed: int = 42,
+        stage2_bridge: str = "classic",
     ):
         self.model_id = model_id
         self.is_smollm3 = "smollm3" in model_id.lower()
         self.freeze_smollm3_date = freeze_smollm3_date
+        self.stage2_bridge = str(stage2_bridge)
         self.temperature = float(temperature)
         self.top_p = float(top_p)
         self.presence_penalty = float(presence_penalty)

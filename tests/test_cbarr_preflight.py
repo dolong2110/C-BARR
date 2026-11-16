@@ -172,6 +172,33 @@ class TestCBARRPreflight(unittest.TestCase):
         self.assertFalse(has_cot_spillover("Wait, let me recalculate x = 5.", truncated=False))
         self.assertFalse(has_cot_spillover("The final value is 42.", truncated=True))
 
+    def test_w1_gsm8k_grader_prose_tails_and_check_blocks(self) -> None:
+        self.assertEqual(
+            grade_gsm8k("To find the answer:\n\n1. Compute 1 + 1 = 2.\nShe needs **2 gallons**.", 2.0),
+            1,
+        )
+        self.assertEqual(grade_gsm8k("She will be **8** years old in 3 years.", 8.0), 1)
+        self.assertEqual(grade_gsm8k("They earn **$64,800** more from the Widgeteer 3000.", 64800.0), 1)
+        self.assertEqual(
+            grade_gsm8k("Total is 15. *(Check: 15/3 = 5, 5*2 = 10, 15-10 = 5)*.", 15.0),
+            1,
+        )
+        self.assertEqual(
+            grade_gsm8k("He needs **2 gallons**.\n\n**Check:**\n* $2 \\times 3 = 6$.", 2.0),
+            1,
+        )
+        self.assertEqual(
+            grade_gsm8k(
+                "### Conclusion\nPeter's current age is **50**.\n*(Check: 50+3 = 53)*.",
+                50.0,
+            ),
+            1,
+        )
+        self.assertEqual(
+            grade_gsm8k("To find the answer:\n\n1. Compute 99.\nFinal answer: 5.", 99.0),
+            0,
+        )
+
     def test_w1_d13_budget_cap_250_and_d12_reanchor_hygiene(self) -> None:
         conflict_prompt = (
             "Write an essay of at least 300 words without using any commas."

@@ -54,16 +54,26 @@ SPILLOVER_RE = re.compile(
     r"^\s*(?:wait[,:\s]|let's\s+think|step\s+1\b|hmm[,:\s])", re.IGNORECASE
 )
 
-# Precedence-ordered numeric extraction patterns (LaTeX \boxed -> #### / cue -> trailing number)
+# Precedence-ordered numeric extraction patterns (LaTeX \boxed -> #### / cue -> trailing bold/number)
 NUM_TOKEN_RE = re.compile(r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:/\d+)?")
 BOXED_CONTENT_RE = re.compile(r"\\boxed\{\s*([^{}]+(?:\{[^{}]*\}[^{}]*)*)\s*\}")
 HASH_ANS_RE = re.compile(r"####\s*\$?\s*([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)")
+# Horizontal spaces only after separator so "...find the answer:\n\n1. **Step**" never matches bullet "1."
 CUE_ANS_RE = re.compile(
     r"(?:final\s+answer|the\s+answer|answer|equals|total\s+is)"
-    r"\s*\*{0,2}\s*(?:is|:|=)\s*\*{0,2}\s*\$?\s*"
+    r"[ \t]*\*{0,2}[ \t]*(?:is|:|=)[ \t]*\*{0,2}[ \t]*(?!\d+[ \t]*\.[ \t]*\*\*)(?:\$|\\\$)?[ \t]*"
     r"([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)",
     re.IGNORECASE,
 )
+CONCLUSION_HDR_RE = re.compile(
+    r"(?:^|\n)(?:#{1,4}[ \t]*(?:final[ \t]+)?conclusion\b|\*\*[ \t]*(?:final[ \t]+answer|answer|conclusion)[ \t]*:?[ \t]*\*\*)",
+    re.IGNORECASE,
+)
+BOLD_NUM_RE = re.compile(
+    r"\*\*[ \t]*(?:\\\$|\$)?[ \t]*([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:/\d+)?)(?:[ \t]*[a-zA-Z%$]+)*[ \t]*\*\*"
+)
+CHECK_INLINE_TAIL_RE = re.compile(r"(?:\n|[ \t]+)\*?\([ \t]*check\b[^)]*\)\*?[ \t.]*$", re.IGNORECASE)
+CHECK_BLOCK_RE = re.compile(r"\n[ \t]*\*\*check\b[:\s*]", re.IGNORECASE)
 
 # Precedence-ordered multiple-choice option extractors for CommonsenseQA
 MC_BOXED_RE = re.compile(r"\\boxed\{\s*\(?([A-E])\)?\s*\}", re.IGNORECASE)
@@ -150,8 +160,26 @@ def _parse_numeric_token(s: str) -> float | None:
         return None
 
 
+def _match_gsm8k_patterns(segment: str, gold: float) -> int | None:
+    """Checks explicit numeric cues, bolded final values, and trailing numbers inside a slice."""
+    for pattern in (HASH_ANS_RE, CUE_ANS_RE):
+        matches = pattern.findall(segment)
+        if matches:
+            val = _parse_numeric_token(matches[-1])
+            if val is not None:
+                return int(abs(val - gold) < 1e-4)
+    paras = [p.strip() for p in segment.split("\n") if p.strip()]
+    if paras:
+        bold_matches = BOLD_NUM_RE.findall(paras[-1])
+        if bold_matches:
+            val = _parse_numeric_token(bold_matches[-1])
+            if val is not None:
+                return int(abs(val - gold) < 1e-4)
+    return None
+
+
 def grade_gsm8k(final_answer: str, gold: float) -> int:
-    """Grades numeric GSM8K answers using the last matched boxed, cued, or trailing number."""
+    """Grades numeric GSM8K answers using boxed, conclusion-section, cued, bolded, or trailing values."""
     if not final_answer:
         return 0
     boxed_matches = BOXED_CONTENT_RE.findall(final_answer)
@@ -169,15 +197,30 @@ def grade_gsm8k(final_answer: str, gold: float) -> int:
             if val is not None:
                 return int(abs(val - gold) < 1e-4)
 
-    for pattern in (HASH_ANS_RE, CUE_ANS_RE):
-        matches = pattern.findall(final_answer)
-        if matches:
-            val = _parse_numeric_token(matches[-1])
+    cleaned = CHECK_INLINE_TAIL_RE.sub("", final_answer).strip() or final_answer
+    hdr_matches = list(CONCLUSION_HDR_RE.finditer(cleaned))
+    if hdr_matches:
+        tail_sec = cleaned[hdr_matches[-1].start() :]
+        chk_m = CHECK_BLOCK_RE.search(tail_sec)
+        if chk_m and chk_m.start() > 5:
+            tail_sec = tail_sec[: chk_m.start()].strip()
+        hit = _match_gsm8k_patterns(tail_sec, gold)
+        if hit is not None:
+            return hit
+        tail_nums = NUM_TOKEN_RE.findall(tail_sec)
+        if tail_nums:
+            val = _parse_numeric_token(tail_nums[-1])
             if val is not None:
                 return int(abs(val - gold) < 1e-4)
 
+    chk_m = CHECK_BLOCK_RE.search(cleaned)
+    no_chk = cleaned[: chk_m.start()].strip() if (chk_m and chk_m.start() > 10) else cleaned
+    hit = _match_gsm8k_patterns(no_chk, gold)
+    if hit is not None:
+        return hit
+
     # Last-resort fallback: inspect the final standalone number in the answer text
-    nums = NUM_TOKEN_RE.findall(final_answer)
+    nums = NUM_TOKEN_RE.findall(no_chk)
     if not nums:
         return 0
     val = _parse_numeric_token(nums[-1])

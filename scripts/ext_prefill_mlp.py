@@ -428,6 +428,11 @@ def main() -> None:
         "eval": eval_rows,
         "eval_para": eval_para_rows,
     }
+    print(
+        f"[prefill_mlp] Model={args.model} | rows: seed={len(seed_rows)} "
+        f"dev={len(dev_rows)} eval={len(eval_rows)} | cache={not args.no_cache}",
+        flush=True,
+    )
     if args.mock:
         cache_path = model_dir / "prefill_hidden_mock.npz"
 

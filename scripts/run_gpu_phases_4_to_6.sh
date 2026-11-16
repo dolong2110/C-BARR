@@ -19,6 +19,9 @@ set -euo pipefail
 #   --no-setup              Disable environment provisioning checks before running
 #   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, --max-shards) when >=2 GPUs visible (default: 1)
 #   --max-shards <N>        Maximum GPUs used when --shards auto is active (default: 8)
+#   --workers-per-gpu <N|auto>  Concurrent shard workers pinned per GPU ('auto' runs 2/GPU on >=32 GB GPUs for <=4B models, 1 for 9B; default: auto)
+#   --shard-progress-sec <N>  Interval in seconds for multi-GPU progress snapshots (default: 20; 0 disables)
+#   --shard-log <mode>      Sharded live stdout mode: auto (GPU0 + all milestones/errors), all, milestones, off (default: auto)
 #   --gpu <id[,id...]>      Pin CUDA_VISIBLE_DEVICES (e.g. 0 or 0,1,2,3; default: auto)
 #   --device <dev>          Compute device override: auto, cuda, mps, cpu (default: auto)
 #   --dtype <auto|bf16|fp16|fp32>  Model precision override (default: auto -> bf16 on sm>=80 & Apple Silicon MPS BF16)
@@ -56,6 +59,9 @@ PART_MODE="all"
 SETUP_MODE="off"
 SHARDS_ARG="1"
 MAX_SHARDS_ARG=8
+WORKERS_PER_GPU_ARG="${CBARR_WORKERS_PER_GPU:-auto}"
+SHARD_PROGRESS_SEC="${CBARR_SHARD_PROGRESS_SEC:-20}"
+SHARD_LOG_MODE="${CBARR_SHARD_LOG:-auto}"
 WITH_9B="0"
 WITH_W7=0
 IS_MOCK=0
@@ -308,6 +314,21 @@ while [ "$#" -gt 0 ]; do
     --allow-kernel-source-build)
       export CBARR_ALLOW_KERNEL_SOURCE_BUILD=1
       ;;
+    --workers-per-gpu)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      WORKERS_PER_GPU_ARG="$1"
+      ;;
+    --shard-progress-sec)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      SHARD_PROGRESS_SEC="$1"
+      ;;
+    --shard-log)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      SHARD_LOG_MODE="$1"
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -335,6 +356,16 @@ case "$WITH_9B" in
   0|1|auto) ;;
   *) echo "Unknown WITH_9B value '$WITH_9B' (expected 0, 1, or auto)" >&2; exit 1 ;;
 esac
+case "$SHARD_LOG_MODE" in
+  auto|all|milestones|off) ;;
+  *) echo "Unknown --shard-log '$SHARD_LOG_MODE' (expected auto, all, milestones, or off)" >&2; exit 1 ;;
+esac
+if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
+  if ! [[ "$WORKERS_PER_GPU_ARG" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Unknown --workers-per-gpu '$WORKERS_PER_GPU_ARG' (expected auto or positive integer)" >&2
+    exit 1
+  fi
+fi
 
 if [ -n "$GPU_ID" ]; then
   export CUDA_VISIBLE_DEVICES="$GPU_ID"
@@ -431,7 +462,7 @@ bootstrap_environment_and_data() {
     need_setup=1
   elif [ "$SETUP_MODE" = "auto" ]; then
     if ! "$PY_BIN" -c "
-import importlib, importlib.metadata, importlib.util, pathlib, re, nltk, torch
+import importlib, importlib.metadata, importlib.util, os, pathlib, re, nltk, torch
 def _vt(p):
     return tuple(int(x) for x in re.findall(r'\d+', importlib.metadata.version(p))[:3])
 reqs = ['numpy', 'jinja2', 'torch', 'transformers', 'accelerate', 'datasets', 'matplotlib', 'scipy', 'sklearn', 'nltk', 'immutabledict', 'langdetect', 'absl']
@@ -450,6 +481,8 @@ if torch.cuda.is_available():
     cc = torch.cuda.get_device_capability(0)[:2]
     if cc >= (7, 5):
         importlib.import_module('fla')
+        if os.environ.get('CBARR_ALLOW_KERNEL_SOURCE_BUILD') == '1':
+            importlib.import_module('causal_conv1d')
 " 2>/dev/null || [ ! -f "${DATA_DIR}/manifest_sha256.json" ]; then
       need_setup=1
     fi
@@ -507,6 +540,55 @@ fi
 if [ "${N_SHARDS:-1}" -lt 1 ] 2>/dev/null; then
   N_SHARDS=1
 fi
+
+GPU_MIN_VRAM_GB=0
+if [ "$IS_MOCK" -eq 0 ]; then
+  GPU_MIN_VRAM_GB="$("$PY_BIN" -c "
+import torch
+if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+    mins = min(torch.cuda.get_device_properties(i).total_memory for i in range(torch.cuda.device_count()))
+    print(int(mins // (1024**3)))
+else:
+    print(0)
+" 2>/dev/null || echo 0)"
+fi
+
+SHARD_VIS_GPUS_CSV=""
+if [ "${#VISIBLE_GPUS[@]}" -gt 0 ]; then
+  _gpu_subset=("${VISIBLE_GPUS[@]:0:$N_SHARDS}")
+  SHARD_VIS_GPUS_CSV="$(IFS=','; echo "${_gpu_subset[*]}")"
+else
+  _base_gpus=()
+  for ((_gi = 0; _gi < N_SHARDS; _gi++)); do
+    _base_gpus+=("$_gi")
+  done
+  SHARD_VIS_GPUS_CSV="$(IFS=','; echo "${_base_gpus[*]}")"
+fi
+
+effective_workers_per_gpu() {
+  local model_id="$1"
+  if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
+    echo "$WORKERS_PER_GPU_ARG"
+    return
+  fi
+  if [ "$IS_MOCK" -ne 0 ] || [ "$GPU_MIN_VRAM_GB" -lt 32 ]; then
+    echo 1
+    return
+  fi
+  case "$model_id" in
+    *9[Bb]*)
+      # 9B uses ~19-22 GB VRAM per worker; keep 1 worker/GPU so 46 GB GPUs stay well clear of OOM
+      echo 1
+      ;;
+    *)
+      if [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
+        echo 3
+      else
+        echo 2
+      fi
+      ;;
+  esac
+}
 
 if [ "$WITH_9B" = "auto" ]; then
   if [ "$IS_MOCK" -ne 0 ]; then
@@ -639,8 +721,9 @@ run_stage() {
   t1="$(date -u +%s)"
   dur=$((t1 - t0))
   if [ "$rc" -eq 0 ]; then
+    local total_run_sec=$((t1 - PIPELINE_START_EPOCH))
     record_stage_timing "$stage_name" "PASS" "$dur"
-    log_banner "=== [$stage_name] DONE (${dur}s) ==="
+    log_banner "=== [$stage_name] DONE (${dur}s | total=${total_run_sec}s) ==="
     checkpoint_exp_log "$stage_name" "RUNNING (after ${stage_name})" "$stage_push"
   else
     record_stage_timing "$stage_name" "FAIL(exit=${rc})" "$dur"
@@ -682,50 +765,56 @@ run_matrix_sharded() {
     "$@"
     ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
   )
-  if [ "$N_SHARDS" -le 1 ]; then
+  local eff_wpg eff_shards rc_all=0 slug="${model_id//\//__}"
+  eff_wpg="$(effective_workers_per_gpu "$model_id")"
+  eff_shards=$((N_SHARDS * eff_wpg))
+  if [ "$eff_shards" -le 1 ]; then
     run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
     return $?
   fi
 
-  local pids=() s_idx shard_cuda_dev slug s_log rc_all=0
-  slug="${model_id//\//__}"
   CURRENT_STAGE="$stage_name"
   local t0 t1 dur
   t0="$(date -u +%s)"
-  log_banner "=== [$stage_name] START (${N_SHARDS}-GPU sharded) ==="
-  for ((s_idx = 0; s_idx < N_SHARDS; s_idx++)); do
-    if [ "${#VISIBLE_GPUS[@]}" -gt "$s_idx" ]; then
-      shard_cuda_dev="${VISIBLE_GPUS[$s_idx]}"
-    else
-      shard_cuda_dev="$s_idx"
-    fi
-    s_log="${LOG_DIR}/cbarr_${RUN_ID}_gpu${s_idx}_${slug}.log"
-    CUDA_VISIBLE_DEVICES="$shard_cuda_dev" "${base_args[@]}" \
-      --device "$DEVICE_ARG" \
-      --seed "$SEED" \
-      --lam-utility "$LAM_UTILITY" \
-      --norm-tokens "$NORM_TOKENS" \
-      --reg-c "$REG_C" \
-      --tau-min "$TAU_MIN" \
-      --tau-max "$TAU_MAX" \
-      --tau-steps "$TAU_STEPS" \
-      --shard-idx "$s_idx" \
-      --num-shards "$N_SHARDS" \
-      --step-checkpoint-every 0 >"$s_log" 2>&1 &
-    pids+=("$!")
-  done
-  for pid in "${pids[@]}"; do
-    if ! wait "$pid"; then
-      rc_all=1
-    fi
-  done
+  if [ "$eff_wpg" -gt 1 ]; then
+    log_banner "=== [$stage_name] START (${eff_shards} shards across ${N_SHARDS} GPU(s), ${eff_wpg} workers/GPU) ==="
+  else
+    log_banner "=== [$stage_name] START (${N_SHARDS}-GPU sharded) ==="
+  fi
+  set +e
+  "$PY_BIN" scripts/run_sharded.py \
+    --stage-name "$stage_name" \
+    --model "$model_id" \
+    --data-dir "$DATA_DIR" \
+    --out-dir "$OUT_DIR" \
+    --log-dir "$LOG_DIR" \
+    --run-id "$RUN_ID" \
+    --shards "$eff_shards" \
+    --visible-gpus "$SHARD_VIS_GPUS_CSV" \
+    --progress-sec "$SHARD_PROGRESS_SEC" \
+    --shard-log "$SHARD_LOG_MODE" \
+    -- \
+    "${base_args[@]}" \
+    --device "$DEVICE_ARG" \
+    --seed "$SEED" \
+    --lam-utility "$LAM_UTILITY" \
+    --norm-tokens "$NORM_TOKENS" \
+    --reg-c "$REG_C" \
+    --tau-min "$TAU_MIN" \
+    --tau-max "$TAU_MAX" \
+    --tau-steps "$TAU_STEPS" 2>&1 | tee -a "$RUN_LOG"
+  rc_all=$?
+  set -e
+  t1="$(date -u +%s)"
+  dur=$((t1 - t0))
   if [ "$rc_all" -ne 0 ]; then
-    t1="$(date -u +%s)"
-    dur=$((t1 - t0))
     record_stage_timing "$stage_name" "FAIL(shard_error)" "$dur"
     log_banner "=== [$stage_name] FAILED in parallel GPU shard (${dur}s; inspect ${LOG_DIR}/cbarr_${RUN_ID}_gpu*_${slug}.log) ==="
     return 1
   fi
+  local total_run_sec=$((t1 - PIPELINE_START_EPOCH))
+  record_stage_timing "$stage_name" "PASS" "$dur"
+  log_banner "=== [$stage_name] SHARDS DONE (${dur}s | total=${total_run_sec}s) — merging shards ==="
   run_stage "${stage_name} (merge)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
 }
 
@@ -866,6 +955,7 @@ sync_part_results() {
   echo "Python Binary      : ${PY_BIN}"
   echo "DATA_DIR / OUT_DIR : ${DATA_DIR} / ${OUT_DIR} -> FIG_DIR=${FIG_DIR}"
   echo "DTYPE / CUDA_DEV   : ${DTYPE} / ${CUDA_VISIBLE_DEVICES:-auto}"
+  echo "Shard Monitor      : gpus=${N_SHARDS} (vis=${SHARD_VIS_GPUS_CSV}) | workers_per_gpu=${WORKERS_PER_GPU_ARG} (min_vram=${GPU_MIN_VRAM_GB}G) | progress=${SHARD_PROGRESS_SEC}s | shard_log=${SHARD_LOG_MODE}"
   echo "GIT COMMIT / PUSH  : commit=${AUTO_COMMIT} push=${AUTO_PUSH} branch=${GIT_BRANCH:-current}"
   echo "HF_HOME / PRUNE    : ${HF_HOME:-default} (prune below ${PRUNE_HF_BELOW_GB} GB) | HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset)"
   echo "Command            : ${RAW_CMD}"
