@@ -264,3 +264,64 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Step 0a: Hardware & Kernel Probe | PASS | 9.0s (9.0s) |
 | Step 0a: Live GPU 12-Item Smoke | FAIL(exit=1) | 19m 19.0s (1159.0s) |
 <!-- CBARR_RUN_END:20261116T164629Z -->
+
+<!-- CBARR_RUN_START:20261116T173652Z -->
+### Run `20261116T173652Z` — **RUNNING (Calibration: Qwen/Qwen3.5-4B)** (Updated 2026-11-16 22:29:55 UTC)
+- **Code Version**: `v0.5.7` | **Git Commit**: `d95a532-dirty` | **Last Loop**: `Calibration: Qwen/Qwen3.5-4B` | **Wall Time**: `2.7s` (2.7s)
+- **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=False`
+- **Command**: `scripts/run_matrix.py`
+- **Raw Log**: `outputs/logs/cbarr_20261116T173652Z.log`
+
+#### 1. Training & Experiment Parameters
+```json
+{
+  "auto_commit": true,
+  "auto_push": true,
+  "b0_max_new_tokens": 1024,
+  "b1b_max_new_tokens": 2048,
+  "class_weight": "balanced",
+  "code_version": "0.5.7",
+  "device": "cuda",
+  "do_sample": false,
+  "dtype": "auto",
+  "gate2_probe_tokens": 32,
+  "git_branch": "",
+  "git_rev": "d95a532-dirty",
+  "include_b512": false,
+  "is_mock": false,
+  "lam_utility": 0.05,
+  "logreg_C": 1.0,
+  "norm_tokens": 250.0,
+  "presence_penalty": 0.0,
+  "run_id": "20261116T173652Z",
+  "seed": 42,
+  "setup_mode": "auto",
+  "tau_grid": [
+    0.15,
+    0.85,
+    29
+  ],
+  "temperature": 0.0,
+  "tiered_budgets": [
+    64,
+    128,
+    250
+  ],
+  "top_p": 1.0,
+  "with_9b": true,
+  "with_w7": true
+}
+```
+
+#### 2. Stage Timings
+| Stage | Status | Wall Time |
+| :--- | :--- | :--- |
+| Gate 0: Preflight Tests | PASS | 6.0s (6.0s) |
+| Step 0a: Hardware & Kernel Probe | PASS | 8.0s (8.0s) |
+| Step 0a: Live GPU 12-Item Smoke | PASS | 9m 48.0s (588.0s) |
+
+#### 4. Calibration & Gate-2 Classifier Results (Per Model)
+| Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | `v0.5.7` (`d95a532-dirty`) | 0.475 | 2.537 | 80.0% (OK) | 16.7% | -0.18 | [-0.27, 0.02, -0.16, 0.95, 0.31] | 63/25/88/39/0.702 | 37/12/71/21/0.412 | 23/0.251 (n=40) | 28.3%->75.8% (1744->459t) | 0.1s |
+<!-- CBARR_RUN_END:20261116T173652Z -->
