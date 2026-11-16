@@ -225,3 +225,42 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Step 0a: Hardware & Kernel Probe | PASS | 8.0s (8.0s) |
 | Step 0a: Live GPU 12-Item Smoke | FAIL(exit=1) | 6m 27.0s (387.0s) |
 <!-- CBARR_RUN_END:20261116T155617Z -->
+
+<!-- CBARR_RUN_START:20261116T164629Z -->
+### Run `20261116T164629Z` — **FAILED (exit=1 at Step 0a: Live GPU 12-Item Smoke)** (Updated 2026-11-16 17:07:25 UTC)
+- **Code Version**: `v0.5.6` | **Git Commit**: `07fa1b4-dirty` | **Last Loop**: `Step 0a: Live GPU 12-Item Smoke` | **Wall Time**: `20m 41.0s` (1241.0s)
+- **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=False`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache`
+- **Raw Log**: `outputs/logs/cbarr_20261116T164629Z.log`
+
+#### 1. Training & Experiment Parameters
+```json
+{
+  "auto_commit": true,
+  "auto_push": true,
+  "code_version": "0.5.6",
+  "dtype": "auto",
+  "git_branch": "",
+  "is_mock": false,
+  "lam_utility": 0.05,
+  "logreg_C": 1.0,
+  "norm_tokens": 250.0,
+  "seed": 42,
+  "setup_mode": "auto",
+  "tau_grid": [
+    0.15,
+    0.85,
+    29
+  ],
+  "with_9b": true,
+  "with_w7": true
+}
+```
+
+#### 2. Stage Timings
+| Stage | Status | Wall Time |
+| :--- | :--- | :--- |
+| Gate 0: Preflight Tests | PASS | 5.0s (5.0s) |
+| Step 0a: Hardware & Kernel Probe | PASS | 9.0s (9.0s) |
+| Step 0a: Live GPU 12-Item Smoke | FAIL(exit=1) | 19m 19.0s (1159.0s) |
+<!-- CBARR_RUN_END:20261116T164629Z -->
