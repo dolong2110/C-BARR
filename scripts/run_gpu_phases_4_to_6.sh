@@ -31,6 +31,7 @@ set -euo pipefail
 #   --include-b512          Include Contingency R3 B=512 sweep
 #   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
 #   --skip-preflight        Skip Gate 0 offline unittest discovery
+#   --full-preflight        Run full 30-test E2E suite in Gate 0 instead of fast preflight (~1s)
 #   --data-dir / --run-id / --out-dir / --fig-dir / --log-dir / --exp-log / --no-exp-log
 #   --seed / --lam-utility / --norm-tokens / --reg-c / --tau-min / --tau-max / --tau-steps
 #   --mock                  Run full offline CPU orchestration dry-run without overwriting repo ledger
@@ -45,6 +46,8 @@ WITH_W7=0
 IS_MOCK=0
 SKIP_SMOKE=0
 SKIP_PREFLIGHT=0
+FULL_PREFLIGHT=0
+RAN_LIVE_SMOKE=0
 CALIBRATE_ONLY=0
 STRICT_ONLY=0
 STRICT_VERSION_MATCH=0
@@ -89,6 +92,7 @@ while [ "$#" -gt 0 ]; do
     --with-w7) WITH_W7=1 ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
+    --full-preflight) FULL_PREFLIGHT=1 ;;
     --calibrate-only) CALIBRATE_ONLY=1 ;;
     --strict-only) STRICT_ONLY=1 ;;
     --strict-version-match) STRICT_VERSION_MATCH=1 ;;
@@ -348,7 +352,7 @@ checkpoint_exp_log() {
   if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ] && [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
     push_args=(--git-push)
   fi
-  if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ]; then
+  if [ "$IS_MOCK" -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ] && [ "$RAN_LIVE_SMOKE" -eq 1 ]; then
     if [ -f "${OUT_DIR}/smoke_test_gate3_report.json" ]; then
       smoke_args=(--smoke-report "${OUT_DIR}/smoke_test_gate3_report.json")
     elif [ -f "outputs/smoke_test_gate3_report.json" ]; then
@@ -509,6 +513,18 @@ for pkg in ('fla', 'causal_conv1d'):
       smoke_args=(--models "${MODELS_ARG[@]}")
     fi
     run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    RAN_LIVE_SMOKE=1
+  fi
+}
+
+run_gate0_preflight() {
+  if [ "$SKIP_PREFLIGHT" -ne 0 ]; then
+    return 0
+  fi
+  if [ "$FULL_PREFLIGHT" -eq 1 ]; then
+    run_stage "Gate 0: Preflight Tests" "$PY_BIN" -W ignore::DeprecationWarning -W ignore::ImportWarning -m unittest discover -s tests -v
+  else
+    run_stage "Gate 0: Preflight Tests" "$PY_BIN" -W ignore::DeprecationWarning -W ignore::ImportWarning -m unittest discover -s tests -p "test_cbarr_preflight.py" -v
   fi
 }
 
@@ -593,9 +609,7 @@ sync_part_results() {
 
 case "$PART_MODE" in
   1)
-    if [ "$SKIP_PREFLIGHT" -eq 0 ]; then
-      run_stage "Gate 0: Preflight Tests" "$PY_BIN" -m unittest discover -s tests -v
-    fi
+    run_gate0_preflight
     run_hw_probe_and_smoke 1 Qwen/Qwen3.5-4B
     run_matrix_sharded "Step 0b: Primary 4B Gate-2 Calibration" Qwen/Qwen3.5-4B --calibrate-only
     if [ "$CALIBRATE_ONLY" -eq 0 ]; then
@@ -650,9 +664,7 @@ case "$PART_MODE" in
     if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
       run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
     fi
-    if [ "$SKIP_PREFLIGHT" -eq 0 ]; then
-      run_stage "Gate 0: Preflight Tests" "$PY_BIN" -m unittest discover -s tests -v
-    fi
+    run_gate0_preflight
     run_w7_stage Qwen/Qwen3.5-4B
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
@@ -660,9 +672,7 @@ case "$PART_MODE" in
     ;;
 
   all)
-    if [ "$SKIP_PREFLIGHT" -eq 0 ]; then
-      run_stage "Gate 0: Preflight Tests" "$PY_BIN" -m unittest discover -s tests -v
-    fi
+    run_gate0_preflight
     run_hw_probe_and_smoke 1
     if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
       for _m in "${MODELS_ARG[@]}"; do

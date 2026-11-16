@@ -251,16 +251,13 @@ def _extract_model_summaries(out_dir: pathlib.Path) -> list[dict[str, Any]]:
 def _extract_smoke_report(
     root: pathlib.Path, out_dir: pathlib.Path, smoke_override: str
 ) -> list[dict[str, Any]]:
-    candidates: list[pathlib.Path] = []
-    if smoke_override:
-        candidates.append(pathlib.Path(smoke_override))
-    candidates.append(out_dir / "smoke_test_gate3_report.json")
-    if out_dir.resolve() == (root / "outputs").resolve():
-        candidates.append(root / "outputs" / "smoke_test_gate3_report.json")
-    for cand in candidates:
-        data = _load_json_safe(cand)
-        if isinstance(data, list) and data:
-            return [x for x in data if isinstance(x, dict)]
+    # Only render Gate-3 smoke rows when the caller explicitly passes the current run's report.
+    # Avoid falling back to static outputs/smoke_test_gate3_report.json on non-smoke runs.
+    if not smoke_override:
+        return []
+    data = _load_json_safe(pathlib.Path(smoke_override))
+    if isinstance(data, list) and data:
+        return [x for x in data if isinstance(x, dict)]
     return []
 
 
@@ -448,10 +445,12 @@ def _render_run_markdown(
         lines.append("| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |")
         lines.append("| :--- | :--- | :--- | :--- | :--- |")
         for sr in smoke_rows:
+            model_str = str(sr.get("model", "unknown"))
+            frozen_col = sr.get("gate3_smollm3_frozen_date") if "smollm3" in model_str.lower() else "N/A"
             lines.append(
-                f"| `{sr.get('model', 'unknown')}` | {sr.get('n_items', 0)} | "
+                f"| `{model_str}` | {sr.get('n_items', 0)} | "
                 f"{sr.get('d13_delib_le_250_verified')} | {sr.get('gate3_p_term_and_zero_reminder_leak')} | "
-                f"{sr.get('gate3_smollm3_frozen_date')} |"
+                f"{frozen_col} |"
             )
 
     if calibrations:

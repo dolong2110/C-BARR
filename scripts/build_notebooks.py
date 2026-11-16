@@ -179,13 +179,13 @@ SPECS: tuple[NotebookSpec, ...] = (
         title="C-BARR Step 5 Combiner: Unpack Workers 1–4 + Optional W7 + Combined Phase 7",
         summary_bullets=(
             "**Final Combiner (Run After Workers 1–4 Finish)**: Pulls `dolong2110/C-BARR`, unpacks all worker models (`Qwen3.5-4B`, `SmolLM3-3B`, `Qwen3.5-2B`, `Qwen3.5-0.8B`, `+9B` if present) via `scripts/sync_results.py --mode unpack`, verifies `VERSION` match across workers, optionally runs **W7** (`RUN_W7_EXTENSIONS = True`), and runs **Combined Phase 7**.",
-            "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Fails fast in Cell 5 before running Gate 0 if no worker summaries exist yet.",
+            "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Fails fast in Cell 5 before analysis if no worker summaries exist yet (set `RUN_PREFLIGHT_TESTS = True` only if you want to re-run Gate 0 here).",
             "**Unified Paper Outputs & Push**: Generates `outputs/stats_summary.json` (with `version_audit`), `outputs/paper_tables.tex`, anonymized `paper/figures/*.pdf`, `outputs/RESULTS_VERSION`, and unified `EXPERIMENT_LOG.md`, then pushes everything cleanly to GitHub.",
         ),
         models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
         models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
         auto_include_9b=True,
-        run_preflight_tests=True,
+        run_preflight_tests=False,
         run_live_smoke_expr="False",
         run_calibrate_only=False,
         run_primary_matrix=False,
@@ -354,8 +354,11 @@ if (AUTO_INCLUDE_9B and VRAM_GB >= 22.0) or FORCE_9B:
         MODELS_SCALE.append("Qwen/Qwen3.5-9B")
 
 # Pipeline stage toggles
+STRICT_NOTEBOOK_VERSION_MATCH = True  # Halt early in Cell 4 if browser cells are older than pulled repo VERSION
 RUN_PREFLIGHT_TESTS = {spec.run_preflight_tests!r}
+PREFLIGHT_FAST_ONLY = True   # Runs ~1s offline preflight (test_cbarr_preflight.py); False = full E2E mock suite (~12m)
 RUN_LIVE_SMOKE = {spec.run_live_smoke_expr}
+RAN_LIVE_SMOKE_THIS_RUN = False
 RUN_CALIBRATE_ONLY = {spec.run_calibrate_only!r}
 RUN_PRIMARY_MATRIX = {spec.run_primary_matrix!r}
 RUN_SCALE_SWEEP = {spec.run_scale_sweep!r}
@@ -482,6 +485,7 @@ NOTEBOOK_PARAMS = {{
     "models_primary": MODELS_PRIMARY if RUN_PRIMARY_MATRIX else [],
     "models_scale": MODELS_SCALE if RUN_SCALE_SWEEP else [],
     "include_b512": INCLUDE_B512,
+    "preflight_fast_only": PREFLIGHT_FAST_ONLY,
     "run_w7_extensions": RUN_W7_EXTENSIONS,
     "run_phase7_analysis": RUN_PHASE7_ANALYSIS,
     "sync_include_ledger": SYNC_INCLUDE_LEDGER,
@@ -550,8 +554,20 @@ REPO_GIT_REV = _prov["git_rev"]
 NOTEBOOK_PARAMS["code_version"] = REPO_CODE_VERSION
 NOTEBOOK_PARAMS["git_rev"] = REPO_GIT_REV
 print(f"Code Version : v{REPO_CODE_VERSION} (git={REPO_GIT_REV}) | notebook built for v{NOTEBOOK_CODE_VERSION}")
+if not (REPO_DIR / "notebooks" / NOTEBOOK_NAME).is_file():
+    raise RuntimeError(
+        f"Notebook {NOTEBOOK_NAME!r} was retired or renamed in repo v{REPO_CODE_VERSION}. "
+        "Open the current notebook from https://github.com/dolong2110/C-BARR/tree/master/notebooks and re-run."
+    )
 if NOTEBOOK_CODE_VERSION != "0.0.0" and REPO_CODE_VERSION != NOTEBOOK_CODE_VERSION:
-    print(f"[WARN] Checked-out repo VERSION (v{REPO_CODE_VERSION}) differs from notebook build version (v{NOTEBOOK_CODE_VERSION}).")
+    _ver_msg = (
+        f"Notebook build version (v{NOTEBOOK_CODE_VERSION}) differs from checked-out repo (v{REPO_CODE_VERSION}). "
+        f"Reopen https://colab.research.google.com/github/dolong2110/C-BARR/blob/master/notebooks/{NOTEBOOK_NAME} "
+        "(or set STRICT_NOTEBOOK_VERSION_MATCH = False in Cell 3 to bypass)."
+    )
+    if STRICT_NOTEBOOK_VERSION_MATCH:
+        raise RuntimeError(_ver_msg)
+    print(f"[WARN] {_ver_msg}")
 
 # Per-step & per-loop experiment ledger + thread-safe log-tee helpers
 LOG_DIR = OUT_DIR / "logs"
@@ -697,8 +713,8 @@ def record_loop_checkpoint(
         "--total-sec", f"{total_sec:.2f}",
         "--upsert",
     ]
-    smoke_rpt = REPO_DIR / "outputs" / "smoke_test_gate3_report.json"
-    if smoke_rpt.exists():
+    smoke_rpt = OUT_DIR / "smoke_test_gate3_report.json"
+    if RAN_LIVE_SMOKE_THIS_RUN and smoke_rpt.exists():
         cmd.extend(["--smoke-report", str(smoke_rpt)])
     if notes:
         cmd.extend(["--notes", notes])
@@ -798,11 +814,28 @@ kernel_mode = (
     if INSTALL_FAST_DELTANET_KERNELS is True
     else ("off" if INSTALL_FAST_DELTANET_KERNELS is False else str(INSTALL_FAST_DELTANET_KERNELS))
 )
+KERNEL_REPORT_FILE = LOG_DIR / f"kernel_status_{RUN_ID}.json"
 if HAS_CUDA and kernel_mode != "off":
     subprocess.run(
-        [sys.executable, "scripts/setup_fast_kernels.py", "--mode", kernel_mode],
+        [
+            sys.executable,
+            "scripts/setup_fast_kernels.py",
+            "--mode",
+            kernel_mode,
+            "--report-json",
+            str(KERNEL_REPORT_FILE),
+        ],
         check=False,
     )
+    if KERNEL_REPORT_FILE.is_file():
+        _krep = json.loads(KERNEL_REPORT_FILE.read_text(encoding="utf-8"))
+        NOTEBOOK_PARAMS["kernel_status"] = {
+            "fla": _krep.get("fla_active"),
+            "causal_conv1d": _krep.get("causal_conv1d_active"),
+            "actions": _krep.get("actions", []),
+            "causal_conv1d_reason": _krep.get("causal_conv1d_check") or _krep.get("decision_reason"),
+        }
+        PARAMS_FILE.write_text(json.dumps(NOTEBOOK_PARAMS, indent=2) + "\\n", encoding="utf-8")
 
 import importlib.util as _ilu
 
@@ -926,11 +959,27 @@ for m_id in ALL_ACTIVE_MODELS:
 
 def _build_gate0_smoke_cell() -> dict:
     code = '''if RUN_PREFLIGHT_TESTS:
-    print("=== [Gate 0] Running Offline Preflight Unit Tests ===")
+    mode_lbl = "fast preflight (~1s)" if PREFLIGHT_FAST_ONLY else "full suite"
+    print(f"=== [Gate 0] Running Offline Preflight Unit Tests ({mode_lbl}) ===")
+    preflight_cmd = [
+        sys.executable,
+        "-W",
+        "ignore::DeprecationWarning",
+        "-W",
+        "ignore::ImportWarning",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        *(["-p", "test_cbarr_preflight.py"] if PREFLIGHT_FAST_ONLY else []),
+        "-v",
+    ]
     run_logged_loop(
         "Gate 0: Preflight Tests",
         run_and_tee,
-        [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
+        preflight_cmd,
+        push=False,
     )
 
 if RUN_LIVE_SMOKE:
@@ -940,8 +989,19 @@ if RUN_LIVE_SMOKE:
         run_logged_loop(
             "Step 0a: Live GPU 12-Item Smoke",
             run_and_tee,
-            [sys.executable, "scripts/run_smoke_test.py", "--live-gpu", "--resume", "--models", *smoke_models],
-        )'''
+            [
+                sys.executable,
+                "scripts/run_smoke_test.py",
+                "--live-gpu",
+                "--resume",
+                "--out-dir",
+                str(OUT_DIR),
+                "--models",
+                *smoke_models,
+            ],
+            push=False,
+        )
+        RAN_LIVE_SMOKE_THIS_RUN = True'''
     return _code_cell("cbarr-gate0-smoke", code)
 
 
@@ -1231,6 +1291,7 @@ if RUN_PHASE7_ANALYSIS:
             status="FAILED (at Phase 7)",
             stage_dur_sec=time.perf_counter() - t_p7,
             stage_ok=False,
+            push=False,
             notes=f"{type(exc).__name__}: {exc}",
         )
         raise

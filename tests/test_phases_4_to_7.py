@@ -365,6 +365,7 @@ class TestPhases4To7(unittest.TestCase):
             md_txt = md_log.read_text(encoding="utf-8")
             self.assertEqual(md_txt.count("### Run `test_run_001`"), 1)
             self.assertIn("PASSED", md_txt)
+            self.assertNotIn("Gate-3 Live 12-Item Smoke Check", md_txt)
             self.assertIn("Training & Experiment Parameters", md_txt)
             self.assertIn("Calibration & Gate-2 Classifier Results", md_txt)
             self.assertIn("Evaluation Matrix & Section 6 Diagnostics", md_txt)
@@ -444,6 +445,7 @@ class TestPhases4To7(unittest.TestCase):
             ),
             "C_BARR_5_Combine_Analyze.ipynb": (
                 "PIPELINE_MODE = 'combine_analyze'",
+                "RUN_PREFLIGHT_TESTS = False",
                 "RUN_CALIBRATE_ONLY = False",
                 "RUN_PRIMARY_MATRIX = False",
                 "RUN_SCALE_SWEEP = False",
@@ -478,6 +480,12 @@ class TestPhases4To7(unittest.TestCase):
             "--no-ledger",
             "NOTEBOOK_CODE_VERSION",
             "REPO_CODE_VERSION",
+            "STRICT_NOTEBOOK_VERSION_MATCH",
+            "PREFLIGHT_FAST_ONLY",
+            "RAN_LIVE_SMOKE_THIS_RUN",
+            "was retired or renamed",
+            "ignore::DeprecationWarning",
+            "--report-json",
             "scripts.versioning",
             "run_manifest.json",
             "results_manifest.json",
@@ -670,6 +678,54 @@ class TestPhases4To7(unittest.TestCase):
             txt = cpath.read_text(encoding="utf-8")
             self.assertIn("torch==", txt)
             self.assertIn("transformers==", txt)
+
+            rpath = pathlib.Path(td) / "nested" / "kernel_rep.json"
+            from scripts import setup_fast_kernels
+
+            prev_argv = sys.argv
+            try:
+                sys.argv = ["setup_fast_kernels.py", "--mode", "off", "--json", "--report-json", str(rpath)]
+                setup_fast_kernels.main()
+            finally:
+                sys.argv = prev_argv
+            rep = json.loads(rpath.read_text(encoding="utf-8"))
+            self.assertEqual(rep["mode"], "off")
+            self.assertIn("actions", rep)
+            self.assertIn("decision_reason", rep)
+
+    def test_log_experiment_smoke_report_filtering_and_na(self) -> None:
+        """Smoke tables only appear when explicitly provided and use N/A for non-SmolLM3 frozen date."""
+        from scripts.log_experiment import _extract_smoke_report, _render_run_markdown
+
+        # Static repo fixture must NOT leak into runs that omit --smoke-report
+        self.assertEqual(_extract_smoke_report(ROOT, ROOT / "outputs", ""), [])
+        smoke_fixture = ROOT / "outputs" / "smoke_test_gate3_report.json"
+        rows = _extract_smoke_report(ROOT, ROOT / "outputs", str(smoke_fixture))
+        self.assertEqual(len(rows), 2)
+
+        hw = {"gpu_count": 0, "gpu_name": "CPU", "cuda_available": False, "torch": "2.x", "transformers": "5.x", "fla_available": False, "causal_conv1d_available": False}
+        md = _render_run_markdown(
+            run_id="smoke_na_test",
+            status="PASSED",
+            loop_name="Step 0a",
+            ts_utc="2026-11-16 00:00:00 UTC",
+            git_rev="abc1234",
+            total_sec=1.0,
+            hw=hw,
+            command_clean="test",
+            rel_log="",
+            notes_clean="",
+            training_params={},
+            stage_timings=[],
+            smoke_rows=rows,
+            calibrations=[],
+            matrix_loops=[],
+            w7_items=[],
+            model_rows=[],
+            code_version="0.5.3",
+        )
+        self.assertIn("| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |", md)
+        self.assertIn("| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |", md)
 
     def test_logfmt_highlighting_toggle(self) -> None:
         """Log formatter emits ANSI highlights when CBARR_COLOR=1 and clean text under NO_COLOR/0."""

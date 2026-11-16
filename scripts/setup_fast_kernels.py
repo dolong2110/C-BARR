@@ -267,8 +267,18 @@ def main() -> None:
         action="store_true",
         help="Emit JSON only without highlighted banner.",
     )
+    parser.add_argument(
+        "--report-json",
+        type=str,
+        default="",
+        help="Optional path to write the JSON kernel diagnostic report.",
+    )
     args = parser.parse_args()
     rep = setup_and_verify_kernels(mode=args.mode, allow_source_build=args.allow_source_build)
+    if args.report_json:
+        rep_path = pathlib.Path(args.report_json)
+        rep_path.parent.mkdir(parents=True, exist_ok=True)
+        rep_path.write_text(json.dumps(rep, indent=2) + "\n", encoding="utf-8")
     if not args.json:
         fla_tag = hl("ACTIVE (Triton)", "green") if rep["fla_active"] else hl("PYTORCH FALLBACK", "yellow")
         cc_tag = (
