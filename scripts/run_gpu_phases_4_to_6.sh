@@ -56,6 +56,7 @@ set -euo pipefail
 
 export PYTHONUNBUFFERED=1
 export CBARR_COLOR="${CBARR_COLOR:-0}"
+export TRITON_DEFAULT_FP_FUSION="${TRITON_DEFAULT_FP_FUSION:-1}"
 
 PART_MODE="all"
 SETUP_MODE="off"
@@ -450,6 +451,8 @@ fi
 RUN_LOG="${LOG_DIR}/cbarr_${RUN_ID}.log"
 TIMINGS_FILE="${LOG_DIR}/timings_${RUN_ID}.jsonl"
 PARAMS_FILE="${LOG_DIR}/params_${RUN_ID}.json"
+export CBARR_RUN_ID="$RUN_ID"
+export CBARR_LOG_DIR="$LOG_DIR"
 PIPELINE_START_EPOCH="$(date -u +%s)"
 CURRENT_STAGE="Init"
 FINALIZED=0
@@ -458,6 +461,33 @@ log_banner() {
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "[$ts] $*" | tee -a "$RUN_LOG"
+}
+
+record_stage_timing() {
+  local stage_name="$1"
+  local status_str="$2"
+  local dur_sec="$3"
+  "$PY_BIN" -c "
+import json, pathlib, sys
+rec = {'stage': sys.argv[1], 'status': sys.argv[2], 'duration_sec': float(sys.argv[3])}
+with pathlib.Path(sys.argv[4]).open('a', encoding='utf-8') as f:
+    f.write(json.dumps(rec) + '\n')
+" "$stage_name" "$status_str" "$dur_sec" "$TIMINGS_FILE"
+}
+
+select_gpu_pool_slots() {
+  local tmp_err out rc=0
+  tmp_err="$(mktemp "${LOG_DIR}/.gpu_pool_${RUN_ID}_XXXXXX.err")"
+  set +e
+  out="$("$PY_BIN" scripts/gpu_pool.py "$@" 2>"$tmp_err")"
+  rc=$?
+  set -e
+  if [ -s "$tmp_err" ]; then
+    cat "$tmp_err" | tee -a "$RUN_LOG" >&2
+  fi
+  rm -f "$tmp_err"
+  printf '%s' "$out"
+  return "$rc"
 }
 
 check_git_sync_readiness() {
@@ -528,17 +558,42 @@ if torch.cuda.is_available():
     fi
   fi
   if [ "$need_setup" -eq 1 ]; then
-    local had_venv=0
+    local had_venv=0 setup_t0 setup_t1 setup_dur setup_rc=0
     [ -x ".venv/bin/python" ] && had_venv=1
+    setup_t0="$(date -u +%s)"
     log_banner "=== [Step 0: Environment Setup & Kernel Provisioning] ==="
+    set +e
     PYTHON_BIN="$PY_BIN" bash scripts/setup_env.sh 2>&1 | tee -a "$RUN_LOG"
+    setup_rc=$?
+    set -e
+    setup_t1="$(date -u +%s)"
+    setup_dur=$((setup_t1 - setup_t0))
     if [ "$had_venv" -eq 0 ] && [ -x ".venv/bin/python" ]; then
       PY_BIN=".venv/bin/python"
     fi
+    if [ "$setup_rc" -eq 0 ]; then
+      record_stage_timing "Step 0: Environment Setup & Kernel Provisioning" "PASS" "$setup_dur"
+    else
+      record_stage_timing "Step 0: Environment Setup & Kernel Provisioning" "FAIL(exit=${setup_rc})" "$setup_dur"
+      return "$setup_rc"
+    fi
   fi
   if [ "$DATA_DIR" = "data" ] && [ ! -f "${DATA_DIR}/manifest_sha256.json" ]; then
+    local frz_t0 frz_t1 frz_dur frz_rc=0
+    frz_t0="$(date -u +%s)"
     log_banner "=== [Step 0: Freezing Deterministic Splits (${DATA_DIR})] ==="
+    set +e
     "$PY_BIN" data/freeze_datasets.py 2>&1 | tee -a "$RUN_LOG"
+    frz_rc=$?
+    set -e
+    frz_t1="$(date -u +%s)"
+    frz_dur=$((frz_t1 - frz_t0))
+    if [ "$frz_rc" -eq 0 ]; then
+      record_stage_timing "Step 0: Freeze Deterministic Splits" "PASS" "$frz_dur"
+    else
+      record_stage_timing "Step 0: Freeze Deterministic Splits" "FAIL(exit=${frz_rc})" "$frz_dur"
+      return "$frz_rc"
+    fi
   fi
   "$PY_BIN" -c "import pathlib, sys; from scripts.run_matrix import verify_manifest_integrity; m = verify_manifest_integrity(pathlib.Path(sys.argv[1])); print(f'Verified {len(m)} frozen dataset splits in {sys.argv[1]}')" "$DATA_DIR" 2>&1 | tee -a "$RUN_LOG"
 }
@@ -681,8 +736,10 @@ MATRIX_PARAM_FLAGS=(
   --params-json "@${PARAMS_FILE}"
   --step-checkpoint-every "$CHECKPOINT_EVERY"
 )
+MATRIX_CACHED_PARAM_FLAGS=("${MATRIX_PARAM_FLAGS[@]}")
 if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
   MATRIX_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
+  MATRIX_CACHED_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
   if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ]; then
     MATRIX_PARAM_FLAGS+=(--git-push)
     if [ -n "$GIT_BRANCH" ]; then
@@ -712,23 +769,12 @@ payload = {
 pathlib.Path(sys.argv[16]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 " "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE"
 
-record_stage_timing() {
-  local stage_name="$1"
-  local status_str="$2"
-  local dur_sec="$3"
-  "$PY_BIN" -c "
-import json, pathlib, sys
-rec = {'stage': sys.argv[1], 'status': sys.argv[2], 'duration_sec': float(sys.argv[3])}
-with pathlib.Path(sys.argv[4]).open('a', encoding='utf-8') as f:
-    f.write(json.dumps(rec) + '\n')
-" "$stage_name" "$status_str" "$dur_sec" "$TIMINGS_FILE"
-}
-
 checkpoint_exp_log() {
   local loop_label="$1"
   local run_status="$2"
   local allow_push="${3:-1}"
-  local now_end total_sec md_args=() push_args=() smoke_args=()
+  local run_notes="${4:-}"
+  local now_end total_sec md_args=() push_args=() smoke_args=() notes_args=()
   now_end="$(date -u +%s)"
   total_sec=$((now_end - PIPELINE_START_EPOCH))
   if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
@@ -747,6 +793,9 @@ checkpoint_exp_log() {
       smoke_args=(--smoke-report "outputs/smoke_test_gate3_report.json")
     fi
   fi
+  if [ -n "$run_notes" ]; then
+    notes_args=(--notes "$run_notes")
+  fi
   "$PY_BIN" scripts/log_experiment.py \
     --run-id "$RUN_ID" \
     --status "$run_status" \
@@ -758,6 +807,7 @@ checkpoint_exp_log() {
     --params-json "@${PARAMS_FILE}" \
     --total-sec "$total_sec" \
     --upsert \
+    ${notes_args[@]+"${notes_args[@]}"} \
     ${smoke_args[@]+"${smoke_args[@]}"} \
     ${md_args[@]+"${md_args[@]}"} \
     ${push_args[@]+"${push_args[@]}"} 2>&1 | tee -a "$RUN_LOG" || true
@@ -769,7 +819,7 @@ run_stage() {
   CURRENT_STAGE="$stage_name"
   local t0 t1 dur rc stage_push=1
   case "$stage_name" in
-    "Gate 0:"*|"Step 0a:"*|"Unpack "*|"Submission Audit"*|"GitHub Sync"*) stage_push=0 ;;
+    "Gate 0:"*|"Step 0a:"*|"Unpack "*|"Submission Audit"*|"GitHub Sync"*|*" (cached)") stage_push=0 ;;
   esac
   t0="$(date -u +%s)"
   log_banner "=== [$stage_name] START ==="
@@ -791,21 +841,43 @@ run_stage() {
   fi
 }
 
+_extract_failure_notes() {
+  "$PY_BIN" - "$RUN_LOG" <<'PY' 2>/dev/null || true
+import pathlib, re, sys
+log_p = pathlib.Path(sys.argv[1])
+if not log_p.is_file():
+    sys.exit(0)
+lines = log_p.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+cleaned = [re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", ln).strip() for ln in lines]
+cleaned = [ln for ln in cleaned if ln and not ln.startswith("[git-push]") and not ln.startswith("[log_experiment]")]
+err_pat = re.compile(
+    r"OutOfMemoryError|CUDA out of memory|Traceback\s*\(|RuntimeError:|ValueError:|"
+    r"FileNotFoundError:|AssertionError:|CalledProcessError:|command not found|\bFAILED\b|\[ERROR\]|ERROR:",
+    re.IGNORECASE,
+)
+hits = [ln for ln in cleaned if err_pat.search(ln)]
+picked = hits[-3:] if hits else cleaned[-3:]
+summary = " | ".join(picked).replace("`", "'")
+print(summary[:320])
+PY
+}
+
 finalize_run() {
   local rc=$?
   if [ "$FINALIZED" -eq 1 ]; then
     return
   fi
   FINALIZED=1
-  local t_end total_sec status_str
+  local t_end total_sec status_str fail_notes=""
   t_end="$(date -u +%s)"
   total_sec=$((t_end - PIPELINE_START_EPOCH))
   if [ "$rc" -eq 0 ]; then
     status_str="PASSED"
   else
     status_str="FAILED (exit=${rc} at ${CURRENT_STAGE})"
+    fail_notes="$(_extract_failure_notes)"
   fi
-  checkpoint_exp_log "$CURRENT_STAGE" "$status_str"
+  checkpoint_exp_log "$CURRENT_STAGE" "$status_str" 1 "$fail_notes"
   log_banner "Run ${RUN_ID} finished with status=${status_str} (total=${total_sec}s). Full log: ${RUN_LOG}"
 }
 # Persist final PASSED/FAILED status, hardware diagnostics, and total wall time even on unexpected abort
@@ -837,7 +909,7 @@ run_matrix_sharded() {
 
     if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
       log_banner "=== [$stage_name] All items already cached — skipping GPU launch ==="
-      run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+      run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_CACHED_PARAM_FLAGS[@]}"
       return $?
     fi
 
@@ -847,7 +919,7 @@ run_matrix_sharded() {
     local picked_single_gpu=""
     if [ "$IS_MOCK" -eq 0 ] && [ "$SHARDS_ARG" = "auto" ]; then
       local live_slots=""
-      if ! live_slots="$("$PY_BIN" scripts/gpu_pool.py \
+      if ! live_slots="$(select_gpu_pool_slots \
         --model "$model_id" \
         --candidates "$PINNED_GPU_CSV" \
         --workers-per-gpu "$WORKERS_PER_GPU_ARG" \
@@ -986,9 +1058,10 @@ for pkg in ('fla', 'causal_conv1d'):
       smoke_args=(--models "${MODELS_ARG[@]}")
     fi
     if "$PY_BIN" scripts/run_smoke_test.py --check-cached --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"} >/dev/null 2>&1; then
-      run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+      log_banner "=== [Step 0a: Live GPU 12-Item Smoke] All smoke items already cached — skipping GPU launch ==="
+      run_stage "Step 0a: Live GPU 12-Item Smoke (cached)" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
     else
-      if ! smoke_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+      if ! smoke_gpu="$(select_gpu_pool_slots --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
         record_stage_timing "Step 0a: Live GPU 12-Item Smoke" "FAIL(no_free_gpu)" 0
         log_banner "=== [Step 0a: Live GPU 12-Item Smoke] FAILED: no GPU with sufficient free VRAM became available ==="
         return 1
@@ -1047,13 +1120,13 @@ run_w7_stage() {
 
   if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" --check-cached >/dev/null 2>&1; then
     log_banner "=== [W7: Prefill MLP Probe (${w7_model})] Using cached .npz features — skipping GPU launch ==="
-    run_stage "W7: Prefill MLP Probe (${w7_model})" \
+    run_stage "W7: Prefill MLP Probe (${w7_model}) (cached)" \
       "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR"
     return $?
   fi
 
   if [ "$IS_MOCK" -eq 0 ]; then
-    if ! mlp_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+    if ! mlp_gpu="$(select_gpu_pool_slots --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
       record_stage_timing "W7: Prefill MLP Probe (${w7_model})" "FAIL(no_free_gpu)" 0
       log_banner "=== [W7: Prefill MLP Probe (${w7_model})] FAILED: no GPU with sufficient free VRAM became available ==="
       return 1

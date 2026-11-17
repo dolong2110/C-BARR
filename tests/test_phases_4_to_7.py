@@ -3450,8 +3450,9 @@ class TestPhases4To7(unittest.TestCase):
             spawn_cmds: list[list[str]] = []
 
             class _FakePopen:
-                def __init__(self, cmd: list[str], env: dict[str, str] | None = None) -> None:
+                def __init__(self, cmd: list[str], env: dict[str, str] | None = None, **_kwargs) -> None:
                     spawn_cmds.append(cmd)
+                    self.stdout = None
                     self._rc = 1 if len(spawn_cmds) == 1 else 0
                     s_idx = int(cmd[cmd.index("--shard-idx") + 1])
                     n_sh = int(cmd[cmd.index("--num-shards") + 1])
@@ -3547,6 +3548,220 @@ class TestPhases4To7(unittest.TestCase):
             self.assertGreaterEqual(counts["caches_unpacked"], 5)
             self.assertTrue((unpacked_out / "Qwen__Qwen3.5-4B" / "diag_controls_cache.jsonl").is_file())
             self.assertTrue((unpacked_out / "Qwen__Qwen3.5-4B" / "ext_deltanet_blend_cache.jsonl").is_file())
+
+    def test_v0514_logging_dedup_dirty_guard_and_blend_logs(self) -> None:
+        import copy
+        import os
+        from typing import Any
+        from unittest import mock
+
+        from scripts import ext_deltanet_blend as edb
+        from scripts.log_experiment import (
+            _collect_training_params,
+            _detect_git_rev,
+            _has_post_smoke_stage,
+            _render_run_markdown,
+        )
+
+        # 1. Code-only git rev ignores EXPERIMENT_LOG.md & outputs/* modifications
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = pathlib.Path(td) / "repo"
+            repo_dir.mkdir()
+            subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "t"], check=True)
+            subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+            (repo_dir / "scripts").mkdir()
+            (repo_dir / "outputs" / "Qwen__Qwen3.5-4B").mkdir(parents=True)
+            (repo_dir / "VERSION").write_text("0.5.14\n", encoding="utf-8")
+            (repo_dir / "scripts" / "x.py").write_text("x = 1\n", encoding="utf-8")
+            (repo_dir / "EXPERIMENT_LOG.md").write_text("# Log\n", encoding="utf-8")
+            (repo_dir / "outputs" / "Qwen__Qwen3.5-4B" / "matrix_summary.json").write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", "init"], check=True, capture_output=True)
+
+            # Mutating outputs & EXPERIMENT_LOG.md must NOT mark _detect_git_rev as -dirty
+            (repo_dir / "EXPERIMENT_LOG.md").write_text("# Updated\n", encoding="utf-8")
+            (repo_dir / "outputs" / "Qwen__Qwen3.5-4B" / "matrix_summary.json").write_text('{"a": 1}\n', encoding="utf-8")
+            rev_clean = _detect_git_rev(repo_dir)
+            self.assertFalse(rev_clean.endswith("-dirty"), rev_clean)
+
+            # Mutating tracked code under scripts/ MUST mark _detect_git_rev as -dirty
+            (repo_dir / "scripts" / "x.py").write_text("x = 2\n", encoding="utf-8")
+            rev_dirty = _detect_git_rev(repo_dir)
+            self.assertTrue(rev_dirty.endswith("-dirty"), rev_dirty)
+
+        # 2. _collect_training_params ignores stale run provenance & dedup omits identical diag491 Eval-450 table
+        collected = _collect_training_params(
+            {"seed": 42},
+            [{"training_params": {"seed": 42, "git_rev": "91efc2f", "run_id": "", "code_version": "0.5.8", "dtype": "bfloat16"}}],
+            [],
+        )
+        self.assertNotIn("git_rev", collected)
+        self.assertNotIn("run_id", collected)
+        self.assertNotIn("code_version", collected)
+        self.assertEqual(collected["dtype"], "bfloat16")
+        self.assertFalse(_has_post_smoke_stage([{"stage": "Gate 0: Preflight Tests", "status": "PASS", "duration_sec": 1.0}], "Step 0a: Live GPU 12-Item Smoke"))
+        self.assertTrue(_has_post_smoke_stage([{"stage": "Phase 4 / W4: Qwen/Qwen3.5-4B (strict341)", "status": "PASS", "duration_sec": 10.0}], "W7: DeltaNet Blend"))
+
+        def _fake_sys(macro: float) -> dict[str, object]:
+            return {
+                "slice_acc": {"gsm8k_easy": macro, "gsm8k_hard": macro, "csqa": macro, "ifeval_planning": macro, "ifeval_precision": macro, "ifeval_conflict": macro},
+                "macro_acc": macro,
+                "oaa_250": macro,
+                "auc_oaa_2048": macro,
+                "u_005": macro - 0.05,
+                "mean_t_tot": 300.0,
+                "mean_calls": 1.0,
+                "p_holm_vs_b1b": 1e-10,
+            }
+
+        identical_sys = {"B0": _fake_sys(0.84), "B1b": _fake_sys(0.30), "M2": _fake_sys(0.85)}
+        rep_s = {
+            "model": "Qwen/Qwen3.5-4B",
+            "diag_pool": "strict341",
+            "diag_n_items": 341,
+            "runtime": {"dtype": "torch.bfloat16"},
+            "timing_sec": {"total_wall": 10.0, "calibration": 0.1, "eval_matrix": 0.3, "section6_diagnostics": 0.1},
+            "calibrated_params": {"tau_prob": 0.65, "m2_escalation_rate_dev": 0.2},
+            "oracle_and_4regime": {"helped_rate": 0.01, "hurt_rate": 0.5, "flip_rate": 0.51, "tie_pass_rate": 0.35, "tie_fail_rate": 0.14, "oracle_summary": _fake_sys(0.92)},
+            "section6_diagnostics": {"causal_attribution": {"rho_recency": 0.96, "rho_interference": 0.04}, "A1_strip": {"n_ehurt": 237, "overall_recovery_pct": 100.0}},
+            "systems": identical_sys,
+            "auxiliary_systems": {},
+        }
+        rep_d = copy.deepcopy(rep_s)
+        rep_d["diag_pool"] = "diag491"
+        rep_d["diag_n_items"] = 491
+        rep_d["section6_diagnostics"]["A1_strip"]["n_ehurt"] = 336
+        hw = {"gpu_count": 0, "gpu_name": "CPU", "cuda_available": False, "torch": "2.x", "transformers": "5.x", "fla_available": False, "causal_conv1d_available": False}
+        md_dedup = _render_run_markdown(
+            run_id="dedup_test",
+            status="RUNNING (after diag491)",
+            loop_name="Phase 4",
+            ts_utc="2026-11-17 00:00:00 UTC",
+            git_rev="abc1234",
+            total_sec=10.0,
+            hw=hw,
+            command_clean="test",
+            rel_log="",
+            notes_clean="",
+            training_params={},
+            stage_timings=[],
+            smoke_rows=[],
+            calibrations=[],
+            matrix_loops=[rep_s, rep_d],
+            w7_items=[],
+            model_rows=[],
+            code_version="0.5.14",
+        )
+        self.assertEqual(md_dedup.count("| Variant | Macro |"), 1)
+        self.assertIn("Eval-450 table identical to `strict341` above (omitted duplicate table).", md_dedup)
+
+        # 3. ext_deltanet_blend streams worker logs into per-worker log files & surfaces failure tail
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_out = tmp / "outputs"
+            tmp_logs = tmp / "logs"
+            m_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            m_dir.mkdir(parents=True)
+            _write_jsonl(
+                m_dir / "diag_ehurt_cache.jsonl",
+                [{"item": {"uid": "eh_0", "prompt": "p"}, "b0": {"z": 1}, "b1b": {"z": 0, "t_think": "think"}}],
+            )
+            dummy_blend_worker = tmp / "dummy_blend_worker.py"
+            dummy_blend_worker.write_text(
+                "import sys\n"
+                "print('[deltanet_blend shard=0/1] Model=Qwen/Qwen3.5-4B | items=1 remaining (1 total)', flush=True)\n"
+                "print('Simulated blend OOM on physical GPU 3', file=sys.stderr, flush=True)\n"
+                "sys.exit(2)\n",
+                encoding="utf-8",
+            )
+            orig_popen = subprocess.Popen
+
+            def _piped_dummy_popen(cmd: list[str], **kwargs) -> subprocess.Popen[Any]:
+                remapped = [sys.executable, str(dummy_blend_worker)]
+                return orig_popen(remapped, **kwargs)
+
+            with (
+                mock.patch("torch.cuda.is_available", return_value=True),
+                mock.patch.object(edb, "_detect_auto_slots", return_value=["3"]),
+                mock.patch("subprocess.Popen", side_effect=_piped_dummy_popen),
+                mock.patch.dict(os.environ, {"CBARR_LOG_DIR": str(tmp_logs), "CBARR_RUN_ID": "blend_log_test"}),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "ext_deltanet_blend.py",
+                        "--model",
+                        "Qwen/Qwen3.5-4B",
+                        "--out-dir",
+                        str(tmp_out),
+                        "--alphas",
+                        "0.5",
+                        "--max-retries",
+                        "0",
+                    ],
+                ),
+            ):
+                with self.assertRaises(RuntimeError):
+                    edb.main()
+            w_log_p = tmp_logs / "deltanet_blend_blend_log_test_a1_gpu0_Qwen__Qwen3.5-4B.log"
+            self.assertTrue(w_log_p.is_file())
+            w_log_txt = w_log_p.read_text(encoding="utf-8")
+            self.assertIn("dev=3", w_log_txt)
+            self.assertIn("Simulated blend OOM on physical GPU 3", w_log_txt)
+
+        # 4. Early Step-0a FAILED run omits stale calibration/matrix/progress from prior runs in out_dir
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_out = tmp / "outputs"
+            m_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            m_dir.mkdir(parents=True)
+            (m_dir / "calibration_summary.json").write_text(
+                json.dumps(
+                    {
+                        "model": "Qwen/Qwen3.5-4B",
+                        "calibrated_params": {"tau_prob": 0.65, "tau_h_high": 2.5, "m2_escalation_rate_dev": 0.2, "coef": [0.1] * 5, "intercept": 0.0},
+                        "training_params": {"git_rev": "old999", "run_id": "old_run", "seed": 42},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (m_dir / "progress_checkpoint.json").write_text(
+                json.dumps({"model": "Qwen/Qwen3.5-4B", "diag_pool": "strict341", "split": "eval_450", "done": 10, "total": 450, "metrics": "x"}),
+                encoding="utf-8",
+            )
+            md_early = tmp / "EXP.md"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "log_experiment.py"),
+                    "--run-id",
+                    "early_fail_run",
+                    "--status",
+                    "FAILED (exit=1 at Step 0a: Live GPU 12-Item Smoke)",
+                    "--loop-name",
+                    "Step 0a: Live GPU 12-Item Smoke",
+                    "--command",
+                    "test",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--md-log",
+                    str(md_early),
+                    "--notes",
+                    "torch.OutOfMemoryError: mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            early_txt = md_early.read_text(encoding="utf-8")
+            self.assertNotIn("Calibration & Gate-2 Classifier Results", early_txt)
+            self.assertNotIn("Live Step Checkpoints", early_txt)
+            self.assertIn('"run_id": "early_fail_run"', early_txt)
+            self.assertNotIn("old999", early_txt)
+            self.assertIn("torch.OutOfMemoryError: mock", early_txt)
+
+        # 5. Bash syntax audit passes on updated runner script
+        subprocess.run(["bash", "-n", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh")], check=True)
 
 
 if __name__ == "__main__":

@@ -45,8 +45,23 @@ def _detect_git_rev(root: pathlib.Path) -> str:
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
+        # Check only code/data paths so mid-run output JSONs and EXPERIMENT_LOG.md edits
+        # do not mark clean runs as '-dirty'.
         dirty = subprocess.check_output(
-            ["git", "-C", str(root), "status", "--porcelain"],
+            [
+                "git",
+                "-C",
+                str(root),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+                "--",
+                "VERSION",
+                "src",
+                "scripts",
+                "data",
+                "paper/main.tex",
+            ],
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
@@ -329,14 +344,61 @@ def _collect_training_params(
 ) -> dict[str, Any]:
     """Merges global config params with runtime/hyperparameters written by calibration/matrix runs."""
     merged: dict[str, Any] = dict(cli_params)
+    skip_keys = {"model", "diag_pool", "run_id", "git_rev", "code_version"}
     for src in [*calibrations, *matrix_loops]:
         tp = src.get("training_params")
         if isinstance(tp, dict):
             for k, v in tp.items():
-                if k in ("model", "diag_pool"):
+                if k in skip_keys:
                     continue
                 merged.setdefault(k, v)
     return merged
+
+
+def _has_post_smoke_stage(stage_timings: list[dict[str, Any]], loop_name: str) -> bool:
+    """Returns True if execution progressed past Gate 0 / Step 0a into calibration, matrix, W7, or Phase 7."""
+    tokens = ("step 0b", "calibrat", "phase ", "matrix", "eval-450", "section 6", "w7:", "final")
+    candidates = [str(st.get("stage", "")) for st in stage_timings] + [str(loop_name or "")]
+    return any(any(tok in cand.lower() for tok in tokens) for cand in candidates)
+
+
+def _eval_table_signature(report: dict[str, Any]) -> tuple[Any, ...]:
+    """Builds a comparable signature over Eval-450 rows to avoid duplicating identical pool tables."""
+    systems = report.get("systems", {})
+    aux = report.get("auxiliary_systems", {})
+    oracle_sum = report.get("oracle_and_4regime", {}).get("oracle_summary", {})
+    sig_rows: list[tuple[Any, ...]] = []
+    for k in VARIANT_DISPLAY_ORDER:
+        if k in systems:
+            t = systems[k]
+            sa = t.get("slice_acc", {})
+            sig_rows.append(
+                (
+                    k,
+                    round(float(t.get("macro_acc", 0.0)), 6),
+                    tuple((sk, round(float(sv), 6)) for sk, sv in sorted(sa.items())),
+                    round(float(t.get("oaa_250", 0.0)), 6),
+                    round(float(t.get("auc_oaa_2048", 0.0)), 6),
+                    round(float(t.get("u_005", 0.0)), 6),
+                    round(float(t.get("mean_t_tot", 0.0)), 2),
+                    round(float(t.get("mean_calls", 1.0)), 4),
+                    round(float(t.get("p_holm_vs_b1b", -1.0)), 12),
+                )
+            )
+    for ak in ("M2_Prec", "M2_B512"):
+        if ak in aux:
+            t = aux[ak]
+            sig_rows.append(
+                (
+                    ak,
+                    round(float(t.get("macro_acc", 0.0)), 6),
+                    round(float(t.get("oaa_250", 0.0)), 6),
+                    round(float(t.get("mean_t_tot", 0.0)), 2),
+                )
+            )
+    if isinstance(oracle_sum, dict) and "macro_acc" in oracle_sum:
+        sig_rows.append(("Oracle_UB", round(float(oracle_sum["macro_acc"]), 6)))
+    return tuple(sig_rows)
 
 
 def _format_variant_table_lines(report: dict[str, Any]) -> list[str]:
@@ -522,6 +584,7 @@ def _render_run_markdown(
 
     if matrix_loops:
         lines.append("\n#### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)")
+        seen_eval_tables: dict[tuple[str, tuple[Any, ...]], str] = {}
         for rep in matrix_loops:
             rt = rep.get("runtime", {})
             tsec = rep.get("timing_sec", {})
@@ -547,8 +610,9 @@ def _render_run_markdown(
                 if float(tp.get("temperature", 0.0) or 0.0) > 0.0
                 else ""
             )
+            pool_name = str(rep.get("diag_pool", "unknown"))
             lines.append(
-                f"\n- **`{rep['model']}` (`{rep.get('diag_pool', 'unknown')}`**, n_diag={rep.get('diag_n_items', 0)}) — "
+                f"\n- **`{rep['model']}` (`{pool_name}`**, n_diag={rep.get('diag_n_items', 0)}) — "
                 f"{ver_badge} | dtype=`{rt.get('dtype', 'n/a')}`{samp_badge}{st_badge} | wall=`{tsec.get('total_wall', 0):.1f}s` "
                 f"(calib={tsec.get('calibration', 0):.1f}s, eval={tsec.get('eval_matrix', 0):.1f}s, diag={tsec.get('section6_diagnostics', 0):.1f}s) | "
                 f"tau={cp.get('tau_prob', 0):.3f}, esc={100*cp.get('m2_escalation_rate_dev', 0):.1f}%"
@@ -568,7 +632,14 @@ def _render_run_markdown(
                 f"A2_swap={a2.get('overall_recovery_pct', 0):.1f}%, "
                 f"B3_cut={b3.get('overall_recovery_pct', 0):.1f}%"
             )
-            lines.extend(_format_variant_table_lines(rep))
+            eval_key = (str(rep.get("model", "")), _eval_table_signature(rep))
+            if eval_key in seen_eval_tables:
+                lines.append(
+                    f"  - *Eval-450 table identical to `{seen_eval_tables[eval_key]}` above (omitted duplicate table).*"
+                )
+            else:
+                seen_eval_tables[eval_key] = pool_name
+                lines.extend(_format_variant_table_lines(rep))
 
     if w7_items:
         lines.append("\n#### 6. Optional W7 Extensions")
@@ -841,18 +912,24 @@ def main() -> None:
     ts_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     smoke_rows = _extract_smoke_report(root, out_dir, args.smoke_report)
-    calibrations = _extract_calibrations(out_dir)
-    matrix_loops = _extract_matrix_loops(out_dir)
-    w7_items = _extract_w7_extensions(out_dir)
-    model_rows = _extract_model_summaries(out_dir)
-    live_progress = _extract_live_progress(out_dir)
-    stats_payload = _load_json_safe(out_dir / "stats_summary.json")
+    early_fail = args.status.startswith("FAILED") and not _has_post_smoke_stage(
+        stage_timings, args.loop_name
+    )
+    calibrations = [] if early_fail else _extract_calibrations(out_dir)
+    matrix_loops = [] if early_fail else _extract_matrix_loops(out_dir)
+    w7_items = [] if early_fail else _extract_w7_extensions(out_dir)
+    model_rows = [] if early_fail else _extract_model_summaries(out_dir)
+    live_progress = _extract_live_progress(out_dir) if args.status.startswith("RUNNING") else []
+    stats_payload = None if early_fail else _load_json_safe(out_dir / "stats_summary.json")
     version_audit = (
         stats_payload.get("version_audit")
         if isinstance(stats_payload, dict) and isinstance(stats_payload.get("version_audit"), dict)
         else None
     )
     training_params = _collect_training_params(cli_params, calibrations, matrix_loops)
+    training_params["run_id"] = args.run_id
+    training_params["code_version"] = code_version
+    training_params["git_rev"] = git_rev
 
     rel_log = _sanitize_text(args.log_file, root, token_val) if args.log_file else ""
     cmd_clean = _sanitize_text(args.command, root, token_val)

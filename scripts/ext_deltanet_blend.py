@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import codecs
+from datetime import datetime, timezone
 import json
 import os
 import pathlib
+import queue
+import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -324,6 +329,84 @@ def _filter_uncached_ehurt(
     ]
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_BLEND_ECHO_RE = re.compile(
+    r"\[deltanet_blend|completed\s+\d+/\d+|exiting cleanly|Traceback\s*\(|"
+    r"OutOfMemoryError|CUDA out of memory|RuntimeError:|ValueError:|FileNotFoundError:|"
+    r"\[ERROR\]|\[WARN\]|FAILED",
+    re.IGNORECASE,
+)
+
+
+def _stream_blend_worker_output(
+    s_idx: int,
+    proc: subprocess.Popen[Any],
+    log_path: pathlib.Path,
+    event_q: queue.Queue[tuple[int, str]],
+) -> None:
+    """Writes worker stdout/stderr cleanly to log_path and forwards milestone/error lines."""
+    stream = proc.stdout
+    if stream is None:
+        return
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    cur_line = ""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    is_binary = not hasattr(stream, "encoding")
+    fd = None
+    try:
+        fd = stream.fileno() if is_binary else None
+    except Exception:
+        fd = None
+
+    with log_path.open("a", encoding="utf-8", buffering=1) as log_fh:
+        while True:
+            try:
+                if fd is not None:
+                    chunk = os.read(fd, 4096)
+                    if not chunk:
+                        cur_line += decoder.decode(b"", final=True)
+                        break
+                    txt = decoder.decode(chunk, final=False)
+                else:
+                    raw_s = stream.read(4096)
+                    if not raw_s:
+                        break
+                    txt = raw_s if isinstance(raw_s, str) else raw_s.decode("utf-8", errors="replace")
+            except OSError:
+                break
+            if not txt:
+                continue
+            cur_line += txt
+            while "\n" in cur_line:
+                raw_seg, cur_line = cur_line.split("\n", 1)
+                collapsed = raw_seg.rstrip("\r").split("\r")[-1]
+                clean = _ANSI_ESCAPE_RE.sub("", collapsed).rstrip()
+                if clean:
+                    log_fh.write(clean + "\n")
+                    if _BLEND_ECHO_RE.search(clean):
+                        event_q.put((s_idx, clean))
+        if cur_line:
+            collapsed = cur_line.rstrip("\r").split("\r")[-1]
+            clean = _ANSI_ESCAPE_RE.sub("", collapsed).rstrip()
+            if clean:
+                log_fh.write(clean + "\n")
+                if _BLEND_ECHO_RE.search(clean):
+                    event_q.put((s_idx, clean))
+    try:
+        stream.close()
+    except OSError:
+        pass
+
+
+def _tail_log_lines(path: pathlib.Path, max_lines: int = 25) -> list[str]:
+    if not path.is_file():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+    except OSError:
+        return []
+
+
 def _terminate_procs(procs: list[tuple[int, subprocess.Popen[Any]]]) -> None:
     """Gracefully terminates active worker subprocesses so sibling partial shards can be harvested."""
     alive = [p for _, p in procs if p.poll() is None]
@@ -582,24 +665,38 @@ def main() -> None:
                     )
 
                 eff_shards = len(slot_gpus)
+                log_dir = pathlib.Path(os.environ.get("CBARR_LOG_DIR") or (pathlib.Path(args.out_dir) / "logs"))
+                log_dir.mkdir(parents=True, exist_ok=True)
+                run_id = os.environ.get("CBARR_RUN_ID", "").strip() or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
                 print(
                     f"[deltanet_blend] Attempt {attempt}/{max_attempts}: spawning {eff_shards} worker(s) on GPUs {slot_gpus} "
-                    f"for {len(uncached_items)}/{len(e_hurt)} remaining items x {len(args.alphas)} alphas...",
+                    f"for {len(uncached_items)}/{len(e_hurt)} remaining items x {len(args.alphas)} alphas "
+                    f"(logs: {log_dir}/deltanet_blend_{run_id}_a{attempt}_gpu{{0..{eff_shards - 1}}}_{tag}.log)...",
                     flush=True,
                 )
                 shard_dir.mkdir(parents=True, exist_ok=True)
                 procs: list[tuple[int, subprocess.Popen[Any]]] = []
+                worker_logs: dict[int, pathlib.Path] = {}
+                reader_threads: list[threading.Thread] = []
+                event_q: queue.Queue[tuple[int, str]] = queue.Queue()
                 failed_rc = 0
                 try:
                     for s_idx in range(eff_shards):
                         env = os.environ.copy()
                         if slot_gpus[s_idx] != "cpu":
                             env["CUDA_VISIBLE_DEVICES"] = slot_gpus[s_idx]
+                        env["PYTHONUNBUFFERED"] = "1"
                         for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                             env.setdefault(tvar, "4")
                         env.setdefault("TOKENIZERS_PARALLELISM", "false")
                         if prewarmed:
                             env.setdefault("HF_HUB_OFFLINE", "1")
+                        w_log = log_dir / f"deltanet_blend_{run_id}_a{attempt}_gpu{s_idx}_{tag}.log"
+                        worker_logs[s_idx] = w_log
+                        with w_log.open("a", encoding="utf-8") as lfh:
+                            lfh.write(
+                                f"[blend shard {s_idx}/{eff_shards} | dev={slot_gpus[s_idx]} | model={args.model}]\n"
+                            )
                         cmd = [
                             sys.executable,
                             str(pathlib.Path(__file__).resolve()),
@@ -621,10 +718,30 @@ def main() -> None:
                             cmd.append("--blend-conv-state")
                         if args.evict_think_kv:
                             cmd.append("--evict-think-kv")
-                        procs.append((s_idx, subprocess.Popen(cmd, env=env)))
+                        proc = subprocess.Popen(
+                            cmd,
+                            env=env,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                        )
+                        procs.append((s_idx, proc))
+                        if getattr(proc, "stdout", None) is not None:
+                            th = threading.Thread(
+                                target=_stream_blend_worker_output,
+                                args=(s_idx, proc, w_log, event_q),
+                                daemon=True,
+                            )
+                            th.start()
+                            reader_threads.append(th)
 
                     pending = list(procs)
                     while pending:
+                        while True:
+                            try:
+                                ev_idx, ev_line = event_q.get_nowait()
+                            except queue.Empty:
+                                break
+                            print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
                         still_running: list[tuple[int, subprocess.Popen[Any]]] = []
                         for s_idx, p in pending:
                             rc = p.poll()
@@ -632,21 +749,44 @@ def main() -> None:
                                 still_running.append((s_idx, p))
                             elif rc != 0:
                                 failed_rc = rc
+                                w_log = worker_logs[s_idx]
                                 print(
-                                    f"[deltanet_blend] Worker shard={s_idx}/{eff_shards} failed (exit={rc}); "
-                                    "terminating sibling workers and harvesting partial shards.",
+                                    f"[deltanet_blend] Worker shard={s_idx}/{eff_shards} (dev={slot_gpus[s_idx]}) "
+                                    f"failed (exit={rc}) — log: {w_log}",
                                     flush=True,
                                 )
                                 _terminate_procs(
                                     [item for item in pending if item[0] != s_idx]
                                 )
+                                for th in reader_threads:
+                                    th.join(timeout=2.0)
+                                while not event_q.empty():
+                                    ev_idx, ev_line = event_q.get_nowait()
+                                    print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                                tail = _tail_log_lines(w_log, max_lines=25)
+                                if tail:
+                                    print(f"--- Last lines of failed blend worker log ({w_log}) ---", flush=True)
+                                    for ln in tail:
+                                        print(f"  [Blend GPU{s_idx}!] {ln}", flush=True)
+                                    print("--- End failed blend worker log ---", flush=True)
                                 still_running = []
                                 break
                         pending = still_running
                         if pending:
-                            time.sleep(1.0)
+                            try:
+                                ev_idx, ev_line = event_q.get(timeout=0.5)
+                                print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                            except queue.Empty:
+                                pass
+                    for th in reader_threads:
+                        th.join(timeout=2.0)
+                    while not event_q.empty():
+                        ev_idx, ev_line = event_q.get_nowait()
+                        print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
                 finally:
                     _terminate_procs(procs)
+                    for th in reader_threads:
+                        th.join(timeout=1.0)
                     merged = _harvest_partial_blend_shards(blend_cache_path, shard_dir)
 
                 if failed_rc == 0:

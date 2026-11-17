@@ -576,6 +576,11 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
             cuda_dev = _cuda_for(s_idx)
             s_log = log_dir / f"cbarr_{args.run_id}_gpu{s_idx}_{slug}.log"
             shard_dir = model_dir / "shards" / f"shard_{s_idx}_of_{n_shards}"
+            s_log.parent.mkdir(parents=True, exist_ok=True)
+            with s_log.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    f"[{_utc_iso()}] [shard {s_idx}/{n_shards} | dev={cuda_dev} | model={args.model}]\n"
+                )
             cmd = [
                 *cmd_base,
                 "--shard-idx",
@@ -634,7 +639,8 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                 s_idx, kind, payload = -1, "", ""
 
             if kind == "line":
-                tag = hl(f"[GPU{s_idx}]", "cyan" if s_idx == 0 else "dim")
+                cuda_dev = states[s_idx].cuda_dev
+                tag = hl(f"[GPU{s_idx}](dev={cuda_dev})", "cyan" if s_idx == 0 else "dim")
                 print(f"{tag} {payload}", flush=True)
             elif kind == "exit":
                 remaining -= 1
