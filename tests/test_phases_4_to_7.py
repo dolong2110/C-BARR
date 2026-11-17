@@ -2993,6 +2993,91 @@ class TestPhases4To7(unittest.TestCase):
             )
             self.assertEqual(post_chk.returncode, 0)
 
+    def test_w7_deltanet_cache_fastpath_and_prefill_mlp_clean_labels(self) -> None:
+        from scripts import ext_deltanet_blend as edb
+        from scripts import ext_prefill_mlp as epm
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_data = tmp / "data"
+            tmp_out = tmp / "outputs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            model_dir = tmp_out / "Qwen__Qwen3.5-4B"
+            diag_p = model_dir / "diag_ehurt_cache.jsonl"
+            d_rows = _read_jsonl(diag_p)
+            d_rows[0]["b0"]["z"] = 1
+            d_rows[0]["b1b"]["z"] = 0
+            d_rows[0]["b1b"]["t_think"] = "think trace"
+            _write_jsonl(diag_p, d_rows)
+            uid0 = str(d_rows[0]["item"]["uid"])
+            _write_jsonl(
+                model_dir / "ext_deltanet_blend_cache.jsonl",
+                [
+                    {
+                        "uid": uid0,
+                        "alpha": 0.5,
+                        "blend_conv_state": False,
+                        "evict_think_kv": False,
+                        "n_blended_layers": 18,
+                        "n_blended_conv": 0,
+                        "n_evicted_kv": 0,
+                        "a_final": "ok",
+                        "grade": {"z": 1, "inhibition_strict_all": 1, "structural_strict_all": 1},
+                    }
+                ],
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_deltanet_blend.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--alphas",
+                    "0.5",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            blend_rep = json.loads((model_dir / "ext_deltanet_blend.json").read_text(encoding="utf-8"))
+            self.assertEqual(blend_rep["alphas"]["0.50"]["overall_recovery_pct"], 100.0)
+            self.assertEqual(edb._blend_key(uid0, 0.5, False, False)[1], "0.5000")
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_prefill_mlp.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            mlp_rep = json.loads((model_dir / "prefill_mlp_summary.json").read_text(encoding="utf-8"))
+            self.assertIn("best_tau", mlp_rep)
+            self.assertTrue(callable(epm.train_and_evaluate_prefill_mlp))
+
 
 if __name__ == "__main__":
     unittest.main()

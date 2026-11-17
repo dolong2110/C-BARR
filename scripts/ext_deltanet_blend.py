@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import time
 from typing import Any
@@ -277,94 +279,68 @@ def run_mock_blend_check(
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Optional W7: Interpolate DeltaNet recurrent/conv states and evict <think> KV on E_hurt."
-    )
-    parser.add_argument("--model", type=str, default="Qwen/Qwen3.5-4B")
-    parser.add_argument("--out-dir", type=str, default="outputs")
-    parser.add_argument("--alphas", type=float, nargs="+", default=[0.0, 0.25, 0.5, 0.75, 1.0])
-    parser.add_argument("--max-items", type=int, default=0, help="0 means all E_hurt items")
-    parser.add_argument(
-        "--blend-conv-state",
-        action="store_true",
-        help="Also linearly interpolate Gated DeltaNet 1D conv_states alongside recurrent_states.",
-    )
-    parser.add_argument(
-        "--evict-think-kv",
-        action="store_true",
-        help="Evict <think> tokens from full-attention GQA KV caches back to the prompt KV cache.",
-    )
-    parser.add_argument("--mock", action="store_true", help="Run CPU DynamicCache unit sweep only")
-    args = parser.parse_args()
+def _blend_key(uid: str, alpha: float, blend_conv: bool, evict_kv: bool) -> tuple[str, str, bool, bool]:
+    return (str(uid), f"{float(alpha):.4f}", bool(blend_conv), bool(evict_kv))
 
-    tag = args.model.replace("/", "__")
-    model_dir = pathlib.Path(args.out_dir) / tag
-    model_dir.mkdir(parents=True, exist_ok=True)
-    out_path = model_dir / "ext_deltanet_blend.json"
 
-    if args.mock:
-        res = run_mock_blend_check(
-            args.alphas,
-            blend_conv=args.blend_conv_state,
-            evict_think_kv=args.evict_think_kv,
+def _load_blend_cache(path: pathlib.Path) -> dict[tuple[str, str, bool, bool], dict[str, Any]]:
+    out: dict[tuple[str, str, bool, bool], dict[str, Any]] = {}
+    if not path.is_file():
+        return out
+    for rec in _load_jsonl(path):
+        k = _blend_key(
+            rec["uid"],
+            float(rec["alpha"]),
+            bool(rec.get("blend_conv_state", False)),
+            bool(rec.get("evict_think_kv", False)),
         )
-        out_path.write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
-        print(f"Saved mock DeltaNet blend check to {out_path}")
-        return
+        out[k] = rec
+    return out
 
-    cache_path = model_dir / "diag_ehurt_cache.jsonl"
-    if not cache_path.exists():
-        raise FileNotFoundError(f"Run scripts/run_matrix.py first to populate {cache_path}")
 
-    rows = _load_jsonl(cache_path)
-    e_hurt = [
-        r for r in rows if int(r["b0"]["z"]) == 1 and int(r["b1b"]["z"]) == 0 and r["b1b"]["t_think"]
-    ]
-    if args.max_items > 0:
-        e_hurt = e_hurt[: args.max_items]
+def _detect_auto_shards(model_id: str, n_items: int) -> tuple[int, list[str]]:
+    if not torch.cuda.is_available() or n_items <= 1:
+        return 1, ["0"]
+    raw_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if raw_vis:
+        vis = [x.strip() for x in raw_vis.split(",") if x.strip()]
+    else:
+        vis = [str(i) for i in range(torch.cuda.device_count())]
+    if len(vis) <= 1:
+        return 1, vis or ["0"]
+    try:
+        min_gb = min(
+            torch.cuda.get_device_properties(i).total_memory // (1024**3)
+            for i in range(torch.cuda.device_count())
+        )
+    except Exception:
+        min_gb = 16
+    wpg = 2 if (min_gb >= 32 and "9b" not in model_id.lower()) else 1
+    return min(n_items, len(vis) * wpg), vis
 
-    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False)
-    device, dtype = resolve_device_and_dtype("auto", "auto")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype, trust_remote_code=False
-    ).to(device)
-    model.eval()
 
-    eos_raw = tok.eos_token_id
-    eos_ids = set(eos_raw if isinstance(eos_raw, list) else [eos_raw])
-    for special in ("<|im_end|>", "<|endoftext|>"):
-        tid = tok.convert_tokens_to_ids(special)
-        if tid is not None and tid != tok.unk_token_id:
-            eos_ids.add(int(tid))
-
+def _summarize_and_save_blend(
+    out_path: pathlib.Path,
+    model_id: str,
+    e_hurt: list[dict[str, Any]],
+    alphas: list[float],
+    blend_conv: bool,
+    evict_kv: bool,
+    cache_map: dict[tuple[str, str, bool, bool], dict[str, Any]],
+) -> None:
     alpha_summary: dict[str, Any] = {}
-    print(
-        f"[deltanet_blend] Model={args.model} | E_hurt={len(e_hurt)} items | "
-        f"alphas={args.alphas} on device={device} ({dtype})",
-        flush=True,
-    )
-    for idx_a, a in enumerate(args.alphas, start=1):
-        t_alpha = time.perf_counter()
+    for idx_a, a in enumerate(alphas, start=1):
         all_pass, inh_pass, str_pass = [], [], []
         n_blended = 0
         n_blended_conv = 0
         n_evicted_kv = 0
         for row in e_hurt:
-            out = generate_with_blended_deltanet(
-                model,
-                tok,
-                eos_ids,
-                row["item"]["prompt"],
-                row["b1b"]["t_think"],
-                alpha=a,
-                blend_conv=args.blend_conv_state,
-                evict_think_kv=args.evict_think_kv,
-            )
-            n_blended = max(n_blended, int(out["n_blended_layers"]))
-            n_blended_conv = max(n_blended_conv, int(out.get("n_blended_conv", 0)))
-            n_evicted_kv = max(n_evicted_kv, int(out.get("n_evicted_kv", 0)))
-            g = grade_item(row["item"], out["a_final"])
+            uid = str(row["item"]["uid"])
+            rec = cache_map[_blend_key(uid, a, blend_conv, evict_kv)]
+            n_blended = max(n_blended, int(rec["n_blended_layers"]))
+            n_blended_conv = max(n_blended_conv, int(rec.get("n_blended_conv", 0)))
+            n_evicted_kv = max(n_evicted_kv, int(rec.get("n_evicted_kv", 0)))
+            g = rec["grade"]
             all_pass.append(int(g["z"]))
             if g.get("inhibition_strict_all") is not None:
                 inh_pass.append(int(g["inhibition_strict_all"]))
@@ -389,21 +365,275 @@ def main() -> None:
             "structural_recovery_pct": 100.0 * float(np.mean(str_pass)) if str_pass else 0.0,
         }
         print(
-            f"[deltanet_blend] ({idx_a}/{len(args.alphas)}) alpha={a:.2f}: "
+            f"[deltanet_blend] ({idx_a}/{len(alphas)}) alpha={a:.2f}: "
             f"recovery={alpha_summary[f'{a:.2f}']['overall_recovery_pct']:.1f}% "
-            f"({sum(all_pass)}/{len(e_hurt)}) in {time.perf_counter() - t_alpha:.1f}s",
+            f"({sum(all_pass)}/{len(e_hurt)})",
             flush=True,
         )
 
     payload = {
-        "model": args.model,
+        "model": model_id,
         "n_ehurt": len(e_hurt),
-        "blend_conv_state": args.blend_conv_state,
-        "evict_think_kv": args.evict_think_kv,
+        "blend_conv_state": blend_conv,
+        "evict_think_kv": evict_kv,
         "alphas": alpha_summary,
     }
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    print(f"Saved DeltaNet blending results to {out_path}")
+    print(f"Saved DeltaNet blending results to {out_path}", flush=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Optional W7: Interpolate DeltaNet recurrent/conv states and evict <think> KV on E_hurt."
+    )
+    parser.add_argument("--model", type=str, default="Qwen/Qwen3.5-4B")
+    parser.add_argument("--out-dir", type=str, default="outputs")
+    parser.add_argument("--alphas", type=float, nargs="+", default=[0.0, 0.25, 0.5, 0.75, 1.0])
+    parser.add_argument("--max-items", type=int, default=0, help="0 means all E_hurt items")
+    parser.add_argument(
+        "--blend-conv-state",
+        action="store_true",
+        help="Also linearly interpolate Gated DeltaNet 1D conv_states alongside recurrent_states.",
+    )
+    parser.add_argument(
+        "--evict-think-kv",
+        action="store_true",
+        help="Evict <think> tokens from full-attention GQA KV caches back to the prompt KV cache.",
+    )
+    parser.add_argument(
+        "--shards",
+        type=str,
+        default="auto",
+        help="Number of parallel GPU workers ('auto' or positive integer).",
+    )
+    parser.add_argument("--shard-idx", type=int, default=0)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--mock", action="store_true", help="Run CPU DynamicCache unit sweep only")
+    args = parser.parse_args()
+
+    tag = args.model.replace("/", "__")
+    model_dir = pathlib.Path(args.out_dir) / tag
+    model_dir.mkdir(parents=True, exist_ok=True)
+    out_path = model_dir / "ext_deltanet_blend.json"
+    blend_cache_path = model_dir / "ext_deltanet_blend_cache.jsonl"
+
+    if args.mock:
+        res = run_mock_blend_check(
+            args.alphas,
+            blend_conv=args.blend_conv_state,
+            evict_think_kv=args.evict_think_kv,
+        )
+        out_path.write_text(json.dumps(res, indent=2) + "\n", encoding="utf-8")
+        print(f"Saved mock DeltaNet blend check to {out_path}")
+        return
+
+    cache_path = model_dir / "diag_ehurt_cache.jsonl"
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Run scripts/run_matrix.py first to populate {cache_path}")
+
+    rows = _load_jsonl(cache_path)
+    e_hurt = [
+        r for r in rows if int(r["b0"]["z"]) == 1 and int(r["b1b"]["z"]) == 0 and r["b1b"]["t_think"]
+    ]
+    if args.max_items > 0:
+        e_hurt = e_hurt[: args.max_items]
+
+    canon_cache = _load_blend_cache(blend_cache_path)
+    required_keys = [
+        _blend_key(str(r["item"]["uid"]), a, args.blend_conv_state, args.evict_think_kv)
+        for r in e_hurt
+        for a in args.alphas
+    ]
+    if args.num_shards == 1 and all(k in canon_cache for k in required_keys):
+        print(
+            f"[deltanet_blend] All {len(required_keys)} (item, alpha) pairs cached; summarizing immediately.",
+            flush=True,
+        )
+        _summarize_and_save_blend(
+            out_path,
+            args.model,
+            e_hurt,
+            args.alphas,
+            args.blend_conv_state,
+            args.evict_think_kv,
+            canon_cache,
+        )
+        return
+
+    # Parent multi-GPU dispatcher when --num-shards == 1 and multiple GPUs are visible
+    if args.num_shards == 1:
+        if args.shards == "auto":
+            eff_shards, vis_gpus = _detect_auto_shards(args.model, len(e_hurt))
+        else:
+            eff_shards = max(1, min(len(e_hurt), int(args.shards)))
+            _, vis_gpus = _detect_auto_shards(args.model, len(e_hurt))
+        if eff_shards > 1:
+            print(
+                f"[deltanet_blend] Spawning {eff_shards} parallel shards across GPUs {vis_gpus} "
+                f"for E_hurt={len(e_hurt)} items x {len(args.alphas)} alphas...",
+                flush=True,
+            )
+            try:
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(repo_id=args.model, local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1")
+                prewarmed = True
+            except Exception:
+                prewarmed = False
+
+            shard_dir = model_dir / "shards"
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            procs: list[tuple[int, subprocess.Popen[str]]] = []
+            try:
+                for s_idx in range(eff_shards):
+                    env = os.environ.copy()
+                    env["CUDA_VISIBLE_DEVICES"] = vis_gpus[s_idx % len(vis_gpus)]
+                    for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                        env.setdefault(tvar, "4")
+                    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+                    if prewarmed:
+                        env.setdefault("HF_HUB_OFFLINE", "1")
+                    cmd = [
+                        sys.executable,
+                        str(pathlib.Path(__file__).resolve()),
+                        "--model",
+                        args.model,
+                        "--out-dir",
+                        args.out_dir,
+                        "--alphas",
+                        *[str(a) for a in args.alphas],
+                        "--max-items",
+                        str(args.max_items),
+                        "--shard-idx",
+                        str(s_idx),
+                        "--num-shards",
+                        str(eff_shards),
+                    ]
+                    if args.blend_conv_state:
+                        cmd.append("--blend-conv-state")
+                    if args.evict_think_kv:
+                        cmd.append("--evict-think-kv")
+                    p = subprocess.Popen(cmd, env=env)
+                    procs.append((s_idx, p))
+
+                failed_rc = 0
+                for s_idx, p in procs:
+                    rc = p.wait()
+                    if rc != 0 and failed_rc == 0:
+                        failed_rc = rc
+                if failed_rc != 0:
+                    raise RuntimeError(f"deltanet_blend shard worker exited with status {failed_rc}")
+            finally:
+                for _, p in procs:
+                    if p.poll() is None:
+                        p.terminate()
+
+            merged = dict(canon_cache)
+            for s_idx in range(eff_shards):
+                sp = shard_dir / f"deltanet_blend_shard_{s_idx}_of_{eff_shards}.jsonl"
+                if sp.is_file():
+                    merged.update(_load_blend_cache(sp))
+                    sp.unlink(missing_ok=True)
+            if not any(shard_dir.iterdir()):
+                shard_dir.rmdir()
+            tmp_c = blend_cache_path.with_suffix(".jsonl.tmp")
+            with tmp_c.open("w", encoding="utf-8") as fh:
+                for rec in merged.values():
+                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            tmp_c.replace(blend_cache_path)
+            _summarize_and_save_blend(
+                out_path,
+                args.model,
+                e_hurt,
+                args.alphas,
+                args.blend_conv_state,
+                args.evict_think_kv,
+                merged,
+            )
+            return
+
+    shard_mode = args.num_shards > 1
+    my_items = e_hurt[args.shard_idx :: args.num_shards] if shard_mode else e_hurt
+    worker_cache_path = (
+        (model_dir / "shards" / f"deltanet_blend_shard_{args.shard_idx}_of_{args.num_shards}.jsonl")
+        if shard_mode
+        else blend_cache_path
+    )
+    worker_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    known = dict(canon_cache)
+    known.update(_load_blend_cache(worker_cache_path))
+
+    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
+    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False, local_files_only=offline)
+    device, dtype = resolve_device_and_dtype("auto", "auto")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=dtype, trust_remote_code=False, local_files_only=offline
+    ).to(device)
+    model.eval()
+
+    eos_raw = tok.eos_token_id
+    eos_ids = set(eos_raw if isinstance(eos_raw, list) else [eos_raw])
+    for special in ("<|im_end|>", "<|endoftext|>"):
+        tid = tok.convert_tokens_to_ids(special)
+        if tid is not None and tid != tok.unk_token_id:
+            eos_ids.add(int(tid))
+
+    tag_lbl = f"shard={args.shard_idx}/{args.num_shards}" if shard_mode else "single"
+    print(
+        f"[deltanet_blend {tag_lbl}] Model={args.model} | items={len(my_items)}/{len(e_hurt)} | "
+        f"alphas={args.alphas} on device={device} ({dtype})",
+        flush=True,
+    )
+    t0 = time.perf_counter()
+    with worker_cache_path.open("a", encoding="utf-8") as fh:
+        for i_row, row in enumerate(my_items, start=1):
+            uid = str(row["item"]["uid"])
+            for a in args.alphas:
+                key = _blend_key(uid, a, args.blend_conv_state, args.evict_think_kv)
+                if key in known:
+                    continue
+                out = generate_with_blended_deltanet(
+                    model,
+                    tok,
+                    eos_ids,
+                    row["item"]["prompt"],
+                    row["b1b"]["t_think"],
+                    alpha=a,
+                    blend_conv=args.blend_conv_state,
+                    evict_think_kv=args.evict_think_kv,
+                )
+                g = grade_item(row["item"], out["a_final"])
+                rec = {
+                    "uid": uid,
+                    "alpha": float(a),
+                    "blend_conv_state": bool(args.blend_conv_state),
+                    "evict_think_kv": bool(args.evict_think_kv),
+                    "n_blended_layers": int(out["n_blended_layers"]),
+                    "n_blended_conv": int(out.get("n_blended_conv", 0)),
+                    "n_evicted_kv": int(out.get("n_evicted_kv", 0)),
+                    "a_final": out["a_final"],
+                    "grade": g,
+                }
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                fh.flush()
+                known[key] = rec
+            if (not shard_mode or args.shard_idx == 0) and (i_row % 5 == 0 or i_row == len(my_items)):
+                print(
+                    f"[deltanet_blend {tag_lbl}] completed {i_row}/{len(my_items)} items "
+                    f"({time.perf_counter() - t0:.1f}s)",
+                    flush=True,
+                )
+
+    if not shard_mode:
+        _summarize_and_save_blend(
+            out_path,
+            args.model,
+            e_hurt,
+            args.alphas,
+            args.blend_conv_state,
+            args.evict_think_kv,
+            known,
+        )
 
 
 if __name__ == "__main__":

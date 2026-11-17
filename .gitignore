@@ -17,6 +17,9 @@ env/
 outputs/*_cache.jsonl
 outputs/*/*_cache.jsonl
 outputs/*/shards/
+outputs/*/*.npz
+outputs/*/eval_450_m2v2_comparison.json
+outputs/smoke_12_*
 outputs/*/*.tmp
 outputs/logs/
 outputs/experiment_history.jsonl

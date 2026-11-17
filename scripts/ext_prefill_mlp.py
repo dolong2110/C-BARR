@@ -18,10 +18,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.run_matrix import resolve_device_and_dtype
+from scripts.run_matrix import _regrade_cached_gsm8k_row, resolve_device_and_dtype
 from src.engine import ensure_qwen35_device_safe_kernels, run_gate1_lexical
 from src.metrics import evaluate_system_table
-from src.routers import _get_slow_rec, select_tiered_budget
+from src.routers import (
+    _gate2_target_label,
+    _get_slow_rec,
+    select_cost_aware_tau,
+    select_tiered_budget,
+)
 
 _PRECISION_RULE_PREFIXES = ("detectable_format:json", "detectable_format:title", "detectable_format:constrained", "change_case:", "punctuation:")
 _PRECISION_RULE_IDS = {
@@ -280,13 +285,7 @@ def train_and_evaluate_prefill_mlp(
     )
 
     y_seed = torch.tensor(
-        [
-            float(
-                (int(r["m2_b128"]["z"]) > int(r["fast_done"]["z"]))
-                or (int(r["fast_done"]["z"]) == 0 and int(r["probe"]["I_inertia"]) == 1)
-            )
-            for r in seed_rows
-        ],
+        [float(_gate2_target_label(r)) for r in seed_rows],
         dtype=torch.float32,
     )
     yc_seed = torch.tensor([_constraint_targets(r) for r in seed_rows], dtype=torch.float32)
@@ -330,17 +329,29 @@ def train_and_evaluate_prefill_mlp(
             p_eval = torch.sigmoid(mlp(xe)).numpy()
             pc_dev = pc_eval = pc_eval_para = None
 
-    best_tau = 0.50
-    best_u = -1e9
+    tau_sweep: list[dict[str, float]] = []
     for tau in np.linspace(0.15, 0.85, 29):
         u_vals = []
+        esc_vals = []
         for r, prob in zip(dev_rows, p_dev):
+            g1 = run_gate1_lexical(r["item"]["prompt"])
             chosen = _select_mlp_run(r, float(prob), float(tau), tau_h_high)
+            is_esc = int(
+                not (g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0)
+                and (g1.phi_plan == 1 or float(prob) >= float(tau))
+            )
+            esc_vals.append(is_esc)
             u_vals.append(float(chosen["z"]) - 0.05 * (float(chosen["T_total"]) / 250.0))
-        mean_u = float(np.mean(u_vals))
-        if mean_u > best_u:
-            best_u = mean_u
-            best_tau = float(tau)
+        tau_sweep.append(
+            {
+                "tau": float(tau),
+                "utility_u005": float(np.mean(u_vals)),
+                "esc_rate": float(np.mean(esc_vals)),
+            }
+        )
+    best_row = select_cost_aware_tau(tau_sweep)
+    best_tau = float(best_row["tau"])
+    best_u = float(best_row["utility_u005"])
 
     eval_items = [r["item"] for r in eval_rows]
     eval_runs = [
@@ -411,6 +422,8 @@ def main() -> None:
     seed_rows = _load_jsonl(model_dir / "seed_60_cache.jsonl")
     dev_rows = _load_jsonl(model_dir / "dev_60_cache.jsonl")
     eval_rows = _load_jsonl(model_dir / "eval_450_cache.jsonl")
+    for r in seed_rows + dev_rows + eval_rows:
+        _regrade_cached_gsm8k_row(r)
     eval_para_rows = [
         {"item": {**r["item"], "prompt": paraphrase_ifeval_prompt(r["item"]["prompt"])}}
         for r in eval_rows
