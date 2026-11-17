@@ -355,3 +355,94 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | **M2** | 82.0% | 85.3% | 80.0% | 83.3% | 83.3% | 83.3% | 76.7% | 82.7% | 76.9% | 74.0% | 432 | 1.63 | 1.39e-63 |
 | **Oracle_UB** | 92.1% | 96.0% | 96.0% | 90.7% | 91.7% | 91.7% | 86.7% | 92.2% | 90.7% | 86.4% | 300 | 1.00 | - |
 <!-- CBARR_RUN_END:20261116T173652Z -->
+
+<!-- CBARR_RUN_START:20261117T012331Z -->
+### Run `20261117T012331Z` — **FAILED (exit=1 at Step 0a: Live GPU 12-Item Smoke)** (Updated 2026-11-17 02:01:23 UTC)
+- **Code Version**: `v0.5.10` | **Git Commit**: `bc5d92b-dirty` | **Last Loop**: `Step 0a: Live GPU 12-Item Smoke` | **Wall Time**: `37m 45.0s` (2265.0s)
+- **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=False`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache --allow-kernel-source-build`
+- **Raw Log**: `outputs/logs/cbarr_20261117T012331Z.log`
+
+#### 1. Training & Experiment Parameters
+```json
+{
+  "auto_commit": true,
+  "auto_push": true,
+  "b0_max_new_tokens": 1024,
+  "b1b_max_new_tokens": 2048,
+  "class_weight": "balanced",
+  "code_version": "0.5.10",
+  "device": "cuda",
+  "do_sample": false,
+  "dtype": "auto",
+  "gate2_probe_tokens": 32,
+  "git_branch": "",
+  "git_rev": "91efc2f",
+  "include_b512": false,
+  "is_mock": false,
+  "lam_utility": 0.05,
+  "logreg_C": 1.0,
+  "norm_tokens": 250.0,
+  "presence_penalty": 0.0,
+  "run_id": "",
+  "seed": 42,
+  "setup_mode": "auto",
+  "stage2_bridge": "classic",
+  "tau_grid": [
+    0.15,
+    0.85,
+    29
+  ],
+  "temperature": 0.0,
+  "tiered_budgets": [
+    64,
+    128,
+    250
+  ],
+  "top_p": 1.0,
+  "with_9b": true,
+  "with_w7": true
+}
+```
+
+#### 2. Stage Timings
+| Stage | Status | Wall Time |
+| :--- | :--- | :--- |
+| Gate 0: Preflight Tests | PASS | 6.0s (6.0s) |
+| Step 0a: Hardware & Kernel Probe | PASS | 10.0s (10.0s) |
+| Step 0a: Live GPU 12-Item Smoke | PASS | 35m 55.0s (2155.0s) |
+
+#### 3. Gate-3 Live 12-Item Smoke Check
+| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
+| :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
+| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
+
+#### 4. Calibration & Gate-2 Classifier Results (Per Model)
+| Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | `v0.5.8` (`91efc2f`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 31.7%->75.0% (1744->365t) | 0.1s |
+
+#### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
+
+- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.8` (`91efc2f`) | dtype=`torch.bfloat16` | wall=`2.7s` (calib=0.1s, eval=0.5s, diag=0.1s) | tau=0.650, esc=20.0%
+  - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
+  - **Section 6 Causal (`|E_hurt|=237`)**: rho_rec=96.2%, rho_int=3.8% | A1_strip=100.0%, B2a_post=96.2%, B1_pre=95.8%, B2b_raw=46.4%, A2_swap=73.0%, B3_cut=87.3%
+
+| Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| B0 | 84.1% | 92.0% | 90.7% | 82.0% | 80.0% | 83.3% | 76.7% | 84.7% | 84.7% | 78.4% | 312 | 1.00 | 7.33e-62 |
+| B1a | 80.4% | 93.3% | 92.0% | 84.0% | 66.7% | 76.7% | 70.0% | 36.7% | 71.7% | 74.8% | 395 | 1.00 | 2.08e-59 |
+| **B1b** | 30.2% | 56.0% | 44.0% | 41.3% | 11.7% | 21.7% | 6.7% | 0.2% | 18.1% | 0.6% | 1735 | 1.00 | - |
+| B2a | 82.4% | 97.3% | 94.7% | 80.7% | 80.0% | 75.0% | 66.7% | 51.6% | 75.3% | 77.8% | 310 | 1.00 | 4.45e-62 |
+| B2b | 72.5% | 85.3% | 84.0% | 70.7% | 71.7% | 70.0% | 53.3% | 66.2% | 70.4% | 61.4% | 639 | 1.23 | 1.26e-49 |
+| M1a | 51.9% | 66.7% | 49.3% | 82.0% | 16.7% | 76.7% | 20.0% | 43.8% | 52.2% | 40.9% | 979 | 1.00 | 1.93e-34 |
+| M1b | 77.8% | 92.0% | 90.7% | 79.3% | 66.7% | 78.3% | 60.0% | 77.1% | 78.7% | 71.6% | 429 | 1.08 | 2.92e-56 |
+| M1c | 62.1% | 92.0% | 88.0% | 79.3% | 15.0% | 78.3% | 20.0% | 65.6% | 67.8% | 56.6% | 680 | 1.04 | 2.47e-43 |
+| M2_B64 | 84.3% | 92.0% | 90.7% | 81.3% | 80.0% | 81.7% | 80.0% | 84.4% | 83.8% | 77.8% | 335 | 1.04 | 1.27e-61 |
+| M2_B128 | 84.6% | 92.0% | 90.7% | 81.3% | 83.3% | 83.3% | 76.7% | 84.9% | 83.6% | 77.8% | 355 | 1.04 | 5.1e-62 |
+| M2_B256 | 84.6% | 92.0% | 90.7% | 81.3% | 85.0% | 81.7% | 76.7% | 84.9% | 82.5% | 77.3% | 380 | 1.04 | 5.1e-62 |
+| M2_Pre | 82.9% | 92.0% | 89.3% | 81.3% | 83.3% | 81.7% | 70.0% | 84.0% | 82.6% | 76.7% | 364 | 1.04 | 6.1e-60 |
+| **M2** | 84.6% | 92.0% | 90.7% | 81.3% | 83.3% | 83.3% | 76.7% | 84.9% | 83.4% | 77.7% | 360 | 1.04 | 5.1e-62 |
+| **Oracle_UB** | 92.6% | 96.0% | 98.7% | 90.7% | 91.7% | 91.7% | 86.7% | 92.9% | 91.3% | 87.0% | 292 | 1.00 | - |
+<!-- CBARR_RUN_END:20261117T012331Z -->
