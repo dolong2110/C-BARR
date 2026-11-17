@@ -652,10 +652,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T114416Z -->
 
 <!-- CBARR_RUN_START:20261117T142919Z -->
-### Run `20261117T142919Z` — **RUNNING (after Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached))** (Updated 2026-11-17 14:31:35 UTC)
-- **Code Version**: `v0.5.12` | **Git Commit**: `eedb58d-dirty` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached)` | **Wall Time**: `2m 08.0s` (128.0s)
+### Run `20261117T142919Z` — **RUNNING (Calibration: Qwen/Qwen3.5-4B)** (Updated 2026-11-17 14:32:00 UTC)
+- **Code Version**: `v0.5.12` | **Git Commit**: `13c1e5a-dirty` | **Last Loop**: `Calibration: Qwen/Qwen3.5-4B` | **Wall Time**: `2.1s` (2.1s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache`
+- **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T142919Z.log`
 
 #### 1. Training & Experiment Parameters
@@ -672,7 +672,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "c9597bd-dirty",
+  "git_rev": "13c1e5a-dirty",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -708,16 +708,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Step 0a: Live GPU 12-Item Smoke | PASS | 6.0s (6.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached) | PASS | 42.0s (42.0s) |
 
-#### 3. Gate-3 Live 12-Item Smoke Check
-| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
-| :--- | :--- | :--- | :--- | :--- |
-| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
-| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
-
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `Qwen/Qwen3.5-4B` | `v0.5.12` (`c9597bd-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
+| `Qwen/Qwen3.5-4B` | `v0.5.12` (`13c1e5a-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
