@@ -3763,6 +3763,74 @@ class TestPhases4To7(unittest.TestCase):
         # 5. Bash syntax audit passes on updated runner script
         subprocess.run(["bash", "-n", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh")], check=True)
 
+    def test_v0515_gpu_pool_adaptive_bandwidth_util_and_cpu_bounds(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from scripts.gpu_pool import (
+            compute_slots_from_free_mem,
+            model_vram_per_worker_gb,
+            query_physical_gpus,
+        )
+
+        # Stage-aware VRAM budget adds blend dual-cache overhead cleanly
+        self.assertEqual(model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="matrix"), 12.5)
+        self.assertGreater(model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="blend"), 12.5)
+
+        l40_pair = [
+            {"id": "3", "free_gb": 44.4, "total_gb": 44.4, "util_pct": 0.0},
+            {"id": "4", "free_gb": 44.4, "total_gb": 44.4, "util_pct": 0.0},
+        ]
+        # Model-bandwidth cap scales small models up (0.8B->4/GPU, 2B->3/GPU) while keeping 4B=2, 9B=1
+        self.assertEqual(
+            compute_slots_from_free_mem(l40_pair, "Qwen/Qwen3.5-0.8B", cpu_count=64),
+            ["3", "4"] * 4,
+        )
+        self.assertEqual(
+            compute_slots_from_free_mem(l40_pair, "Qwen/Qwen3.5-2B", cpu_count=64),
+            ["3", "4"] * 3,
+        )
+        self.assertEqual(
+            compute_slots_from_free_mem(l40_pair, "Qwen/Qwen3.5-4B", cpu_count=64),
+            ["3", "4"] * 2,
+        )
+        self.assertEqual(
+            compute_slots_from_free_mem(l40_pair, "Qwen/Qwen3.5-9B", cpu_count=64),
+            ["3", "4"],
+        )
+
+        # Blend stage tightens partially loaded 4B cards from 2 slots to 1 when free_gb=28.0G
+        half_busy = [{"id": "3", "free_gb": 28.0, "total_gb": 44.4, "util_pct": 0.0}]
+        self.assertEqual(compute_slots_from_free_mem(half_busy, "Qwen/Qwen3.5-4B", stage="matrix"), ["3", "3"])
+        self.assertEqual(compute_slots_from_free_mem(half_busy, "Qwen/Qwen3.5-4B", stage="blend"), ["3"])
+
+        # Shared GPU already busy at >=60% compute utilization gets capped to 1 slot even for 0.8B
+        busy_gpus = [
+            {"id": "3", "free_gb": 44.4, "total_gb": 44.4, "util_pct": 75.0},
+            {"id": "4", "free_gb": 44.4, "total_gb": 44.4, "util_pct": 0.0},
+        ]
+        self.assertEqual(
+            compute_slots_from_free_mem(busy_gpus, "Qwen/Qwen3.5-0.8B", cpu_count=64),
+            ["4", "3", "4", "4", "4"],
+        )
+
+        # Low host CPU count prevents thrashing (e.g., 4 CPUs with 2 CPUs/worker => max 2 total workers)
+        self.assertEqual(
+            compute_slots_from_free_mem(l40_pair, "Qwen/Qwen3.5-0.8B", cpu_count=4, cpus_per_worker=2),
+            ["3", "4"],
+        )
+
+        # query_physical_gpus parses utilization.gpu cleanly and handles [N/A]
+        fake_smi = SimpleNamespace(
+            returncode=0,
+            stdout="3, 45460, 46068, 12\n4, 28000, 46068, [N/A]\n",
+        )
+        with mock.patch("subprocess.run", return_value=fake_smi):
+            parsed = query_physical_gpus()
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["util_pct"], 12.0)
+        self.assertIsNone(parsed[1]["util_pct"])
+
 
 if __name__ == "__main__":
     unittest.main()

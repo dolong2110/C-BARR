@@ -471,6 +471,7 @@ def _detect_auto_slots(model_id: str, n_items: int) -> list[str]:
         workers_per_gpu=os.environ.get("CBARR_WORKERS_PER_GPU", "auto"),
         max_gpus=8,
         wait_timeout_sec=wait_sec,
+        stage="blend",
     )
     return slots[:n_items]
 

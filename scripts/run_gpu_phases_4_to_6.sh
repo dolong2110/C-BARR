@@ -685,7 +685,7 @@ effective_workers_per_gpu() {
     echo "$WORKERS_PER_GPU_ARG"
     return
   fi
-  if [ "$IS_MOCK" -ne 0 ] || [ "$GPU_MIN_VRAM_GB" -lt 32 ]; then
+  if [ "$IS_MOCK" -ne 0 ] || [ "$GPU_MIN_VRAM_GB" -lt 14 ]; then
     echo 1
     return
   fi
@@ -694,11 +694,29 @@ effective_workers_per_gpu() {
       # 9B uses ~19-22 GB VRAM per worker; keep 1 worker/GPU so 46 GB GPUs stay well clear of OOM
       echo 1
       ;;
-    *)
+    *0.8[Bb]*|*08[Bb]*|*1[Bb]*)
+      if [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
+        echo 4
+      else
+        echo 2
+      fi
+      ;;
+    *2[Bb]*)
       if [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
+        echo 4
+      elif [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
         echo 3
       else
         echo 2
+      fi
+      ;;
+    *)
+      if [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
+        echo 3
+      elif [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
+        echo 2
+      else
+        echo 1
       fi
       ;;
   esac
@@ -1061,7 +1079,7 @@ for pkg in ('fla', 'causal_conv1d'):
       log_banner "=== [Step 0a: Live GPU 12-Item Smoke] All smoke items already cached — skipping GPU launch ==="
       run_stage "Step 0a: Live GPU 12-Item Smoke (cached)" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
     else
-      if ! smoke_gpu="$(select_gpu_pool_slots --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+      if ! smoke_gpu="$(select_gpu_pool_slots --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --stage smoke --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
         record_stage_timing "Step 0a: Live GPU 12-Item Smoke" "FAIL(no_free_gpu)" 0
         log_banner "=== [Step 0a: Live GPU 12-Item Smoke] FAILED: no GPU with sufficient free VRAM became available ==="
         return 1
@@ -1126,7 +1144,7 @@ run_w7_stage() {
   fi
 
   if [ "$IS_MOCK" -eq 0 ]; then
-    if ! mlp_gpu="$(select_gpu_pool_slots --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+    if ! mlp_gpu="$(select_gpu_pool_slots --model "$w7_model" --candidates "$PINNED_GPU_CSV" --stage mlp --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
       record_stage_timing "W7: Prefill MLP Probe (${w7_model})" "FAIL(no_free_gpu)" 0
       log_banner "=== [W7: Prefill MLP Probe (${w7_model})] FAILED: no GPU with sufficient free VRAM became available ==="
       return 1
