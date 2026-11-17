@@ -240,10 +240,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (diag491))** (Updated 2026-11-17 21:21:48 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `9d509d8` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (diag491)` | **Wall Time**: `27.7s` (27.7s)
+### Run `20261117T174419Z` — **RUNNING (after Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (merge))** (Updated 2026-11-17 21:22:00 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `d0efb72` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (merge)` | **Wall Time**: `3h 37m 33s` (13053.0s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_matrix.py`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache --gpu 3,4,6,7`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
 
 #### 1. Training & Experiment Parameters
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "9d509d8",
+  "git_rev": "d0efb72",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -301,6 +301,13 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (strict341) | PASS | 2h 28m 54s (8934.0s) |
 | Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (strict341) (merge) | PASS | 54.0s (54.0s) |
 | Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) | PASS | 16m 46.0s (1006.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (merge) | PASS | 49.0s (49.0s) |
+
+#### 3. Gate-3 Live 12-Item Smoke Check
+| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
+| :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
+| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
