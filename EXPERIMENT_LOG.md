@@ -534,8 +534,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T112446Z -->
 
 <!-- CBARR_RUN_START:20261117T114416Z -->
-### Run `20261117T114416Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-4B (diag491))** (Updated 2026-11-17 12:46:12 UTC)
-- **Code Version**: `v0.5.11` | **Git Commit**: `6d155c5-dirty` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-4B (diag491)` | **Wall Time**: `18.2s` (18.2s)
+### Run `20261117T114416Z` — **RUNNING (Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (diag491))** (Updated 2026-11-17 12:46:26 UTC)
+- **Code Version**: `v0.5.11` | **Git Commit**: `75e7b5f-dirty` | **Last Loop**: `Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (diag491)` | **Wall Time**: `32.2s` (32.2s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T114416Z.log`
@@ -620,9 +620,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | M2_Prec (Aux.) | 85.4% | 92.0% | 90.7% | 81.3% | 83.3% | 91.7% | 73.3% | 85.8% | 83.6% | 78.1% | 384 | 1.04 | 3.05e-64 (raw) |
 | **Oracle_UB** | 92.6% | 96.0% | 98.7% | 90.7% | 91.7% | 91.7% | 86.7% | 92.9% | 91.3% | 87.0% | 292 | 1.00 | - |
 
-- **`Qwen/Qwen3.5-4B` (`diag491`**, n_diag=491) — ver=`v0.5.11` (`ceccf7d-dirty`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`18.2s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.650, esc=20.0%
+- **`Qwen/Qwen3.5-4B` (`diag491`**, n_diag=491) — ver=`v0.5.11` (`ceccf7d-dirty`) | dtype=`torch.bfloat16` | wall=`32.2s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.650, esc=20.0%
   - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
-  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+  - **Section 6 Causal (`|E_hurt|=336`)**: rho_rec=96.1%, rho_int=3.9% | A1_strip=100.0%, B2a_post=96.1%, B1_pre=95.5%, B2b_raw=49.4%, A2_swap=70.2%, B3_cut=86.3%
 
 | Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
