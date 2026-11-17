@@ -41,6 +41,8 @@ COMPACT_CACHE_NAMES: tuple[str, ...] = (
     "dev_60_cache.jsonl",
     "eval_450_cache.jsonl",
     "diag_ehurt_cache.jsonl",
+    "diag_controls_cache.jsonl",
+    "ext_deltanet_blend_cache.jsonl",
 )
 
 MODEL_SUMMARY_FILES: tuple[str, ...] = (
@@ -360,6 +362,10 @@ def _update_results_release_manifest(
     if fig_dir.is_dir():
         for pdf in sorted(fig_dir.glob("*.pdf")):
             phase7_sha[f"paper/figures/{pdf.name}"] = _sha256_file(pdf)
+    table_dir = repo_root / "paper" / "tables"
+    if table_dir.is_dir():
+        for tex in sorted(table_dir.glob("*.tex")):
+            phase7_sha[f"paper/tables/{tex.name}"] = _sha256_file(tex)
 
     rel_manifest_path = repo_root / RESULTS_MANIFEST_REL
     rel_ver_path = repo_root / RESULTS_VERSION_REL
@@ -540,14 +546,16 @@ def pack_outputs_for_repo(
 
         fig_dir = repo_root / "paper" / "figures"
         pdfs = sorted(fig_dir.glob("*.pdf")) if fig_dir.is_dir() else []
-        if pdfs:
+        table_dir = repo_root / "paper" / "tables"
+        tex_tables = sorted(table_dir.glob("*.tex")) if table_dir.is_dir() else []
+        if pdfs or tex_tables:
             _check_paper_anonymity(repo_root)
-            for pdf in pdfs:
-                if pdf.stat().st_size > max_bytes:
+            for asset in (*pdfs, *tex_tables):
+                if asset.stat().st_size > max_bytes:
                     raise ValueError(
-                        f"{pdf} exceeds max_file_mb ({max_file_mb:.2f} MB)."
+                        f"{asset} exceeds max_file_mb ({max_file_mb:.2f} MB)."
                     )
-                staged.append(pdf.relative_to(repo_root))
+                staged.append(asset.relative_to(repo_root))
 
     if include_ledger:
         if staged or (repo_outputs / "RESULTS_VERSION").is_file():

@@ -20,6 +20,8 @@ set -euo pipefail
 #   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, --max-shards) when >=2 GPUs visible (default: 1)
 #   --max-shards <N>        Maximum GPUs used when --shards auto is active (default: 8)
 #   --workers-per-gpu <N|auto>  Concurrent shard workers pinned per GPU ('auto' runs 2/GPU on >=32 GB GPUs for <=4B models, 1 for 9B; default: auto)
+#   --wait-gpu-min <N>      Poll up to N minutes if all GPUs are temporarily occupied (default: 60)
+#   --stage-retries <N>     Auto-retry shard OOM/partial failures after harvesting completed items (default: 2)
 #   --shard-progress-sec <N>  Interval in seconds for multi-GPU progress snapshots (default: 20; 0 disables)
 #   --shard-log <mode>      Sharded live stdout mode: auto (GPU0 + all milestones/errors), all, milestones, off (default: auto)
 #   --gpu <id[,id...]>      Pin CUDA_VISIBLE_DEVICES (e.g. 0 or 0,1,2,3; default: auto)
@@ -48,7 +50,7 @@ set -euo pipefail
 #   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
 #   --skip-preflight        Skip Gate 0 offline unittest discovery
 #   --full-preflight        Run full 30-test E2E suite in Gate 0 instead of fast preflight (~1s)
-#   --data-dir / --run-id / --out-dir / --fig-dir / --log-dir / --exp-log / --no-exp-log
+#   --data-dir / --run-id / --out-dir / --fig-dir / --table-dir / --log-dir / --exp-log / --no-exp-log
 #   --seed / --lam-utility / --norm-tokens / --reg-c / --tau-min / --tau-max / --tau-steps
 #   --mock                  Run full offline CPU orchestration dry-run without overwriting repo ledger
 
@@ -63,6 +65,7 @@ WORKERS_PER_GPU_ARG="${CBARR_WORKERS_PER_GPU:-auto}"
 SHARD_PROGRESS_SEC="${CBARR_SHARD_PROGRESS_SEC:-20}"
 SHARD_LOG_MODE="${CBARR_SHARD_LOG:-auto}"
 WAIT_GPU_MIN="${CBARR_WAIT_GPU_MIN:-60}"
+STAGE_RETRIES="${CBARR_STAGE_RETRIES:-2}"
 WITH_9B="0"
 WITH_W7=0
 IS_MOCK=0
@@ -84,6 +87,7 @@ GIT_USER_EMAIL=""
 DATA_DIR="data"
 OUT_DIR="outputs"
 FIG_DIR="paper/figures"
+TABLE_DIR=""
 LOG_DIR=""
 EXP_LOG=""
 NO_EXP_LOG=0
@@ -242,6 +246,11 @@ while [ "$#" -gt 0 ]; do
       shift
       FIG_DIR="$1"
       ;;
+    --table-dir)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      TABLE_DIR="$1"
+      ;;
     --log-dir)
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
@@ -335,6 +344,11 @@ while [ "$#" -gt 0 ]; do
       shift
       WAIT_GPU_MIN="$1"
       ;;
+    --stage-retries)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      STAGE_RETRIES="$1"
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -393,11 +407,17 @@ if [ -z "$LOG_DIR" ]; then
 fi
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-# When --hf-home points to a roomy scratch/NFS mount while /tmp is nearly full, route TMPDIR & Triton cache there.
+# When --hf-home points to a roomy scratch/NFS mount while /tmp is nearly full, route compiler/pip caches there.
 if [ -n "${HF_HOME:-}" ]; then
-  mkdir -p "${HF_HOME}/.tmp" "${HF_HOME}/.triton" 2>/dev/null || true
+  mkdir -p "${HF_HOME}/.tmp" "${HF_HOME}/.triton" "${HF_HOME}/.torchinductor" "${HF_HOME}/.pip_cache" 2>/dev/null || true
   if [ -d "${HF_HOME}/.triton" ] && [ -z "${TRITON_CACHE_DIR:-}" ]; then
     export TRITON_CACHE_DIR="${HF_HOME}/.triton"
+  fi
+  if [ -d "${HF_HOME}/.torchinductor" ] && [ -z "${TORCHINDUCTOR_CACHE_DIR:-}" ]; then
+    export TORCHINDUCTOR_CACHE_DIR="${HF_HOME}/.torchinductor"
+  fi
+  if [ -d "${HF_HOME}/.pip_cache" ] && [ -z "${PIP_CACHE_DIR:-}" ]; then
+    export PIP_CACHE_DIR="${HF_HOME}/.pip_cache"
   fi
 fi
 
@@ -543,6 +563,25 @@ if free_gb < thresh:
         if item.is_dir() and item.name.startswith('models--'):
             shutil.rmtree(item, ignore_errors=True)
 " "$thresh_gb" 2>&1 | tee -a "$RUN_LOG" || true
+}
+
+check_workspace_disk_space() {
+  local stage_label="${1:-Stage}"
+  if [ "$IS_MOCK" -ne 0 ]; then
+    return 0
+  fi
+  "$PY_BIN" -c "
+import pathlib, shutil, sys
+out_p = pathlib.Path(sys.argv[1])
+if not out_p.exists():
+    out_p = pathlib.Path('.')
+free_gb = shutil.disk_usage(str(out_p)).free / (1024**3)
+if free_gb < 1.0:
+    print(f'[Disk Guard] ERROR: {sys.argv[2]} aborted — only {free_gb:.2f} GB free on {out_p.resolve()} (< 1.0 GB floor).', flush=True)
+    sys.exit(1)
+if free_gb < 5.0:
+    print(f'[Disk Guard] WARN: Low disk space before {sys.argv[2]}: {free_gb:.1f} GB free on {out_p.resolve()}.', flush=True)
+" "$OUT_DIR" "$stage_label" 2>&1 | tee -a "$RUN_LOG"
 }
 
 check_git_sync_readiness
@@ -786,87 +825,126 @@ run_matrix_sharded() {
     "$@"
     ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
   )
-  local eff_wpg eff_shards rc_all=0 slug="${model_id//\//__}" stage_vis_csv="$SHARD_VIS_GPUS_CSV"
-
-  if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
-    log_banner "=== [$stage_name] All items already cached — skipping GPU launch ==="
-    run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
-    return $?
+  local eff_wpg eff_shards rc_all=0 rc_stage=0 slug="${model_id//\//__}" stage_vis_csv="$SHARD_VIS_GPUS_CSV"
+  local attempt=0 max_attempts=1
+  if [ "$IS_MOCK" -eq 0 ]; then
+    max_attempts=$((STAGE_RETRIES + 1))
   fi
 
-  if [ "$IS_MOCK" -eq 0 ] && [ "$SHARDS_ARG" = "auto" ]; then
-    local live_slots=""
-    if ! live_slots="$("$PY_BIN" scripts/gpu_pool.py \
-      --model "$model_id" \
-      --candidates "$PINNED_GPU_CSV" \
-      --workers-per-gpu "$WORKERS_PER_GPU_ARG" \
-      --max-gpus "$MAX_SHARDS_ARG" \
-      --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
-      record_stage_timing "$stage_name" "FAIL(no_free_gpu)" 0
-      log_banner "=== [$stage_name] FAILED: no GPU with sufficient free VRAM became available ==="
-      return 1
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    attempt=$((attempt + 1))
+    check_workspace_disk_space "$stage_name" || return 1
+
+    if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
+      log_banner "=== [$stage_name] All items already cached — skipping GPU launch ==="
+      run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+      return $?
     fi
-    if [ "$live_slots" != "NO_CUDA" ] && [ -n "$live_slots" ]; then
-      local slot_arr=()
-      IFS=',' read -r -a slot_arr <<< "$live_slots"
-      eff_shards="${#slot_arr[@]}"
-      stage_vis_csv="$live_slots"
-      if [ "$eff_shards" -eq 1 ]; then
-        CUDA_VISIBLE_DEVICES="${slot_arr[0]}" run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
-        return $?
+
+    eff_shards=1
+    eff_wpg=""
+    stage_vis_csv="$SHARD_VIS_GPUS_CSV"
+    local picked_single_gpu=""
+    if [ "$IS_MOCK" -eq 0 ] && [ "$SHARDS_ARG" = "auto" ]; then
+      local live_slots=""
+      if ! live_slots="$("$PY_BIN" scripts/gpu_pool.py \
+        --model "$model_id" \
+        --candidates "$PINNED_GPU_CSV" \
+        --workers-per-gpu "$WORKERS_PER_GPU_ARG" \
+        --max-gpus "$MAX_SHARDS_ARG" \
+        --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+        record_stage_timing "$stage_name" "FAIL(no_free_gpu)" 0
+        log_banner "=== [$stage_name] FAILED: no GPU with sufficient free VRAM became available ==="
+        return 1
+      fi
+      if [ "$live_slots" != "NO_CUDA" ] && [ -n "$live_slots" ]; then
+        local slot_arr=()
+        IFS=',' read -r -a slot_arr <<< "$live_slots"
+        eff_shards="${#slot_arr[@]}"
+        stage_vis_csv="$live_slots"
+        if [ "$eff_shards" -eq 1 ]; then
+          picked_single_gpu="${slot_arr[0]}"
+        fi
+      else
+        eff_wpg="$(effective_workers_per_gpu "$model_id")"
+        eff_shards=$((N_SHARDS * eff_wpg))
       fi
     else
       eff_wpg="$(effective_workers_per_gpu "$model_id")"
       eff_shards=$((N_SHARDS * eff_wpg))
     fi
-  else
-    eff_wpg="$(effective_workers_per_gpu "$model_id")"
-    eff_shards=$((N_SHARDS * eff_wpg))
-  fi
 
-  if [ "$eff_shards" -le 1 ]; then
-    run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
-    return $?
-  fi
+    if [ "$eff_shards" -le 1 ]; then
+      set +e
+      if [ -n "$picked_single_gpu" ]; then
+        CUDA_VISIBLE_DEVICES="$picked_single_gpu" run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
+      else
+        run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
+      fi
+      rc_stage=$?
+      set -e
+      if [ "$rc_stage" -eq 0 ]; then
+        return 0
+      fi
+      if [ "$attempt" -lt "$max_attempts" ]; then
+        log_banner "=== [$stage_name] Attempt ${attempt}/${max_attempts} failed (rc=${rc_stage}); completed items cached — rescanning live GPUs in 15s ==="
+        sleep 15
+        continue
+      fi
+      return "$rc_stage"
+    fi
 
-  local t0 t1 dur
-  t0="$(date -u +%s)"
-  log_banner "=== [$stage_name] START (${eff_shards} shards on GPU slots [${stage_vis_csv}]) ==="
-  set +e
-  "$PY_BIN" scripts/run_sharded.py \
-    --stage-name "$stage_name" \
-    --model "$model_id" \
-    --data-dir "$DATA_DIR" \
-    --out-dir "$OUT_DIR" \
-    --log-dir "$LOG_DIR" \
-    --run-id "$RUN_ID" \
-    --shards "$eff_shards" \
-    --visible-gpus "$stage_vis_csv" \
-    --progress-sec "$SHARD_PROGRESS_SEC" \
-    --shard-log "$SHARD_LOG_MODE" \
-    -- \
-    "${base_args[@]}" \
-    --device "$DEVICE_ARG" \
-    --seed "$SEED" \
-    --lam-utility "$LAM_UTILITY" \
-    --norm-tokens "$NORM_TOKENS" \
-    --reg-c "$REG_C" \
-    --tau-min "$TAU_MIN" \
-    --tau-max "$TAU_MAX" \
-    --tau-steps "$TAU_STEPS" 2>&1 | tee -a "$RUN_LOG"
-  rc_all=$?
-  set -e
-  t1="$(date -u +%s)"
-  dur=$((t1 - t0))
-  if [ "$rc_all" -ne 0 ]; then
+    local t0 t1 dur
+    t0="$(date -u +%s)"
+    if [ -n "$eff_wpg" ]; then
+      log_banner "=== [$stage_name] START (${eff_shards} shards across ${N_SHARDS} GPU(s), ${eff_wpg} workers/GPU | vis=${stage_vis_csv}) ==="
+    else
+      log_banner "=== [$stage_name] START (${eff_shards} shards on GPU slots [${stage_vis_csv}], attempt ${attempt}/${max_attempts}) ==="
+    fi
+    set +e
+    "$PY_BIN" scripts/run_sharded.py \
+      --stage-name "$stage_name" \
+      --model "$model_id" \
+      --data-dir "$DATA_DIR" \
+      --out-dir "$OUT_DIR" \
+      --log-dir "$LOG_DIR" \
+      --run-id "$RUN_ID" \
+      --shards "$eff_shards" \
+      --visible-gpus "$stage_vis_csv" \
+      --progress-sec "$SHARD_PROGRESS_SEC" \
+      --shard-log "$SHARD_LOG_MODE" \
+      -- \
+      "${base_args[@]}" \
+      --device "$DEVICE_ARG" \
+      --seed "$SEED" \
+      --lam-utility "$LAM_UTILITY" \
+      --norm-tokens "$NORM_TOKENS" \
+      --reg-c "$REG_C" \
+      --tau-min "$TAU_MIN" \
+      --tau-max "$TAU_MAX" \
+      --tau-steps "$TAU_STEPS" 2>&1 | tee -a "$RUN_LOG"
+    rc_all=$?
+    set -e
+    t1="$(date -u +%s)"
+    dur=$((t1 - t0))
+    if [ "$rc_all" -eq 0 ]; then
+      local total_run_sec=$((t1 - PIPELINE_START_EPOCH))
+      record_stage_timing "$stage_name" "PASS" "$dur"
+      log_banner "=== [$stage_name] SHARDS DONE (${dur}s | total=${total_run_sec}s) — merging shards ==="
+      run_stage "${stage_name} (merge)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+      return $?
+    fi
+
     record_stage_timing "$stage_name" "FAIL(shard_error)" "$dur"
-    log_banner "=== [$stage_name] FAILED in parallel GPU shard (${dur}s; inspect ${LOG_DIR}/cbarr_${RUN_ID}_gpu*_${slug}.log) ==="
-    return 1
-  fi
-  local total_run_sec=$((t1 - PIPELINE_START_EPOCH))
-  record_stage_timing "$stage_name" "PASS" "$dur"
-  log_banner "=== [$stage_name] SHARDS DONE (${dur}s | total=${total_run_sec}s) — merging shards ==="
-  run_stage "${stage_name} (merge)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+    log_banner "=== [$stage_name] FAILED in parallel GPU shard (attempt ${attempt}/${max_attempts}, ${dur}s; inspect ${LOG_DIR}/cbarr_${RUN_ID}_gpu*_${slug}.log) ==="
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      log_banner "=== [$stage_name] Partial shards harvested — rescanning live free GPUs in 15s ==="
+      sleep 15
+    else
+      return 1
+    fi
+  done
+  return 1
 }
 
 run_hw_probe_and_smoke() {
@@ -907,11 +985,19 @@ for pkg in ('fla', 'causal_conv1d'):
     elif [ "${#MODELS_ARG[@]}" -gt 0 ]; then
       smoke_args=(--models "${MODELS_ARG[@]}")
     fi
-    smoke_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC" 2>/dev/null || echo NO_CUDA)"
-    if [ -n "$smoke_gpu" ] && [ "$smoke_gpu" != "NO_CUDA" ]; then
-      CUDA_VISIBLE_DEVICES="$smoke_gpu" run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
-    else
+    if "$PY_BIN" scripts/run_smoke_test.py --check-cached --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"} >/dev/null 2>&1; then
       run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    else
+      if ! smoke_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+        record_stage_timing "Step 0a: Live GPU 12-Item Smoke" "FAIL(no_free_gpu)" 0
+        log_banner "=== [Step 0a: Live GPU 12-Item Smoke] FAILED: no GPU with sufficient free VRAM became available ==="
+        return 1
+      fi
+      if [ -n "$smoke_gpu" ] && [ "$smoke_gpu" != "NO_CUDA" ]; then
+        CUDA_VISIBLE_DEVICES="$smoke_gpu" run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+      else
+        run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+      fi
     fi
     RAN_LIVE_SMOKE=1
   fi
@@ -942,19 +1028,36 @@ run_w7_stage() {
   if [ "$WITH_W7" -ne 1 ]; then
     return 0
   fi
+  check_workspace_disk_space "W7 (${w7_model})" || return 1
   local w7_flags=() mlp_gpu="NO_CUDA"
   if [ "$IS_MOCK" -eq 1 ]; then
     w7_flags+=(--mock)
   fi
+  local blend_flags=()
+  if [ "$IS_MOCK" -eq 0 ]; then
+    blend_flags=(--max-retries "$STAGE_RETRIES")
+  fi
   if [ -n "$PINNED_GPU_CSV" ]; then
     CUDA_VISIBLE_DEVICES="$PINNED_GPU_CSV" run_stage "W7: DeltaNet Blend (${w7_model})" \
-      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
   else
-    env -u CUDA_VISIBLE_DEVICES run_stage "W7: DeltaNet Blend (${w7_model})" \
-      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+    run_stage "W7: DeltaNet Blend (${w7_model})" \
+      env -u CUDA_VISIBLE_DEVICES "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
   fi
+
+  if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" --check-cached >/dev/null 2>&1; then
+    log_banner "=== [W7: Prefill MLP Probe (${w7_model})] Using cached .npz features — skipping GPU launch ==="
+    run_stage "W7: Prefill MLP Probe (${w7_model})" \
+      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR"
+    return $?
+  fi
+
   if [ "$IS_MOCK" -eq 0 ]; then
-    mlp_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC" 2>/dev/null || echo NO_CUDA)"
+    if ! mlp_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+      record_stage_timing "W7: Prefill MLP Probe (${w7_model})" "FAIL(no_free_gpu)" 0
+      log_banner "=== [W7: Prefill MLP Probe (${w7_model})] FAILED: no GPU with sufficient free VRAM became available ==="
+      return 1
+    fi
   fi
   if [ -n "$mlp_gpu" ] && [ "$mlp_gpu" != "NO_CUDA" ]; then
     CUDA_VISIBLE_DEVICES="$mlp_gpu" run_stage "W7: Prefill MLP Probe (${w7_model})" \
@@ -967,11 +1070,41 @@ run_w7_stage() {
 
 run_phase7_stage() {
   local p7_flags=(--out-dir "$OUT_DIR" --fig-dir "$FIG_DIR")
+  if [ -n "$TABLE_DIR" ]; then
+    p7_flags+=(--table-dir "$TABLE_DIR")
+  fi
   if [ "$STRICT_VERSION_MATCH" -eq 1 ]; then
     p7_flags+=(--strict-version-match)
   fi
   run_stage "Phase 7 / W8: Analysis, Tables & Figures" \
     "$PY_BIN" scripts/analyze_and_plot.py "${p7_flags[@]}"
+}
+
+sync_model_checkpoint() {
+  local model_id="$1"
+  local slug="${model_id##*/}"
+  if [ "$AUTO_COMMIT" -ne 1 ] || [ "$IS_MOCK" -ne 0 ] || [ "$WORKER_MODE" -ne 0 ]; then
+    return 0
+  fi
+  local ckpt_flags=(
+    --mode push
+    --repo-dir .
+    --out-dir "$OUT_DIR"
+    --label "checkpoint-${slug}:${RUN_ID}"
+    --no-phase7
+    --models "$model_id"
+  )
+  if [ "$AUTO_PUSH" -eq 1 ]; then
+    ckpt_flags+=(--git-push)
+  else
+    ckpt_flags+=(--no-git-push)
+  fi
+  if [ -n "$GIT_BRANCH" ]; then
+    ckpt_flags+=(--git-branch "$GIT_BRANCH")
+  fi
+  log_banner "=== [Checkpoint Sync] Backing up ${model_id} caches & summaries ==="
+  "$PY_BIN" scripts/sync_results.py "${ckpt_flags[@]}" 2>&1 | tee -a "$RUN_LOG" || \
+    log_banner "[WARN] Non-fatal incremental checkpoint sync failed for ${model_id} (will retry on next/final sync)."
 }
 
 sync_part_results() {
@@ -1024,7 +1157,7 @@ sync_part_results() {
   echo "Python Binary      : ${PY_BIN}"
   echo "DATA_DIR / OUT_DIR : ${DATA_DIR} / ${OUT_DIR} -> FIG_DIR=${FIG_DIR}"
   echo "DTYPE / CUDA_DEV   : ${DTYPE} / ${CUDA_VISIBLE_DEVICES:-auto}"
-  echo "Shard Monitor      : gpus=${N_SHARDS} (vis=${SHARD_VIS_GPUS_CSV}) | workers_per_gpu=${WORKERS_PER_GPU_ARG} (min_vram=${GPU_MIN_VRAM_GB}G) | progress=${SHARD_PROGRESS_SEC}s | shard_log=${SHARD_LOG_MODE}"
+  echo "Shard Monitor      : gpus=${N_SHARDS} (vis=${SHARD_VIS_GPUS_CSV}) | workers_per_gpu=${WORKERS_PER_GPU_ARG} (min_vram=${GPU_MIN_VRAM_GB}G) | retries=${STAGE_RETRIES} | wait=${WAIT_GPU_MIN}m | progress=${SHARD_PROGRESS_SEC}s | shard_log=${SHARD_LOG_MODE}"
   echo "GIT COMMIT / PUSH  : commit=${AUTO_COMMIT} push=${AUTO_PUSH} branch=${GIT_BRANCH:-current}"
   echo "HF_HOME / PRUNE    : ${HF_HOME:-default} (prune below ${PRUNE_HF_BELOW_GB} GB) | HF_TOKEN=$([ -n "${HF_TOKEN:-}" ] && echo set || echo unset)"
   echo "Command            : ${RAW_CMD}"
@@ -1138,6 +1271,7 @@ case "$PART_MODE" in
           if [ "$_idx" -eq 0 ]; then
             run_w7_stage "$_m"
           fi
+          sync_model_checkpoint "$_m"
         fi
       done
       if [ "$CALIBRATE_ONLY" -eq 0 ]; then
@@ -1159,14 +1293,19 @@ case "$PART_MODE" in
     # Run strict341 first so calibration & cached diag_ehurt/controls entries are reused during diag491
     run_model_eval_pair "Phase 4 / W4" Qwen/Qwen3.5-4B
     run_w7_stage Qwen/Qwen3.5-4B
+    sync_model_checkpoint Qwen/Qwen3.5-4B
     prune_hf_cache_if_low_disk
     run_model_eval_pair "Phase 5 / W5" HuggingFaceTB/SmolLM3-3B
+    sync_model_checkpoint HuggingFaceTB/SmolLM3-3B
     prune_hf_cache_if_low_disk
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-0.8B (strict341)" Qwen/Qwen3.5-0.8B --strict-diag
+    sync_model_checkpoint Qwen/Qwen3.5-0.8B
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-2B (strict341)" Qwen/Qwen3.5-2B --strict-diag
+    sync_model_checkpoint Qwen/Qwen3.5-2B
     if [ "$WITH_9B" -eq 1 ]; then
       prune_hf_cache_if_low_disk 28
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
+      sync_model_checkpoint Qwen/Qwen3.5-9B
     fi
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh

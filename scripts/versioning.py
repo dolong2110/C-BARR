@@ -138,13 +138,14 @@ def bump_results_seq(repo_root: pathlib.Path = REPO_ROOT) -> int:
 
 
 def is_result_only_path(rel_path: str) -> bool:
-    """Returns True for output/ledger/figure paths updated by result-sync pushes."""
+    """Returns True for output/ledger/figure/table paths updated by result-sync pushes."""
     norm = rel_path.replace("\\", "/").lstrip("./")
     return (
         norm == "EXPERIMENT_LOG.md"
         or norm == "outputs"
         or norm.startswith("outputs/")
         or norm.startswith("paper/figures/")
+        or norm.startswith("paper/tables/")
     )
 
 

@@ -51,6 +51,9 @@ Let $\ell_{\mathrm{deg}}(x) = \max(0, z_{\mathrm{base}}(x) - z_{\mathrm{M2}}(x))
 All splits ($\texttt{seed\_60}$, $\texttt{dev\_60}$, $\texttt{eval\_450}$, $\texttt{ifeval\_diag\_341\_strict}$, and $\texttt{ifeval\_diag\_491}$) are frozen deterministically at $\text{seed}=42$ with zero UID overlap. For deterministic language-detection grading in IFEval, we pin \texttt{DetectorFactory.seed = 0} and \texttt{random.seed(0)} prior to each verification call and run Clean-446 sensitivity filtering excluding the four documented upstream prompt-kwargs mismatch keys (\texttt{30, 337, 2078, 3311}). Following recent efficiency-audit standards \cite{aggarwal2025optimalthinkingbench,nguyen2026early}, we report Slice Macro-Accuracy (\texttt{MacroAcc}), Budget-Compliant Overall Accuracy ($\text{OAA}_{250}$) and normalized $\text{AUC}_{\text{OAA}}$ \cite{aggarwal2025optimalthinkingbench}, utility $U_{0.05}$, 4-regime flip decomposition, finite-sample risk audit bounds, and discrete-budget hindsight oracle retention against $\text{Oracle\_UB}$ \cite{nguyen2026early}.
 
 % Table 1: Main C-BARR Comparison on Frozen N=450 Suite
+\IfFileExists{tables/tab1_main_results.tex}{%
+  \input{tables/tab1_main_results.tex}%
+}{%
 \begin{table}[t]
 \centering
 \caption{Main results across the frozen $N=450$ suite (\texttt{Qwen/Qwen3.5-4B} primary; \texttt{HuggingFaceTB/SmolLM3-3B} dense control). \textbf{M2} caps thinking at $B\in \{64,128,250\}$ via \texttt{P\_TERM} and injects a channel-stripped 1-line constraint reminder immediately after \texttt{</think>}. ${\overline{T}}_{\text{tot}}$ includes Gate-2 probe, \texttt{<think>}, injected reminder, and response tokens. $^\dagger p < 0.05$ vs.\ \textbf{B1b} (Holm-Bonferroni exact McNemar). Generated automatically in \texttt{outputs/paper\_tables.tex}.}
@@ -81,6 +84,7 @@ M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$) & -- & -- & -- & 
 \bottomrule
 \end{tabular}}
 \end{table}
+}
 
 \section{Main Results, Probe Horizon, and Efficiency Audit}
 Table~\ref{tab:main_results} reports accuracy and efficiency metrics across the frozen $N=450$ evaluation suite. Figure~\ref{fig:pareto} contrasts the Pareto frontier of accuracy versus mean total token budget across \textbf{B0}--\textbf{B2b}, \textbf{M1a}--\textbf{M2}, and $\text{Oracle\_UB}$, while Figure~\ref{fig:bsr_sla} reports Budget-Satisfied Rate ($\text{BSR}(B)$) across tight latency budgets $B \in \{64, 128, 250, 512, 1024, 2048\}$. Our Gate-2 probe logging further compares early-glimpse horizons $K \in \{1, 4, 8, 16, 32\}$ in \texttt{outputs/stats\_summary.json} to quantify how much prefix deliberation entropy is required beyond single-token signals \cite{zeng2026glimprouter}.
@@ -111,6 +115,9 @@ Table~\ref{tab:main_results} reports accuracy and efficiency metrics across the 
 Table~\ref{tab:scale_and_pathology} summarizes the 4-regime disagreement audit (\textbf{Helped}, \textbf{Hurt}, \textbf{Tie-Pass}, \textbf{Tie-Fail}) and greedy 4-gram repetition loop rates across model scales (\texttt{Qwen3.5-0.8B/2B/4B/9B} vs.\ \texttt{SmolLM3-3B}).
 
 % Table 2: Cross-Scale 4-Regime Flip Audit, Loop Pathology, and C-BARR Recovery
+\IfFileExists{tables/tab2_scale_pathology.tex}{%
+  \input{tables/tab2_scale_pathology.tex}%
+}{%
 \begin{table}[t]
 \centering
 \caption{Cross-scale 4-regime disagreement audit (\textbf{B0} vs.\ \textbf{B1b} on $N=450$), greedy 4-gram repetition loop rate, unclosed-\texttt{<think>} budget exhaustion rate ($B=2048$), and \textbf{M2 (Full C-BARR)} efficiency-adjusted gains across Hybrid Gated DeltaNet (\texttt{Qwen3.5}) and Dense GQA (\texttt{SmolLM3-3B}) backbones.}
@@ -129,12 +136,13 @@ Table~\ref{tab:scale_and_pathology} summarizes the 4-regime disagreement audit (
 \bottomrule
 \end{tabular}}
 \end{table}
+}
 
 \section{Causal Diagnostic Analysis and Mechanistic Extensions}
 Table~\ref{tab:diagnostic_control} and Figure~\ref{fig:ehurt} disentangle recency decay ($\rho_{\text{recency}}$) from semantic interference ($\rho_{\text{interference}}$) on held-out IFEval ``Hurt'' prompts across \texttt{diag341\_strict} and \texttt{diag491}. Controls \textbf{A1} (trace stripping), \textbf{A2} (length-matched math filler), \textbf{B1} (pre-\texttt{</think>} anchor), \textbf{B2a} (channel-stripped post-\texttt{</think>} anchor), \textbf{B2b} (unstripped assistant anchor quantifying echo corruption), and \textbf{B3} (halved trace without anchor) isolate the physical locus of constraint forgetting across DeltaNet and Dense GQA caches.
 
 \subsection{Mechanistic Memory Restoration and Zero-Generation Prefill Probing}
-We also implement two architectural diagnostic extensions in \texttt{scripts/ext\_deltanet\_blend.py} and \texttt{scripts/ext\_prefill\_mlp.py}. First, linear interpolation of Gated DeltaNet fast-weight recurrent states $S_{\text{blend}} = (1-\alpha)S_{\text{think}} + \alpha S_{\text{prompt}}$ (optionally paired with 1D convolution state interpolation and full-attention KV eviction) tests whether residual semantic interference originates in fixed-size recurrent memory versus softmax attention keys. Second, a cached multi-head MLP over frozen mid-layer prefill hidden states predicts both Gate-2 escalation suitability and semantic constraint structure $[\phi_{\text{prec}}, \phi_{\text{plan}}]$, enabling zero-generation routing comparisons against lexical Gate 1 under \texttt{IFEval++}-style paraphrased instructions \cite{dong2025ifevalpp}.
+We also implement two architectural diagnostic extensions in \texttt{scripts/ext\_deltanet\_blend.py} and \texttt{scripts/ext\_prefill\_mlp.py} (summarized alongside the Gate-2 probe-horizon ablation in Table~\ref{tab:extensions_w7}). First, linear interpolation of Gated DeltaNet fast-weight recurrent states $S_{\text{blend}} = (1-\alpha)S_{\text{think}} + \alpha S_{\text{prompt}}$ (optionally paired with 1D convolution state interpolation and full-attention KV eviction) tests whether residual semantic interference originates in fixed-size recurrent memory versus softmax attention keys. Second, a cached multi-head MLP over frozen mid-layer prefill hidden states predicts both Gate-2 escalation suitability and semantic constraint structure $[\phi_{\text{prec}}, \phi_{\text{plan}}]$, enabling zero-generation routing comparisons against lexical Gate 1 under \texttt{IFEval++}-style paraphrased instructions \cite{dong2025ifevalpp}.
 
 \begin{figure}[t]
 \centering
@@ -148,6 +156,9 @@ We also implement two architectural diagnostic extensions in \texttt{scripts/ext
 \end{figure}
 
 % Table 3: Section 6 Causal Diagnostic Control: Trace Stripping vs. Post-Think Re-Anchoring on E_hurt
+\IfFileExists{tables/tab3_diagnostic_control.tex}{%
+  \input{tables/tab3_diagnostic_control.tex}%
+}{%
 \begin{table}[t]
 \centering
 \caption{Strict prompt-level recovery (\%) on held-out IFEval ``Hurt'' prompts ($\text{Pass}(\text{B0})=1\wedge \text{Pass}(\text{B1b})=0$ on $N=341$ strictly \texttt{eval\_450}-disjoint and $N=491$ calibration-disjoint pools), comparing \textbf{Trace Stripping} vs.\ \textbf{Post-Think Constraint Re-Anchoring} across Hybrid Gated DeltaNet (\texttt{Qwen3.5-4B}) and Dense GQA (\texttt{SmolLM3-3B}) to separate recency decay (${\rho }_{\text{recency}}$) from semantic interference (${\rho }_{\text{interference}}$).}
@@ -173,6 +184,26 @@ Control B3: Intra-Trace Cut (No Re-Anchor)                         & Halves dist
 \bottomrule
 \end{tabular}}
 \end{table}
+}
+
+% Table 4: Probe-Horizon Ablation & Mechanistic W7 Extensions
+\IfFileExists{tables/tab4_extensions_w7.tex}{%
+  \input{tables/tab4_extensions_w7.tex}%
+}{%
+\begin{table}[t]
+\centering
+\caption{Gate-2 probe-horizon ablation ($K \in \{1,4,8,16,32\}$) and optional mechanistic extensions (generated automatically in \texttt{paper/tables/tab4\_extensions\_w7.tex}).}
+\label{tab:extensions_w7}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Routing / Probe Variant} & \textbf{Configuration} & \textbf{MacroAcc (\%)} $\uparrow$ & $\textbf{OAA}_{250}$ (\%) $\uparrow$ & ${U}_{0.05}$ (\%) $\uparrow$ & ${\overline{T}}_{\text{tot}}$ $\downarrow$ \\
+\midrule
+Gate-2 Probe Horizon Sweep & $K \in \{1,4,8,16,32\}$ & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}}
+\end{table}
+}
 
 \section{Conclusion and Limitations}
 C-BARR demonstrates that lightweight dual-signal routing paired with tight thinking caps and turn-delimited channel-stripped post-\texttt{</think>} constraint re-anchoring eliminates overthinking while recovering strict instruction compliance without weight updates. Remaining limitations include Gate-1 lexical sensitivity under adversarial paraphrasing (addressed cleanly via frozen prefill representations), residual recurrent interference on hybrid linear-attention backbones, and the distinction between held-out utility calibration and distribution-shifted domains outside mathematical, commonsense, and verifiable instruction-following tasks.

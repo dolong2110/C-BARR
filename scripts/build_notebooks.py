@@ -1283,6 +1283,8 @@ if RUN_PHASE7_ANALYSIS:
                 str(OUT_DIR),
                 "--fig-dir",
                 str(FIG_DIR),
+                "--table-dir",
+                str(REPO_DIR / "paper" / "tables"),
             ]
         )
         print("=== [Audit] Double-Blind Anonymity Check ===")
@@ -1378,6 +1380,10 @@ with zipfile.ZipFile(bundle_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     if RUN_PHASE7_ANALYSIS and FIG_DIR.is_dir():
         for pdf in sorted(FIG_DIR.glob("*.pdf")):
             zf.write(pdf, arcname=f"paper/figures/{pdf.name}")
+    table_dir = REPO_DIR / "paper" / "tables"
+    if RUN_PHASE7_ANALYSIS and table_dir.is_dir():
+        for tex in sorted(table_dir.glob("*.tex")):
+            zf.write(tex, arcname=f"paper/tables/{tex.name}")
 
 print(f"Packaged results bundle: {bundle_zip} ({bundle_zip.stat().st_size / 1024:.1f} KB)")
 if IS_COLAB:

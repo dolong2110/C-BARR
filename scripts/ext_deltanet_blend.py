@@ -288,7 +288,14 @@ def _load_blend_cache(path: pathlib.Path) -> dict[tuple[str, str, bool, bool], d
     out: dict[tuple[str, str, bool, bool], dict[str, Any]] = {}
     if not path.is_file():
         return out
-    for rec in _load_jsonl(path):
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         k = _blend_key(
             rec["uid"],
             float(rec["alpha"]),
@@ -297,6 +304,47 @@ def _load_blend_cache(path: pathlib.Path) -> dict[tuple[str, str, bool, bool], d
         )
         out[k] = rec
     return out
+
+
+def _filter_uncached_ehurt(
+    e_hurt: list[dict[str, Any]],
+    cache_map: dict[tuple[str, str, bool, bool], dict[str, Any]],
+    alphas: list[float],
+    blend_conv: bool,
+    evict_kv: bool,
+) -> list[dict[str, Any]]:
+    """Returns E_hurt items missing at least one (uid, alpha, blend_conv, evict_kv) entry."""
+    return [
+        row
+        for row in e_hurt
+        if any(
+            _blend_key(str(row["item"]["uid"]), a, blend_conv, evict_kv) not in cache_map
+            for a in alphas
+        )
+    ]
+
+
+def _terminate_procs(procs: list[tuple[int, subprocess.Popen[Any]]]) -> None:
+    """Gracefully terminates active worker subprocesses so sibling partial shards can be harvested."""
+    alive = [p for _, p in procs if p.poll() is None]
+    if not alive:
+        return
+    for p in alive:
+        try:
+            p.terminate()
+        except OSError:
+            pass
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if all(p.poll() is not None for p in alive):
+            return
+        time.sleep(0.1)
+    for p in alive:
+        if p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
 
 
 def _harvest_partial_blend_shards(
@@ -433,6 +481,9 @@ def main() -> None:
     )
     parser.add_argument("--shard-idx", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--max-retries", type=int, default=2, help="Auto-retry partial GPU OOM failures.")
+    parser.add_argument("--retry-wait-sec", type=int, default=15)
+    parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mock", action="store_true", help="Run CPU DynamicCache unit sweep only")
     args = parser.parse_args()
 
@@ -464,19 +515,18 @@ def main() -> None:
         e_hurt = e_hurt[: args.max_items]
 
     shard_dir = model_dir / "shards"
+    is_worker = bool(args.worker or args.num_shards > 1)
     canon_cache = (
-        _harvest_partial_blend_shards(blend_cache_path, shard_dir)
-        if args.num_shards == 1
-        else _load_blend_cache(blend_cache_path)
+        _load_blend_cache(blend_cache_path)
+        if is_worker
+        else _harvest_partial_blend_shards(blend_cache_path, shard_dir)
     )
-    required_keys = [
-        _blend_key(str(r["item"]["uid"]), a, args.blend_conv_state, args.evict_think_kv)
-        for r in e_hurt
-        for a in args.alphas
-    ]
-    if args.num_shards == 1 and all(k in canon_cache for k in required_keys):
+    uncached_items = _filter_uncached_ehurt(
+        e_hurt, canon_cache, args.alphas, args.blend_conv_state, args.evict_think_kv
+    )
+    if not is_worker and not uncached_items:
         print(
-            f"[deltanet_blend] All {len(required_keys)} (item, alpha) pairs cached; summarizing immediately.",
+            f"[deltanet_blend] All {len(e_hurt) * len(args.alphas)} (item, alpha) pairs cached; summarizing immediately.",
             flush=True,
         )
         _summarize_and_save_blend(
@@ -490,87 +540,131 @@ def main() -> None:
         )
         return
 
-    # Only dispatch uncached E_hurt items across live free-VRAM GPU worker slots
-    if args.num_shards == 1:
-        uncached_items = [
-            r
-            for r in e_hurt
-            if any(
-                _blend_key(str(r["item"]["uid"]), a, args.blend_conv_state, args.evict_think_kv)
-                not in canon_cache
-                for a in args.alphas
-            )
-        ]
-        if args.shards == "auto":
-            slot_gpus = _detect_auto_slots(args.model, len(uncached_items))
-        else:
-            req_n = max(1, min(len(uncached_items), int(args.shards)))
-            auto_s = _detect_auto_slots(args.model, req_n)
-            slot_gpus = (auto_s * ((req_n // max(1, len(auto_s))) + 1))[:req_n] if auto_s else []
-
-        if slot_gpus and (len(slot_gpus) > 1 or slot_gpus[0] != "0" or os.environ.get("CUDA_VISIBLE_DEVICES", "")):
-            eff_shards = len(slot_gpus)
-            print(
-                f"[deltanet_blend] Spawning {eff_shards} worker(s) on live free GPUs {slot_gpus} "
-                f"for {len(uncached_items)}/{len(e_hurt)} remaining items x {len(args.alphas)} alphas...",
-                flush=True,
-            )
+    # Parent supervisor dispatches uncached items across live free-VRAM GPU worker subprocesses with retry.
+    if not is_worker:
+        has_cuda = bool(torch.cuda.is_available())
+        req_multi = args.shards != "auto" and int(args.shards) > 1
+        if has_cuda or req_multi:
             try:
                 from huggingface_hub import snapshot_download
 
-                snapshot_download(repo_id=args.model, local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1")
+                snapshot_download(
+                    repo_id=args.model,
+                    local_files_only=os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"),
+                )
                 prewarmed = True
             except Exception:
                 prewarmed = False
 
-            shard_dir.mkdir(parents=True, exist_ok=True)
-            procs: list[tuple[int, subprocess.Popen[str]]] = []
-            try:
-                for s_idx in range(eff_shards):
-                    env = os.environ.copy()
-                    env["CUDA_VISIBLE_DEVICES"] = slot_gpus[s_idx]
-                    for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-                        env.setdefault(tvar, "4")
-                    env.setdefault("TOKENIZERS_PARALLELISM", "false")
-                    if prewarmed:
-                        env.setdefault("HF_HUB_OFFLINE", "1")
-                    cmd = [
-                        sys.executable,
-                        str(pathlib.Path(__file__).resolve()),
-                        "--model",
-                        args.model,
-                        "--out-dir",
-                        args.out_dir,
-                        "--alphas",
-                        *[str(a) for a in args.alphas],
-                        "--max-items",
-                        str(args.max_items),
-                        "--shard-idx",
-                        str(s_idx),
-                        "--num-shards",
-                        str(eff_shards),
-                    ]
-                    if args.blend_conv_state:
-                        cmd.append("--blend-conv-state")
-                    if args.evict_think_kv:
-                        cmd.append("--evict-think-kv")
-                    p = subprocess.Popen(cmd, env=env)
-                    procs.append((s_idx, p))
-
-                failed_rc = 0
-                for s_idx, p in procs:
-                    rc = p.wait()
-                    if rc != 0 and failed_rc == 0:
-                        failed_rc = rc
-                if failed_rc != 0:
-                    raise RuntimeError(f"deltanet_blend shard worker exited with status {failed_rc}")
-            finally:
-                for _, p in procs:
-                    if p.poll() is None:
-                        p.terminate()
-                # Always harvest completed shard rows into canonical cache even if another shard failed
+            max_attempts = max(0, int(args.max_retries)) + 1
+            merged = canon_cache
+            for attempt in range(1, max_attempts + 1):
                 merged = _harvest_partial_blend_shards(blend_cache_path, shard_dir)
+                uncached_items = _filter_uncached_ehurt(
+                    e_hurt, merged, args.alphas, args.blend_conv_state, args.evict_think_kv
+                )
+                if not uncached_items:
+                    break
+                if args.shards == "auto":
+                    slot_gpus = _detect_auto_slots(args.model, len(uncached_items))
+                else:
+                    req_n = max(1, min(len(uncached_items), int(args.shards)))
+                    auto_s = _detect_auto_slots(args.model, req_n)
+                    slot_gpus = (
+                        (auto_s * ((req_n // max(1, len(auto_s))) + 1))[:req_n]
+                        if auto_s
+                        else ([] if has_cuda else ["cpu"] * req_n)
+                    )
 
+                if not slot_gpus:
+                    raise RuntimeError(
+                        f"No CUDA GPU with sufficient free VRAM became available for {args.model} DeltaNet Blend."
+                    )
+
+                eff_shards = len(slot_gpus)
+                print(
+                    f"[deltanet_blend] Attempt {attempt}/{max_attempts}: spawning {eff_shards} worker(s) on GPUs {slot_gpus} "
+                    f"for {len(uncached_items)}/{len(e_hurt)} remaining items x {len(args.alphas)} alphas...",
+                    flush=True,
+                )
+                shard_dir.mkdir(parents=True, exist_ok=True)
+                procs: list[tuple[int, subprocess.Popen[Any]]] = []
+                failed_rc = 0
+                try:
+                    for s_idx in range(eff_shards):
+                        env = os.environ.copy()
+                        if slot_gpus[s_idx] != "cpu":
+                            env["CUDA_VISIBLE_DEVICES"] = slot_gpus[s_idx]
+                        for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                            env.setdefault(tvar, "4")
+                        env.setdefault("TOKENIZERS_PARALLELISM", "false")
+                        if prewarmed:
+                            env.setdefault("HF_HUB_OFFLINE", "1")
+                        cmd = [
+                            sys.executable,
+                            str(pathlib.Path(__file__).resolve()),
+                            "--worker",
+                            "--model",
+                            args.model,
+                            "--out-dir",
+                            args.out_dir,
+                            "--alphas",
+                            *[str(a) for a in args.alphas],
+                            "--max-items",
+                            str(args.max_items),
+                            "--shard-idx",
+                            str(s_idx),
+                            "--num-shards",
+                            str(eff_shards),
+                        ]
+                        if args.blend_conv_state:
+                            cmd.append("--blend-conv-state")
+                        if args.evict_think_kv:
+                            cmd.append("--evict-think-kv")
+                        procs.append((s_idx, subprocess.Popen(cmd, env=env)))
+
+                    pending = list(procs)
+                    while pending:
+                        still_running: list[tuple[int, subprocess.Popen[Any]]] = []
+                        for s_idx, p in pending:
+                            rc = p.poll()
+                            if rc is None:
+                                still_running.append((s_idx, p))
+                            elif rc != 0:
+                                failed_rc = rc
+                                print(
+                                    f"[deltanet_blend] Worker shard={s_idx}/{eff_shards} failed (exit={rc}); "
+                                    "terminating sibling workers and harvesting partial shards.",
+                                    flush=True,
+                                )
+                                _terminate_procs(
+                                    [item for item in pending if item[0] != s_idx]
+                                )
+                                still_running = []
+                                break
+                        pending = still_running
+                        if pending:
+                            time.sleep(1.0)
+                finally:
+                    _terminate_procs(procs)
+                    merged = _harvest_partial_blend_shards(blend_cache_path, shard_dir)
+
+                if failed_rc == 0:
+                    break
+                if attempt < max_attempts:
+                    wait_s = max(0, int(args.retry_wait_sec))
+                    print(
+                        f"[deltanet_blend] Retrying remaining items after {wait_s}s live GPU rescan...",
+                        flush=True,
+                    )
+                    if wait_s > 0:
+                        time.sleep(wait_s)
+                else:
+                    raise RuntimeError(
+                        f"deltanet_blend shard worker exited with status {failed_rc} after {max_attempts} attempts"
+                    )
+
+            merged = _harvest_partial_blend_shards(blend_cache_path, shard_dir)
             _summarize_and_save_blend(
                 out_path,
                 args.model,
@@ -582,23 +676,35 @@ def main() -> None:
             )
             return
 
-    shard_mode = args.num_shards > 1
-    my_items = e_hurt[args.shard_idx :: args.num_shards] if shard_mode else e_hurt
+    my_items = uncached_items[args.shard_idx :: args.num_shards] if is_worker else uncached_items
     worker_cache_path = (
         (model_dir / "shards" / f"deltanet_blend_shard_{args.shard_idx}_of_{args.num_shards}.jsonl")
-        if shard_mode
+        if is_worker
         else blend_cache_path
     )
+    tag_lbl = f"shard={args.shard_idx}/{args.num_shards}" if is_worker else "single"
+    if not my_items:
+        print(f"[deltanet_blend {tag_lbl}] 0 uncached items assigned; exiting cleanly.", flush=True)
+        return
     worker_cache_path.parent.mkdir(parents=True, exist_ok=True)
     known = dict(canon_cache)
     known.update(_load_blend_cache(worker_cache_path))
 
     offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
-    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False, local_files_only=offline)
-    device, dtype = resolve_device_and_dtype("auto", "auto")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=dtype, trust_remote_code=False, local_files_only=offline
-    ).to(device)
+    try:
+        tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False, local_files_only=offline)
+        device, dtype = resolve_device_and_dtype("auto", "auto")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=dtype, trust_remote_code=False, local_files_only=offline
+        ).to(device)
+    except Exception:
+        if offline:
+            raise
+        tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=False, local_files_only=True)
+        device, dtype = resolve_device_and_dtype("auto", "auto")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=dtype, trust_remote_code=False, local_files_only=True
+        ).to(device)
     model.eval()
 
     eos_raw = tok.eos_token_id
@@ -608,12 +714,12 @@ def main() -> None:
         if tid is not None and tid != tok.unk_token_id:
             eos_ids.add(int(tid))
 
-    tag_lbl = f"shard={args.shard_idx}/{args.num_shards}" if shard_mode else "single"
     print(
-        f"[deltanet_blend {tag_lbl}] Model={args.model} | items={len(my_items)}/{len(e_hurt)} | "
+        f"[deltanet_blend {tag_lbl}] Model={args.model} | items={len(my_items)} remaining ({len(e_hurt)} total) | "
         f"alphas={args.alphas} on device={device} ({dtype})",
         flush=True,
     )
+    log_every = 5 if len(my_items) <= 25 else 10
     t0 = time.perf_counter()
     with worker_cache_path.open("a", encoding="utf-8") as fh:
         for i_row, row in enumerate(my_items, start=1):
@@ -647,14 +753,14 @@ def main() -> None:
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 fh.flush()
                 known[key] = rec
-            if (not shard_mode or args.shard_idx == 0) and (i_row % 5 == 0 or i_row == len(my_items)):
+            if i_row % log_every == 0 or i_row == len(my_items):
                 print(
                     f"[deltanet_blend {tag_lbl}] completed {i_row}/{len(my_items)} items "
                     f"({time.perf_counter() - t0:.1f}s)",
                     flush=True,
                 )
 
-    if not shard_mode:
+    if not is_worker:
         _summarize_and_save_blend(
             out_path,
             args.model,

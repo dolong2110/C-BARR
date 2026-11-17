@@ -16,6 +16,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.run_matrix import _regrade_cached_gsm8k_row
 from scripts.versioning import get_version_provenance
 from src.engine import run_gate1_lexical
 from src.logfmt import banner, hl
@@ -32,9 +33,12 @@ from src.metrics import (
 from src.routers import (
     CalibratedRouterParams,
     _gate2_target_label,
+    _get_slow_rec,
     fit_gate2_logistic_weights,
     resolve_all_variants_for_item,
+    score_gate2_probability,
     select_cost_aware_tau,
+    select_tiered_budget,
 )
 
 VARIANT_ORDER: tuple[str, ...] = (
@@ -179,20 +183,53 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         "result_version": (run_manifest or {}).get("result_version") or (f"v{code_ver}" if code_ver != "unknown" else "unknown"),
     }
 
+    ext_deltanet_blend = None
+    if (model_dir / "ext_deltanet_blend.json").exists():
+        ext_deltanet_blend = json.loads(
+            (model_dir / "ext_deltanet_blend.json").read_text(encoding="utf-8")
+        )
+    prefill_mlp = None
+    if (model_dir / "prefill_mlp_summary.json").exists():
+        prefill_mlp = json.loads(
+            (model_dir / "prefill_mlp_summary.json").read_text(encoding="utf-8")
+        )
+
     eval_cache_path = model_dir / "eval_450_cache.jsonl"
     items: list[dict[str, Any]] = []
     per_system_runs: dict[str, list[dict[str, Any]]] = {k: [] for k in VARIANT_ORDER}
     if eval_cache_path.exists():
         rows = _load_jsonl(eval_cache_path)
         params = CalibratedRouterParams(**report["calibrated_params"])
+        tp_rep = report.get("training_params") if isinstance(report.get("training_params"), dict) else {}
+        lam_u = float(tp_rep.get("lam_utility", 0.05))
+        norm_t = float(tp_rep.get("norm_tokens", 250.0))
         rng_b2b = np.random.default_rng(42)
+        regraded_any = False
         for row in rows:
+            if _regrade_cached_gsm8k_row(row):
+                regraded_any = True
             items.append(row["item"])
             resolved = resolve_all_variants_for_item(
                 row, params, rng_b2b, target_esc_prob=params.m2_escalation_rate_dev
             )
             for k in VARIANT_ORDER:
                 per_system_runs[k].append(resolved[k])
+        if regraded_any and items and isinstance(report.get("systems"), dict):
+            z_b1b = [int(r["z"]) for r in per_system_runs["B1b"]]
+            comp_keys = [k for k in VARIANT_ORDER if k != "B1b"]
+            raw_ps = [
+                exact_and_midp_mcnemar(z_b1b, [int(r["z"]) for r in per_system_runs[k]])["p_exact"]
+                for k in comp_keys
+            ]
+            p_map = dict(zip(comp_keys, holm_bonferroni(raw_ps)))
+            for k in VARIANT_ORDER:
+                re_tab = evaluate_system_table(
+                    items, per_system_runs[k], lam_utility=lam_u, norm_tokens=norm_t
+                )
+                re_clean = {tk: tv for tk, tv in re_tab.items() if tk not in ("z_vec", "u_vec")}
+                if k != "B1b" and k in p_map:
+                    re_clean["p_holm_vs_b1b"] = float(p_map[k])
+                report["systems"][k] = re_clean
 
     return {
         "dir": model_dir,
@@ -202,6 +239,8 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         "provenance": provenance,
         "strict_diag": strict_diag,
         "full_diag": full_diag,
+        "ext_deltanet_blend": ext_deltanet_blend,
+        "prefill_mlp": prefill_mlp,
         "items": items,
         "per_system_runs": per_system_runs,
     }
@@ -288,6 +327,9 @@ def _probe_horizon_ablation(
     model_dir: pathlib.Path,
     lam_utility: float = 0.05,
     norm_tokens: float = 250.0,
+    reg_c: float = 1.0,
+    tau_grid: tuple[float, float, int] = (0.15, 0.85, 29),
+    seed: int = 42,
 ) -> dict[str, Any]:
     """Counterfactual GlimpRouter probe-horizon sweep K in {1, 4, 8, 16, 32} with zero GPU calls."""
     seed_p = model_dir / "seed_60_cache.jsonl"
@@ -300,6 +342,8 @@ def _probe_horizon_ablation(
     eval_rows = _load_jsonl(eval_p)
     if not seed_rows or not dev_rows or not eval_rows:
         return {}
+    for row in seed_rows + dev_rows + eval_rows:
+        _regrade_cached_gsm8k_row(row)
 
     sample_probe = seed_rows[0].get("probe", {})
     horizons: list[tuple[int, str, str, str]] = [
@@ -324,39 +368,69 @@ def _probe_horizon_ablation(
             dtype=np.float64,
         )
 
+    def _route_row(
+        row: dict[str, Any],
+        coef: np.ndarray,
+        intercept: float,
+        tau: float,
+        tau_h_high_k: float,
+        k_val: int,
+        hm_k: str,
+        hx_k: str,
+        in_k: str,
+    ) -> tuple[dict[str, Any], int]:
+        prompt_str = row["item"]["prompt"]
+        g1 = run_gate1_lexical(prompt_str)
+        pr = row["probe"]
+        eff_probe = min(int(pr.get("T_probe", 32)), k_val)
+        if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+            return row["b0"], 0
+        if g1.phi_plan == 1:
+            b_dir = select_tiered_budget(prompt_str, g1, None, tau_h_high_k)
+            return _get_slow_rec(row, b_dir, direct=True, prefix="m2"), 1
+        fv = _feat(row, g1, hm_k, hx_k, in_k)
+        prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
+        if prob >= tau:
+            probe_k = {
+                **pr,
+                "H_first": float(pr.get("H_first", 0.0)),
+                "H_mean": float(pr.get(hm_k, pr.get("H_mean", 0.0))),
+                "H_max": float(pr.get(hx_k, pr.get("H_max", 0.0))),
+                "I_inertia": int(pr.get(in_k, pr.get("I_inertia", 0))),
+                "T_probe": eff_probe,
+            }
+            b_esc = select_tiered_budget(prompt_str, g1, probe_k, tau_h_high_k)
+            slow = _get_slow_rec(row, b_esc, direct=False, prefix="m2")
+            merged = dict(slow)
+            merged["T_probe"] = eff_probe
+            merged["T_total"] = eff_probe + int(slow["T_total"])
+            merged["calls"] = 2
+            merged["latency_ms"] = float(pr.get("latency_ms", 0.0)) + float(slow.get("latency_ms", 0.0))
+            return merged, 1
+        return row["fast_done"], 0
+
+    t_min, t_max, t_steps = float(tau_grid[0]), float(tau_grid[1]), max(2, int(tau_grid[2]))
     out: dict[str, Any] = {}
     eval_items = [r["item"] for r in eval_rows]
     for k_val, hm_k, hx_k, in_k in horizons:
         x_s = np.vstack([_feat(r, run_gate1_lexical(r["item"]["prompt"]), hm_k, hx_k, in_k) for r in seed_rows])
         y_s = np.asarray([_gate2_target_label(r) for r in seed_rows], dtype=int)
-        coef_list, intercept = fit_gate2_logistic_weights(x_s, y_s, seed=42, reg_c=1.0)
+        coef_list, intercept = fit_gate2_logistic_weights(x_s, y_s, seed=seed, reg_c=reg_c)
         coef = np.asarray(coef_list, dtype=np.float64)
+        h_max_helped = [
+            float(r["probe"].get(hx_k, r["probe"]["H_max"]))
+            for r in seed_rows
+            if int(r["m2_b128"]["z"]) > int(r["fast_done"]["z"])
+        ]
+        tau_h_high_k = float(np.median(h_max_helped)) if h_max_helped else 0.85
 
-        # Calibrate tau on dev_60 matching CBARRCalibrator (adjusting effective Gate-2 probe tax to <= k_val)
         tau_sweep: list[dict[str, float]] = []
-        for tau in np.linspace(0.15, 0.85, 29):
+        for tau in np.linspace(t_min, t_max, t_steps):
             u_list = []
             esc_list = []
             for r in dev_rows:
-                g1 = run_gate1_lexical(r["item"]["prompt"])
-                if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
-                    chosen = r["b0"]
-                    esc_list.append(0)
-                elif g1.phi_plan == 1:
-                    chosen = r.get("m2_b256_direct", r["m2_b256"])
-                    esc_list.append(1)
-                else:
-                    fv = _feat(r, g1, hm_k, hx_k, in_k)
-                    prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
-                    if prob >= tau:
-                        slow = r.get("m2_b256", r["m2_b128"])
-                        chosen = dict(slow)
-                        eff_probe = min(int(r["probe"].get("T_probe", 32)), k_val)
-                        chosen["T_total"] = eff_probe + int(slow["T_total"])
-                        esc_list.append(1)
-                    else:
-                        chosen = r["fast_done"]
-                        esc_list.append(0)
+                chosen, is_esc = _route_row(r, coef, intercept, float(tau), tau_h_high_k, k_val, hm_k, hx_k, in_k)
+                esc_list.append(is_esc)
                 u_list.append(float(chosen["z"]) - lam_utility * (float(chosen["T_total"]) / norm_tokens))
             tau_sweep.append(
                 {
@@ -367,31 +441,15 @@ def _probe_horizon_ablation(
             )
         best_tau = float(select_cost_aware_tau(tau_sweep)["tau"])
 
-        eval_runs = []
-        for r in eval_rows:
-            g1 = run_gate1_lexical(r["item"]["prompt"])
-            if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
-                eval_runs.append(r["b0"])
-            elif g1.phi_plan == 1:
-                eval_runs.append(r.get("m2_b256_direct", r["m2_b256"]))
-            else:
-                fv = _feat(r, g1, hm_k, hx_k, in_k)
-                prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
-                if prob >= best_tau:
-                    slow = r.get("m2_b256", r["m2_b128"])
-                    eff_probe = min(int(r["probe"].get("T_probe", 32)), k_val)
-                    merged = dict(slow)
-                    merged["T_probe"] = eff_probe
-                    merged["T_total"] = eff_probe + int(slow["T_total"])
-                    merged["calls"] = 2
-                    eval_runs.append(merged)
-                else:
-                    eval_runs.append(r["fast_done"])
-
+        eval_runs = [
+            _route_row(r, coef, intercept, best_tau, tau_h_high_k, k_val, hm_k, hx_k, in_k)[0]
+            for r in eval_rows
+        ]
         tab = evaluate_system_table(eval_items, eval_runs, lam_utility=lam_utility, norm_tokens=norm_tokens)
         out[f"K_{k_val}"] = {
             "horizon_tokens": k_val,
             "tau_prob": best_tau,
+            "tau_h_high": tau_h_high_k,
             "macro_acc": float(tab["macro_acc"]),
             "oaa_250": float(tab["oaa_250"]),
             "u_005": float(tab["u_005"]),
@@ -518,7 +576,21 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
                 eval_deg["empirical_degradation_risk"] <= dev_crc["crc_expectation_bound"]
             )
 
-    probe_horizons = _probe_horizon_ablation(bundle["dir"])
+    tp = report.get("training_params") if isinstance(report.get("training_params"), dict) else {}
+    tg_raw = tp.get("tau_grid")
+    tau_grid = (
+        (float(tg_raw[0]), float(tg_raw[1]), int(tg_raw[2]))
+        if isinstance(tg_raw, (list, tuple)) and len(tg_raw) >= 3
+        else (0.15, 0.85, 29)
+    )
+    probe_horizons = _probe_horizon_ablation(
+        bundle["dir"],
+        lam_utility=float(tp.get("lam_utility", 0.05)),
+        norm_tokens=float(tp.get("norm_tokens", 250.0)),
+        reg_c=float(tp.get("logreg_C", 1.0)),
+        tau_grid=tau_grid,
+        seed=int(tp.get("seed", 42)),
+    )
 
     return {
         "model": report["model"],
@@ -542,13 +614,18 @@ def _fmt_pct(val: float) -> str:
     return f"{100.0 * float(val):.1f}"
 
 
-def generate_latex_tables(
+def _tex_escape_tt(val: str) -> str:
+    return str(val).replace("_", r"\_")
+
+
+def generate_latex_table_parts(
     bundles: dict[str, dict[str, Any]],
     primary_model: str,
     dense_model: str,
-) -> str:
-    """Emits complete LaTeX Tables 1, 2, and 3 populated from observed bundle metrics."""
-    lines: list[str] = ["% Auto-generated by scripts/analyze_and_plot.py from frozen matrix outputs"]
+    stats_models: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Builds modular LaTeX tables (tab1..tab4) populated from observed bundle & W7 metrics."""
+    header = "% Auto-generated by scripts/analyze_and_plot.py from frozen matrix outputs\n"
 
     # Table 1: Primary (or first available) model
     t1_key = primary_model if primary_model in bundles else next(iter(bundles))
@@ -556,19 +633,18 @@ def generate_latex_tables(
     t1_sys = t1_rep["systems"]
     t1_orc = t1_rep["oracle_and_4regime"]["oracle_summary"]
 
-    lines.extend([
-        "",
+    t1_lines = [
         rf"% Table 1: Main C-BARR Comparison ({t1_key})",
         r"\begin{table}[t]",
         r"\centering",
-        rf"\caption{{Main results across the frozen $N=450$ suite (\texttt{{{t1_key}}}). $^\dagger p < 0.05$ vs.\ \textbf{{B1b}} (Holm-Bonferroni exact McNemar).}}",
+        rf"\caption{{Main results across the frozen $N=450$ suite (\texttt{{{_tex_escape_tt(t1_key)}}}). $^\dagger p < 0.05$ vs.\ \textbf{{B1b}} (Holm-Bonferroni exact McNemar).}}",
         r"\label{tab:main_results}",
         r"\resizebox{\textwidth}{!}{%",
         r"\begin{tabular}{lccccccccccc}",
         r"\toprule",
         r"\textbf{System Variant} & \textbf{GSM-E} & \textbf{GSM-H} & \textbf{CSQA} & \textbf{IFE-Plan} & \textbf{IFE-Prec} & \textbf{IFE-Conf} & \textbf{MacroAcc} $\uparrow$ & $\textbf{OAA}_{250}$ $\uparrow$ & $\textbf{AUC}_{\text{OAA}}$ $\uparrow$ & ${U}_{0.05}$ $\uparrow$ & ${\overline{T}}_{\text{tot}}$ / \textbf{Calls} $\downarrow$ \\",
         r"\midrule",
-    ])
+    ]
 
     def _row_tex(label: str, row_d: dict[str, Any], sig: str = "") -> str:
         sc = " & ".join(_fmt_pct(row_d["slice_acc"][s]) for s in SLICE_ORDER)
@@ -580,20 +656,19 @@ def generate_latex_tables(
 
     for k in VARIANT_ORDER:
         if k in ("M1a", "M2_B64"):
-            lines.append(r"\midrule")
+            t1_lines.append(r"\midrule")
         sig = r"$^\dagger$" if float(t1_sys[k].get("p_holm_vs_b1b", 1.0)) < 0.05 else ""
-        lines.append(_row_tex(VARIANT_LATEX_LABELS[k], t1_sys[k], sig=sig))
+        t1_lines.append(_row_tex(VARIANT_LATEX_LABELS[k], t1_sys[k], sig=sig))
     if "M2_Prec" in t1_rep.get("auxiliary_systems", {}):
-        lines.append(_row_tex(r"M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$)", t1_rep["auxiliary_systems"]["M2_Prec"]))
+        t1_lines.append(_row_tex(r"M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$)", t1_rep["auxiliary_systems"]["M2_Prec"]))
     if "M2_B512" in t1_rep.get("auxiliary_systems", {}):
-        lines.append(_row_tex(r"M2-512: C-BARR Aux.\ Cap ($B=512$, R3)", t1_rep["auxiliary_systems"]["M2_B512"]))
-    lines.append(r"\midrule")
-    lines.append(_row_tex(r"\textit{Instance-Level Oracle\_UB}", t1_orc))
-    lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
+        t1_lines.append(_row_tex(r"M2-512: C-BARR Aux.\ Cap ($B=512$, R3)", t1_rep["auxiliary_systems"]["M2_B512"]))
+    t1_lines.append(r"\midrule")
+    t1_lines.append(_row_tex(r"\textit{Instance-Level Oracle\_UB}", t1_orc))
+    t1_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
 
     # Table 2: Cross-Scale 4-Regime Flip Audit & Loop Pathology
-    lines.extend([
-        "",
+    t2_lines = [
         "% Table 2: Cross-Scale 4-Regime Flip Audit, Loop Pathology, and C-BARR Recovery",
         r"\begin{table}[t]",
         r"\centering",
@@ -604,30 +679,30 @@ def generate_latex_tables(
         r"\toprule",
         r"\textbf{Model Backbone} & \textbf{Mixer Architecture} & \textbf{\% Helped} & \textbf{\% Hurt} & \textbf{B1b Loop\%} $\downarrow$ & \textbf{B1b Exh.\%} $\downarrow$ & \textbf{M2 Loop\%} $\downarrow$ & \textbf{B1b Macro} & \textbf{M2 Macro} $\uparrow$ & \textbf{Token Sav.\%} $\uparrow$ \\",
         r"\midrule",
-    ])
+    ]
     known_ids = {m for m, _, _ in DEFAULT_SCALE_ORDER}
     scale_rows = list(DEFAULT_SCALE_ORDER)
     for extra_m in bundles:
         if extra_m not in known_ids:
-            scale_rows.append((extra_m, rf"\texttt{{{extra_m}}}", "Evaluated Backbone"))
+            scale_rows.append((extra_m, rf"\texttt{{{_tex_escape_tt(extra_m)}}}", "Evaluated Backbone"))
     for model_id, tex_name, mixer in scale_rows:
         if model_id == dense_model:
-            lines.append(r"\midrule")
+            t2_lines.append(r"\midrule")
         if model_id not in bundles:
-            lines.append(f"{tex_name} & {mixer} & -- & -- & -- & -- & -- & -- & -- & -- \\\\")
+            t2_lines.append(f"{tex_name} & {mixer} & -- & -- & -- & -- & -- & -- & -- & -- \\\\")
             continue
         rep = bundles[model_id]["report"]
         o4 = rep["oracle_and_4regime"]
         b1b_s = rep["systems"]["B1b"]
         m2_s = rep["systems"]["M2"]
         sav = 100.0 * (1.0 - float(m2_s["mean_t_tot"]) / max(1e-6, float(b1b_s["mean_t_tot"])))
-        lines.append(
+        t2_lines.append(
             f"{tex_name} & {mixer} & {_fmt_pct(o4['helped_rate'])} & {_fmt_pct(o4['hurt_rate'])} & "
             f"{_fmt_pct(b1b_s['loop_rate'])} & {_fmt_pct(b1b_s['exhaust_rate'])} & "
             f"{_fmt_pct(m2_s['loop_rate'])} & {_fmt_pct(b1b_s['macro_acc'])} & "
             f"{_fmt_pct(m2_s['macro_acc'])} & {sav:.1f} \\\\"
         )
-    lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
+    t2_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
 
     # Table 3: Section 6 Causal Diagnostic Control on E_hurt
     p_diag = (
@@ -653,8 +728,7 @@ def generate_latex_tables(
         val = rho_r if which == "rho_recency" else rho_i
         return f"{100.0 * val:.1f}"
 
-    lines.extend([
-        "",
+    t3_lines = [
         r"% Table 3: Section 6 Causal Diagnostic Control on E_hurt",
         r"\begin{table}[t]",
         r"\centering",
@@ -668,16 +742,16 @@ def generate_latex_tables(
         r" & & \textbf{Inhibition} & \textbf{Structural} & \textbf{Inhibition} & \textbf{Structural} \\",
         r"\midrule",
         r"B1b: Unmodified \texttt{<think>} ($|t_{\text{think}}|$) & Baseline failure state (0\%) & 0.0 & 0.0 & 0.0 & 0.0 \\",
-    ])
+    ]
     for m_key, m_lbl, m_desc in DIAG_MODES:
         if m_key == "B1_pre_anchor":
-            lines.append(r"\midrule")
-        lines.append(
+            t3_lines.append(r"\midrule")
+        t3_lines.append(
             f"{m_lbl} & {m_desc} & "
             f"{_d_val(p_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(p_diag, m_key, 'structural_recovery_pct')} & "
             f"{_d_val(d_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(d_diag, m_key, 'structural_recovery_pct')} \\\\"
         )
-    lines.extend([
+    t3_lines.extend([
         r"\midrule",
         rf"\textit{{Derived Recency-Decay Share ($\rho_{{\text{{recency}}}}$, \%)}} & $R_{{\text{{post}}}}/R_{{\text{{strip}}}}$ & \multicolumn{{2}}{{c}}{{{_rho_val(p_diag, 'rho_recency')}}} & \multicolumn{{2}}{{c}}{{{_rho_val(d_diag, 'rho_recency')}}} \\",
         rf"\textit{{Residual Semantic Interference ($\rho_{{\text{{interf}}}}$, \%)}} & $(R_{{\text{{strip}}}}-\max(R_{{\text{{post}}}},R_{{\text{{pre}}}}))/R_{{\text{{strip}}}}$ & \multicolumn{{2}}{{c}}{{{_rho_val(p_diag, 'rho_interference')}}} & \multicolumn{{2}}{{c}}{{{_rho_val(d_diag, 'rho_interference')}}} \\",
@@ -685,7 +759,125 @@ def generate_latex_tables(
         r"\end{tabular}}",
         r"\end{table}",
     ])
-    return "\n".join(lines) + "\n"
+
+    # Table 4: Probe-Horizon Ablation (K=1..32) + Optional W7 Extensions (DeltaNet Blend & Prefill MLP)
+    t4_lines = [
+        rf"% Table 4: Probe-Horizon Ablation and Mechanistic W7 Extensions ({t1_key})",
+        r"\begin{table}[t]",
+        r"\centering",
+        rf"\caption{{Gate-2 probe-horizon ablation ($K \in \{{1,4,8,16,32\}}$) and optional mechanistic extensions (\texttt{{{_tex_escape_tt(t1_key.split('/')[-1])}}}): DeltaNet recurrent-state blending on \texttt{{E\_hurt}} and multi-head prefill probing under \texttt{{IFEval++}} paraphrase shift.}}",
+        r"\label{tab:extensions_w7}",
+        r"\resizebox{\textwidth}{!}{%",
+        r"\begin{tabular}{llcccc}",
+        r"\toprule",
+        r"\textbf{Routing / Probe Variant} & \textbf{Configuration} & \textbf{MacroAcc (\%)} $\uparrow$ & $\textbf{OAA}_{250}$ (\%) $\uparrow$ & ${U}_{0.05}$ (\%) $\uparrow$ & ${\overline{T}}_{\text{tot}}$ $\downarrow$ \\",
+        r"\midrule",
+    ]
+    ph_map = (stats_models or {}).get(t1_key, {}).get("probe_horizon_ablation", {})
+    if ph_map:
+        for k_val in (1, 4, 8, 16, 32):
+            kr = ph_map.get(f"K_{k_val}")
+            if not kr:
+                continue
+            k_lbl = f"Gate-2 Probe ($K={k_val}$" + ("$,$ full)" if k_val == 32 else "$)")
+            t4_lines.append(
+                f"{k_lbl} & $\\tau^*={float(kr['tau_prob']):.3f}$ & "
+                f"{_fmt_pct(kr['macro_acc'])} & {_fmt_pct(kr['oaa_250'])} & "
+                f"{_fmt_pct(kr['u_005'])} & {float(kr['mean_t_tot']):.0f} \\\\"
+            )
+    else:
+        t4_lines.append(r"Gate-2 Probe Horizon Sweep & $K \in \{1,4,8,16,32\}$ & -- & -- & -- & -- \\")
+
+    mlp_models = [m for m in bundles if isinstance(bundles[m].get("prefill_mlp"), dict)]
+    for m_id in mlp_models:
+        mlp = bundles[m_id]["prefill_mlp"]
+        et = mlp.get("eval_table", {})
+        if et:
+            m_short = _tex_escape_tt(m_id.split("/")[-1])
+            t4_lines.append(
+                f"Prefill MLP (\\texttt{{{m_short}}}) & Zero-Gen ($\\tau^*={float(mlp.get('best_tau', 0.0)):.3f}$) & "
+                f"{_fmt_pct(et.get('macro_acc', 0.0))} & {_fmt_pct(et.get('oaa_250', 0.0))} & "
+                f"{_fmt_pct(et.get('u_005', 0.0))} & {float(et.get('mean_t_tot', 0.0)):.0f} \\\\"
+            )
+
+    blend_models = [
+        m for m in bundles
+        if isinstance(bundles[m].get("ext_deltanet_blend"), dict)
+        and "alphas" in bundles[m]["ext_deltanet_blend"]
+    ]
+    has_para = any(
+        isinstance((bundles[m].get("prefill_mlp") or {}).get("ifevalpp_paraphrase_stress"), dict)
+        for m in bundles
+    )
+    if blend_models or has_para:
+        t4_lines.extend([
+            r"\midrule",
+            r"\textbf{Mechanistic / Robustness Test} & \textbf{Condition} & \textbf{Overall / Prec F1} & \textbf{Inhib.\ / Plan F1} & \textbf{Struct.\ / Scope} & \textbf{$N$} \\",
+            r"\midrule",
+        ])
+        for m_id in blend_models:
+            bl = bundles[m_id]["ext_deltanet_blend"]
+            m_short = _tex_escape_tt(m_id.split("/")[-1])
+            for a_k in sorted(bl["alphas"], key=lambda x: float(x)):
+                ad = bl["alphas"][a_k]
+                t4_lines.append(
+                    f"DeltaNet Blend (\\texttt{{{m_short}}}) & $\\alpha = {float(ad['alpha']):.2f}$ & "
+                    f"{float(ad['overall_recovery_pct']):.1f} & "
+                    f"{float(ad['inhibition_recovery_pct']):.1f} & "
+                    f"{float(ad['structural_recovery_pct']):.1f} & "
+                    f"{int(ad['n_ehurt'])} \\\\"
+                )
+        for m_id in mlp_models:
+            mlp = bundles[m_id]["prefill_mlp"]
+            sem = mlp.get("gate1_semantic_probe") or {}
+            para = mlp.get("ifevalpp_paraphrase_stress") or {}
+            if sem and para:
+                r_orig = sem.get("regex_orig", {})
+                r_para = para.get("regex_para", {})
+                m_orig = sem.get("mlp_orig", {})
+                m_para = para.get("mlp_para", {})
+                t4_lines.append(
+                    f"Gate-1 Regex Screen & Orig.\\ $\\to$ \\texttt{{IFEval++}} & "
+                    f"{float(r_orig.get('prec', {}).get('f1', 0.0)):.1f} $\\to$ {float(r_para.get('prec', {}).get('f1', 0.0)):.1f} & "
+                    f"{float(r_orig.get('plan', {}).get('f1', 0.0)):.1f} $\\to$ {float(r_para.get('plan', {}).get('f1', 0.0)):.1f} & "
+                    f"Lexical Rules & {len(bundles[m_id].get('items') or []) or 450} \\\\"
+                )
+                if m_orig and m_para:
+                    t4_lines.append(
+                        f"Prefill MLP Probe & Orig.\\ $\\to$ \\texttt{{IFEval++}} & "
+                        f"{float(m_orig.get('prec', {}).get('f1', 0.0)):.1f} $\\to$ {float(m_para.get('prec', {}).get('f1', 0.0)):.1f} & "
+                        f"{float(m_orig.get('plan', {}).get('f1', 0.0)):.1f} $\\to$ {float(m_para.get('plan', {}).get('f1', 0.0)):.1f} & "
+                        f"Hidden $L/2$ & {len(bundles[m_id].get('items') or []) or 450} \\\\"
+                    )
+
+    t4_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
+
+    return {
+        "tab1_main_results.tex": header + "\n".join(t1_lines) + "\n",
+        "tab2_scale_pathology.tex": header + "\n".join(t2_lines) + "\n",
+        "tab3_diagnostic_control.tex": header + "\n".join(t3_lines) + "\n",
+        "tab4_extensions_w7.tex": header + "\n".join(t4_lines) + "\n",
+    }
+
+
+def generate_latex_tables(
+    bundles: dict[str, dict[str, Any]],
+    primary_model: str,
+    dense_model: str,
+    stats_models: dict[str, Any] | None = None,
+) -> str:
+    """Emits complete LaTeX Tables 1-4 populated from observed bundle & W7 metrics."""
+    parts = generate_latex_table_parts(
+        bundles, primary_model, dense_model, stats_models=stats_models
+    )
+    blocks = [
+        "% Auto-generated by scripts/analyze_and_plot.py from frozen matrix outputs",
+        *[
+            txt.split("\n", 1)[1].rstrip() if txt.startswith("% Auto-generated") else txt.rstrip()
+            for txt in parts.values()
+        ],
+    ]
+    return "\n\n".join(blocks) + "\n"
 
 
 def plot_fig1_pareto_frontier(
@@ -951,6 +1143,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze C-BARR outputs and generate tables/figures.")
     parser.add_argument("--out-dir", type=str, default="outputs")
     parser.add_argument("--fig-dir", type=str, default="paper/figures")
+    parser.add_argument(
+        "--table-dir",
+        type=str,
+        default="",
+        help="Output directory for modular LaTeX tables tab1..tab4 (defaults to paper/tables when --out-dir is outputs, else <out-dir>/tables).",
+    )
     parser.add_argument("--primary-model", type=str, default="Qwen/Qwen3.5-4B")
     parser.add_argument("--dense-model", type=str, default="HuggingFaceTB/SmolLM3-3B")
     parser.add_argument("--n-boot", type=int, default=10000)
@@ -964,8 +1162,18 @@ def main() -> None:
 
     out_dir = pathlib.Path(args.out_dir)
     fig_dir = pathlib.Path(args.fig_dir)
+    table_dir = (
+        pathlib.Path(args.table_dir)
+        if str(args.table_dir).strip()
+        else (
+            ROOT / "paper" / "tables"
+            if out_dir.resolve() == (ROOT / "outputs").resolve()
+            else out_dir / "tables"
+        )
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
+    table_dir.mkdir(parents=True, exist_ok=True)
 
     bundles = discover_bundles(out_dir)
     if not bundles:
@@ -1000,8 +1208,22 @@ def main() -> None:
     (out_dir / "stats_summary.json").write_text(
         json.dumps(stats_out, indent=2) + "\n", encoding="utf-8"
     )
+    table_parts = generate_latex_table_parts(
+        bundles,
+        args.primary_model,
+        args.dense_model,
+        stats_models=stats_out["models"],
+    )
+    for t_name, t_tex in table_parts.items():
+        (table_dir / t_name).write_text(t_tex, encoding="utf-8")
     (out_dir / "paper_tables.tex").write_text(
-        generate_latex_tables(bundles, args.primary_model, args.dense_model), encoding="utf-8"
+        generate_latex_tables(
+            bundles,
+            args.primary_model,
+            args.dense_model,
+            stats_models=stats_out["models"],
+        ),
+        encoding="utf-8",
     )
 
     plot_fig1_pareto_frontier(bundles, args.primary_model, fig_dir / "fig1_pareto_frontier.pdf")
@@ -1031,7 +1253,7 @@ def main() -> None:
         if args.strict_version_match:
             raise SystemExit(1)
     print(f"Saved stats to {out_dir / 'stats_summary.json'}")
-    print(f"Saved LaTeX tables to {out_dir / 'paper_tables.tex'}")
+    print(f"Saved LaTeX tables to {out_dir / 'paper_tables.tex'} & {table_dir}/")
     print(f"Saved 3 vector PDF figures to {fig_dir}/")
     for m_name, m_stats in stats_out["models"].items():
         g4 = m_stats["gate_audit"]["gate4_primary"]

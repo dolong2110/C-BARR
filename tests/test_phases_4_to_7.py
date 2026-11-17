@@ -3223,6 +3223,331 @@ class TestPhases4To7(unittest.TestCase):
             self.assertTrue((model_dir / "ext_deltanet_blend_cache.jsonl").is_file())
             self.assertFalse(shard_dir.exists())
 
+    def test_v0513_phase7_regrade_k32_parity_tables_and_resilience(self) -> None:
+        from unittest import mock
+
+        from scripts import analyze_and_plot as ap
+        from scripts import ext_deltanet_blend as edb
+        from scripts import ext_prefill_mlp as epm
+        from scripts import run_sharded as rs
+        from scripts import sync_results as sr
+        from scripts.versioning import is_result_only_path
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_data = tmp / "data"
+            tmp_out = tmp / "outputs"
+            tmp_figs = tmp / "figures"
+            tmp_tabs = tmp / "tables"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            q4_dir = tmp_out / "Qwen__Qwen3.5-4B"
+
+            # 1. Verify K=32 matches M2 identically and Phase 7 re-grades legacy GSM8K rows in memory
+            eval_p = q4_dir / "eval_450_cache.jsonl"
+            eval_rows = _read_jsonl(eval_p)
+            orig_summary = json.loads((q4_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
+            clean_bundle = ap.load_model_bundle(q4_dir)
+            self.assertIsNotNone(clean_bundle)
+            clean_analysis = ap.analyze_model_bundle(clean_bundle, n_boot=50, seed=42)
+            k32 = clean_analysis["probe_horizon_ablation"]["K_32"]
+            m2_sys = clean_bundle["report"]["systems"]["M2"]
+            self.assertAlmostEqual(k32["macro_acc"], orig_summary["systems"]["M2"]["macro_acc"], places=9)
+            self.assertAlmostEqual(k32["oaa_250"], m2_sys["oaa_250"], places=9)
+            self.assertAlmostEqual(k32["u_005"], m2_sys["u_005"], places=9)
+            self.assertAlmostEqual(k32["mean_t_tot"], m2_sys["mean_t_tot"], places=9)
+
+            gsm_idx = next(i for i, r in enumerate(eval_rows) if r["item"].get("dataset") == "gsm8k")
+            gsm_ans = str(int(float(eval_rows[gsm_idx]["item"]["gold"])))
+            orig_b0_z = int(eval_rows[gsm_idx]["b0"]["z"])
+            eval_rows[gsm_idx]["b0"]["a_final"] = f"Conclusion: the total is **{gsm_ans}**."
+            eval_rows[gsm_idx]["b0"]["z"] = 0
+            eval_rows[gsm_idx]["b0"]["pred"] = -999999.0
+            _write_jsonl(eval_p, eval_rows)
+
+            regraded_bundle = ap.load_model_bundle(q4_dir)
+            self.assertIsNotNone(regraded_bundle)
+            self.assertEqual(int(regraded_bundle["per_system_runs"]["B0"][gsm_idx]["z"]), 1)
+            if orig_b0_z == 0:
+                self.assertGreater(
+                    regraded_bundle["report"]["systems"]["B0"]["macro_acc"],
+                    orig_summary["systems"]["B0"]["macro_acc"],
+                )
+            # Restore clean mock cache before checking W7 / tables
+            eval_rows[gsm_idx]["b0"]["z"] = 1
+            _write_jsonl(eval_p, eval_rows)
+
+            # 2. Verify ext_prefill_mlp --check-cached & modular Table 1-4 generation with W7 data
+            chk_fail = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_prefill_mlp.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--mock",
+                    "--check-cached",
+                ],
+                cwd=str(ROOT),
+            )
+            self.assertEqual(chk_fail.returncode, 1)
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_prefill_mlp.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            chk_ok = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_prefill_mlp.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--mock",
+                    "--check-cached",
+                ],
+                cwd=str(ROOT),
+            )
+            self.assertEqual(chk_ok.returncode, 0)
+            self.assertTrue(epm._cache_covers_keys(q4_dir / "prefill_hidden_mock.npz", ["eval::" + eval_rows[0]["item"]["uid"]]))
+
+            # Seed realistic DeltaNetBlend report + cache so analyze_and_plot and sync_results cover Table 4 & W7 cache
+            diag_p = q4_dir / "diag_ehurt_cache.jsonl"
+            d_rows = _read_jsonl(diag_p)
+            for idx_d, dr in enumerate(d_rows[:4]):
+                dr["b0"]["z"] = 1
+                dr["b1b"]["z"] = 0
+                dr["b1b"]["t_think"] = f"trace {idx_d}"
+            _write_jsonl(diag_p, d_rows)
+            _write_jsonl(
+                q4_dir / "ext_deltanet_blend_cache.jsonl",
+                [
+                    {
+                        "uid": str(dr["item"]["uid"]),
+                        "alpha": 0.5,
+                        "blend_conv_state": False,
+                        "evict_think_kv": False,
+                        "n_blended_layers": 24,
+                        "n_blended_conv": 0,
+                        "n_evicted_kv": 0,
+                        "a_final": "ok",
+                        "grade": {"z": 1, "inhibition_strict_all": 1, "structural_strict_all": 1},
+                    }
+                    for dr in d_rows[:4]
+                ],
+            )
+            (q4_dir / "ext_deltanet_blend.json").write_text(
+                json.dumps(
+                    {
+                        "model": "Qwen/Qwen3.5-4B",
+                        "n_ehurt": 4,
+                        "blend_conv_state": False,
+                        "evict_think_kv": False,
+                        "alphas": {
+                            "0.50": {
+                                "alpha": 0.5,
+                                "n_ehurt": 4,
+                                "overall_recovery_pct": 100.0,
+                                "inhibition_recovery_pct": 100.0,
+                                "structural_recovery_pct": 100.0,
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "analyze_and_plot.py"),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--table-dir",
+                    str(tmp_tabs),
+                    "--n-boot",
+                    "50",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            for tname, label_tok in (
+                ("tab1_main_results.tex", r"\label{tab:main_results}"),
+                ("tab2_scale_pathology.tex", r"\label{tab:scale_and_pathology}"),
+                ("tab3_diagnostic_control.tex", r"\label{tab:diagnostic_control}"),
+                ("tab4_extensions_w7.tex", r"\label{tab:extensions_w7}"),
+            ):
+                tp = tmp_tabs / tname
+                self.assertTrue(tp.is_file(), f"Missing generated table {tname}")
+                txt = tp.read_text(encoding="utf-8")
+                self.assertIn(label_tok, txt)
+            self.assertIn("DeltaNet Blend", (tmp_tabs / "tab4_extensions_w7.tex").read_text(encoding="utf-8"))
+            self.assertIn("IFEval++", (tmp_tabs / "tab4_extensions_w7.tex").read_text(encoding="utf-8"))
+
+            # 3. Verify run_sharded cross-shard-count harvest sanitizes truncated JSONL tails before merging
+            s8_dir = q4_dir / "shards" / "shard_0_of_8"
+            s8_dir.mkdir(parents=True, exist_ok=True)
+            seed_first = _read_jsonl(q4_dir / "seed_60_cache.jsonl")[0]
+            (s8_dir / "seed_60_cache.jsonl").write_text(
+                json.dumps(seed_first) + "\n" + '{"truncated_incomplete": ',
+                encoding="utf-8",
+            )
+            harvested = rs._merge_and_prune_matrix_shards(tmp_data, q4_dir, strict_diag=True)
+            self.assertIn("seed_60_cache.jsonl", harvested)
+            self.assertFalse(s8_dir.exists())
+
+            # 4. Verify ext_deltanet_blend non-recursion (--worker on 1 non-zero GPU), balanced uncached slicing & retry
+            (q4_dir / "ext_deltanet_blend.json").unlink()
+            # Leave 2 items cached (indices 1, 3) and 2 uncached (indices 0, 2) via pre-existing shard_1_of_2
+            _write_jsonl(
+                q4_dir / "ext_deltanet_blend_cache.jsonl",
+                [],
+            )
+            (q4_dir / "shards").mkdir(parents=True, exist_ok=True)
+            _write_jsonl(
+                q4_dir / "shards" / "deltanet_blend_shard_1_of_2.jsonl",
+                [
+                    {
+                        "uid": str(dr["item"]["uid"]),
+                        "alpha": 0.5,
+                        "blend_conv_state": False,
+                        "evict_think_kv": False,
+                        "n_blended_layers": 24,
+                        "a_final": "ok",
+                        "grade": {"z": 1, "inhibition_strict_all": 1, "structural_strict_all": 1},
+                    }
+                    for dr in (d_rows[1], d_rows[3])
+                ],
+            )
+            spawn_cmds: list[list[str]] = []
+
+            class _FakePopen:
+                def __init__(self, cmd: list[str], env: dict[str, str] | None = None) -> None:
+                    spawn_cmds.append(cmd)
+                    self._rc = 1 if len(spawn_cmds) == 1 else 0
+                    s_idx = int(cmd[cmd.index("--shard-idx") + 1])
+                    n_sh = int(cmd[cmd.index("--num-shards") + 1])
+                    cur_cache = edb._load_blend_cache(q4_dir / "ext_deltanet_blend_cache.jsonl")
+                    rem = edb._filter_uncached_ehurt(d_rows[:4], cur_cache, [0.5], False, False)
+                    assigned = rem[s_idx::n_sh]
+                    sp = q4_dir / "shards" / f"deltanet_blend_shard_{s_idx}_of_{n_sh}.jsonl"
+                    sp.parent.mkdir(parents=True, exist_ok=True)
+                    # Attempt 1 writes 1 row then fails; Attempt 2 finishes all remaining uncached rows
+                    to_write = assigned[:1] if self._rc != 0 else assigned
+                    _write_jsonl(
+                        sp,
+                        [
+                            {
+                                "uid": str(dr["item"]["uid"]),
+                                "alpha": 0.5,
+                                "blend_conv_state": False,
+                                "evict_think_kv": False,
+                                "n_blended_layers": 24,
+                                "a_final": "ok",
+                                "grade": {"z": 1, "inhibition_strict_all": 1, "structural_strict_all": 1},
+                            }
+                            for dr in to_write
+                        ],
+                    )
+
+                def poll(self) -> int:
+                    return self._rc
+
+                def terminate(self) -> None:
+                    pass
+
+                def wait(self, timeout: float | None = None) -> int:
+                    return self._rc
+
+                def kill(self) -> None:
+                    pass
+
+            with (
+                mock.patch("torch.cuda.is_available", return_value=True),
+                mock.patch.object(edb, "_detect_auto_slots", return_value=["4"]),
+                mock.patch("subprocess.Popen", side_effect=_FakePopen),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "ext_deltanet_blend.py",
+                        "--model",
+                        "Qwen/Qwen3.5-4B",
+                        "--out-dir",
+                        str(tmp_out),
+                        "--alphas",
+                        "0.5",
+                        "--max-retries",
+                        "1",
+                        "--retry-wait-sec",
+                        "0",
+                    ],
+                ),
+            ):
+                edb.main()
+            # Exactly 2 spawns: attempt 1 (failed after 1 row, passing --worker with eff_shards=1 on GPU 4), attempt 2 (succeeded)
+            self.assertEqual(len(spawn_cmds), 2)
+            self.assertIn("--worker", spawn_cmds[0])
+            self.assertIn("--worker", spawn_cmds[1])
+            bl_out = json.loads((q4_dir / "ext_deltanet_blend.json").read_text(encoding="utf-8"))
+            self.assertEqual(bl_out["n_ehurt"], 4)
+            self.assertEqual(bl_out["alphas"]["0.50"]["overall_recovery_pct"], 100.0)
+
+            # 5. Verify sync_results packs/unpacks diag_controls_cache & ext_deltanet_blend_cache + paper/tables versioning exemption
+            _write_jsonl(
+                q4_dir / "diag_controls_cache.jsonl",
+                [{"uid": str(d_rows[0]["item"]["uid"]), "mode": "A1_strip", "a_final": "ok", "grade": {"z": 1}}],
+            )
+            self.assertTrue(is_result_only_path("paper/tables/tab1_main_results.tex"))
+            fake_repo = tmp / "fake_repo"
+            (fake_repo / "paper" / "tables").mkdir(parents=True)
+            (fake_repo / "paper" / "figures").mkdir(parents=True)
+            (fake_repo / "VERSION").write_text("0.5.13\n", encoding="utf-8")
+            (fake_repo / "EXPERIMENT_LOG.md").write_text("# Log\n", encoding="utf-8")
+            (fake_repo / "paper" / "tables" / "tab1_main_results.tex").write_text(
+                (tmp_tabs / "tab1_main_results.tex").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            staged = sr.pack_outputs_for_repo(out_dir=tmp_out, repo_root=fake_repo, include_phase7=True)
+            staged_strs = {str(p) for p in staged}
+            self.assertIn("outputs/Qwen__Qwen3.5-4B/diag_controls_cache.jsonl.gz", staged_strs)
+            self.assertIn("outputs/Qwen__Qwen3.5-4B/ext_deltanet_blend_cache.jsonl.gz", staged_strs)
+            self.assertIn("paper/tables/tab1_main_results.tex", staged_strs)
+
+            unpacked_out = tmp / "unpacked_out"
+            counts = sr.unpack_repo_caches(fake_repo, unpacked_out)
+            self.assertGreaterEqual(counts["caches_unpacked"], 5)
+            self.assertTrue((unpacked_out / "Qwen__Qwen3.5-4B" / "diag_controls_cache.jsonl").is_file())
+            self.assertTrue((unpacked_out / "Qwen__Qwen3.5-4B" / "ext_deltanet_blend_cache.jsonl").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

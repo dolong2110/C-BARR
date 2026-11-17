@@ -408,25 +408,26 @@ def main() -> None:
         action="store_true",
         help="Reuse completed smoke rows on disk when engine/grader code fingerprint matches",
     )
+    parser.add_argument(
+        "--check-cached",
+        action="store_true",
+        help="Exit 0 immediately if all requested models have valid cached Gate-3 reports, else exit 1.",
+    )
     args = parser.parse_args()
 
     out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     eval_path = pathlib.Path(args.eval_path)
-    out_smoke_paths = [
-        pathlib.Path("/tmp/smoke_12.jsonl"),
-        out_dir / "smoke_12.jsonl",
-    ]
-    smoke_items = build_smoke_12(eval_path, out_smoke_paths)
     summary_path = out_dir / "smoke_test_gate3_report.json"
 
-    if args.live_gpu and args.resume and summary_path.is_file():
+    reused: list[dict[str, Any]] = []
+    if ((args.live_gpu and args.resume) or args.check_cached) and summary_path.is_file():
         try:
             cur_fp = _smoke_code_fingerprint()
             prior_rep = json.loads(summary_path.read_text(encoding="utf-8"))
             rep_by_m = {str(r.get("model")): r for r in prior_rep if isinstance(r, dict)}
             all_valid = True
-            reused = []
+            cand_reused = []
             for model_id in args.models:
                 tag = model_id.replace("/", "__")
                 c_out = out_dir / f"smoke_12_{tag}.jsonl"
@@ -447,17 +448,29 @@ def main() -> None:
                 ):
                     all_valid = False
                     break
-                reused.append(r_ent)
-            if all_valid and len(reused) == len(args.models):
-                print(
-                    f"[smoke] All {len(reused)} model(s) already passed Gate 3 for fingerprint={cur_fp}; skipping GPU reload.",
-                    flush=True,
-                )
-                print(banner(f"Phase 3 (W3) 12-Example Pipeline Smoke Test: {hl('PASSED (CACHED)', 'green')}", "green"))
-                print(json.dumps(reused, indent=2), flush=True)
-                return
+                cand_reused.append(r_ent)
+            if all_valid and len(cand_reused) == len(args.models):
+                reused = cand_reused
         except Exception:
-            pass
+            reused = []
+
+    if args.check_cached:
+        sys.exit(0 if len(reused) == len(args.models) else 1)
+
+    out_smoke_paths = [
+        pathlib.Path("/tmp/smoke_12.jsonl"),
+        out_dir / "smoke_12.jsonl",
+    ]
+    smoke_items = build_smoke_12(eval_path, out_smoke_paths)
+
+    if args.live_gpu and args.resume and len(reused) == len(args.models):
+        print(
+            f"[smoke] All {len(reused)} model(s) already passed Gate 3 for fingerprint={_smoke_code_fingerprint()}; skipping GPU reload.",
+            flush=True,
+        )
+        print(banner(f"Phase 3 (W3) 12-Example Pipeline Smoke Test: {hl('PASSED (CACHED)', 'green')}", "green"))
+        print(json.dumps(reused, indent=2), flush=True)
+        return
 
     results = []
     for model_id in args.models:

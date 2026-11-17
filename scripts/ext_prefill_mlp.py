@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
 import sys
+import time
 from typing import Any
 
 import numpy as np
@@ -154,23 +156,56 @@ def _mock_prefill_features(
     return feats
 
 
+def _resolve_decoder_layers(model: Any) -> Any | None:
+    """Resolves transformer decoder layers across causal/multimodal HF wrappers (Qwen3.5, SmolLM3)."""
+    base = getattr(model, "model", model)
+    layers = getattr(base, "layers", None)
+    if layers is not None and len(layers) > 0:
+        return layers
+    lm = getattr(base, "language_model", None)
+    if lm is not None:
+        layers = getattr(lm, "layers", None)
+        if layers is not None and len(layers) > 0:
+            return layers
+    return None
+
+
 def _extract_hf_prefill_features(
     model_id: str,
     rows: list[dict[str, Any]],
     layer_idx: int | None = None,
     prompt_override: list[str] | None = None,
 ) -> np.ndarray:
-    tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
-    device, dtype = resolve_device_and_dtype("auto", "auto")
-    if not str(device).lower().startswith("cuda"):
-        ensure_qwen35_device_safe_kernels()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, dtype=dtype, trust_remote_code=False
-    ).to(device)
+    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
+    try:
+        tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False, local_files_only=offline)
+        device, dtype = resolve_device_and_dtype("auto", "auto")
+        if not str(device).lower().startswith("cuda"):
+            ensure_qwen35_device_safe_kernels()
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, dtype=dtype, trust_remote_code=False, local_files_only=offline
+        ).to(device)
+    except Exception:
+        if offline:
+            raise
+        tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False, local_files_only=True)
+        device, dtype = resolve_device_and_dtype("auto", "auto")
+        if not str(device).lower().startswith("cuda"):
+            ensure_qwen35_device_safe_kernels()
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, dtype=dtype, trust_remote_code=False, local_files_only=True
+        ).to(device)
     model.eval()
 
-    n_layers = int(getattr(model.config, "num_hidden_layers", 32))
+    text_cfg = getattr(model.config, "text_config", model.config)
+    n_layers = int(getattr(text_cfg, "num_hidden_layers", getattr(model.config, "num_hidden_layers", 32)))
     target_layer = n_layers // 2 if layer_idx is None else layer_idx
+    layers = _resolve_decoder_layers(model)
+    use_hook = (
+        layers is not None
+        and 1 <= target_layer <= len(layers)
+        and target_layer < n_layers
+    )
 
     vecs: list[np.ndarray] = []
     prompts = (
@@ -178,17 +213,58 @@ def _extract_hf_prefill_features(
         if prompt_override is not None
         else [r["item"]["prompt"] for r in rows]
     )
+    t0 = time.perf_counter()
+    n_tot = len(prompts)
     with torch.no_grad():
-        for p_txt in prompts:
+        for idx, p_txt in enumerate(prompts, start=1):
             msgs = [{"role": "user", "content": p_txt}]
             formatted = tok.apply_chat_template(
                 msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False
             )
             inp = tok(formatted, return_tensors="pt").to(device)
-            out = model(**inp, output_hidden_states=True, use_cache=False)
-            h_vec = out.hidden_states[target_layer][0, -1, :].float().cpu().numpy()
+            if use_hook:
+                captured: dict[str, torch.Tensor] = {}
+
+                def _hook(_mod: Any, _inp: Any, out: Any) -> None:
+                    captured["h"] = out[0] if isinstance(out, tuple) else out
+
+                handle = layers[target_layer - 1].register_forward_hook(_hook)
+                try:
+                    _ = model(**inp, output_hidden_states=False, use_cache=False)
+                finally:
+                    handle.remove()
+                h_tensor = captured["h"]
+            else:
+                out = model(**inp, output_hidden_states=True, use_cache=False)
+                h_tensor = out.hidden_states[target_layer]
+            h_vec = h_tensor[0, -1, :].float().cpu().numpy()
             vecs.append(h_vec)
+            if idx % 250 == 0 or idx == n_tot:
+                print(
+                    f"[prefill_mlp] extracted {idx}/{n_tot} prefill hidden states ({time.perf_counter() - t0:.1f}s)",
+                    flush=True,
+                )
     return np.vstack(vecs).astype(np.float32)
+
+
+def _expected_feature_keys(rows_by_split: dict[str, list[dict[str, Any]]]) -> list[str]:
+    return [
+        f"{split_name}::{r['item'].get('uid', idx)}"
+        for split_name, split_rows in rows_by_split.items()
+        for idx, r in enumerate(split_rows)
+    ]
+
+
+def _cache_covers_keys(cache_path: pathlib.Path, expected_keys: list[str]) -> bool:
+    if not expected_keys or not cache_path.is_file():
+        return False
+    try:
+        with np.load(cache_path, allow_pickle=False) as npz:
+            uids = list(npz["uids"].astype(str))
+        idx_map = {k: i for i, k in enumerate(uids)}
+        return all(k in idx_map for k in expected_keys)
+    except Exception:
+        return False
 
 
 def _load_or_extract_cached_features(
@@ -198,26 +274,21 @@ def _load_or_extract_cached_features(
     use_cache: bool = True,
 ) -> dict[str, np.ndarray]:
     """Loads per-split prefill vectors from disk .npz cache when UIDs match; otherwise extracts and writes .npz."""
-    expected_keys = [
-        f"{split_name}::{r['item'].get('uid', idx)}"
-        for split_name, split_rows in rows_by_split.items()
-        for idx, r in enumerate(split_rows)
-    ]
-    if use_cache and cache_path.exists():
+    expected_keys = _expected_feature_keys(rows_by_split)
+    if use_cache and _cache_covers_keys(cache_path, expected_keys):
         try:
-            npz = np.load(cache_path, allow_pickle=False)
-            uids = list(npz["uids"].astype(str))
-            feats = npz["features"].astype(np.float32)
+            with np.load(cache_path, allow_pickle=False) as npz:
+                uids = list(npz["uids"].astype(str))
+                feats = npz["features"].astype(np.float32)
             idx_map = {k: i for i, k in enumerate(uids)}
-            if all(k in idx_map for k in expected_keys):
-                out: dict[str, np.ndarray] = {}
-                for split_name, split_rows in rows_by_split.items():
-                    idxs = [
-                        idx_map[f"{split_name}::{r['item'].get('uid', i)}"]
-                        for i, r in enumerate(split_rows)
-                    ]
-                    out[split_name] = feats[idxs]
-                return out
+            out: dict[str, np.ndarray] = {}
+            for split_name, split_rows in rows_by_split.items():
+                idxs = [
+                    idx_map[f"{split_name}::{r['item'].get('uid', i)}"]
+                    for i, r in enumerate(split_rows)
+                ]
+                out[split_name] = feats[idxs]
+            return out
         except Exception:
             pass
 
@@ -414,14 +485,34 @@ def main() -> None:
     parser.add_argument("--out-dir", type=str, default="outputs")
     parser.add_argument("--layer", type=int, default=-1, help="-1 uses mid-layer L//2")
     parser.add_argument("--no-cache", action="store_true", help="Disable .npz disk caching of prefill hidden states")
+    parser.add_argument(
+        "--check-cached",
+        action="store_true",
+        help="Exit 0 immediately if prefill hidden-state .npz cache covers all splits, else exit 1.",
+    )
     parser.add_argument("--mock", action="store_true", help="Use deterministic synthetic embeddings")
     args = parser.parse_args()
 
     tag = args.model.replace("/", "__")
     model_dir = pathlib.Path(args.out_dir) / tag
-    seed_rows = _load_jsonl(model_dir / "seed_60_cache.jsonl")
-    dev_rows = _load_jsonl(model_dir / "dev_60_cache.jsonl")
-    eval_rows = _load_jsonl(model_dir / "eval_450_cache.jsonl")
+    seed_p = model_dir / "seed_60_cache.jsonl"
+    dev_p = model_dir / "dev_60_cache.jsonl"
+    eval_p = model_dir / "eval_450_cache.jsonl"
+    if args.check_cached:
+        if args.no_cache or not (seed_p.is_file() and dev_p.is_file() and eval_p.is_file()):
+            sys.exit(1)
+        s_r, d_r, e_r = _load_jsonl(seed_p), _load_jsonl(dev_p), _load_jsonl(eval_p)
+        c_path = (
+            model_dir / "prefill_hidden_mock.npz"
+            if args.mock
+            else model_dir / f"prefill_hidden_L{args.layer}.npz"
+        )
+        exp_keys = _expected_feature_keys({"seed": s_r, "dev": d_r, "eval": e_r, "eval_para": e_r})
+        sys.exit(0 if _cache_covers_keys(c_path, exp_keys) else 1)
+
+    seed_rows = _load_jsonl(seed_p)
+    dev_rows = _load_jsonl(dev_p)
+    eval_rows = _load_jsonl(eval_p)
     for r in seed_rows + dev_rows + eval_rows:
         _regrade_cached_gsm8k_row(r)
     eval_para_rows = [

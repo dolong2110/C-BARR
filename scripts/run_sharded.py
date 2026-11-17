@@ -9,6 +9,7 @@ import os
 import pathlib
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -456,6 +457,67 @@ def _prewarm_hf_snapshot(model_id: str, cmd_base: list[str]) -> bool:
         return False
 
 
+def _sanitize_shard_jsonl_tails(shard_dirs: list[pathlib.Path]) -> None:
+    """Drops any truncated trailing JSON line caused by abrupt OOM/signal termination before merging."""
+    for sd in shard_dirs:
+        for jp in sd.glob("*_cache.jsonl"):
+            if not jp.is_file():
+                continue
+            raw_lines = jp.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not raw_lines:
+                continue
+            valid_lines: list[str] = []
+            dropped = 0
+            for ln in raw_lines:
+                s = ln.strip()
+                if not s:
+                    continue
+                try:
+                    json.loads(s)
+                    valid_lines.append(s)
+                except json.JSONDecodeError:
+                    dropped += 1
+            if dropped > 0:
+                tmp_p = jp.with_suffix(".jsonl.tmp")
+                tmp_p.write_text(
+                    ("".join(v + "\n" for v in valid_lines)) if valid_lines else "",
+                    encoding="utf-8",
+                )
+                tmp_p.replace(jp)
+
+
+def _merge_and_prune_matrix_shards(
+    data_dir: pathlib.Path,
+    model_dir: pathlib.Path,
+    strict_diag: bool,
+) -> dict[str, int]:
+    """Merges partial shard_* caches into canonical JSONL caches and removes merged shard dirs."""
+    shards_root = model_dir / "shards"
+    if not shards_root.is_dir():
+        return {}
+    shard_dirs = [p for p in sorted(shards_root.glob("shard_*")) if p.is_dir()]
+    if not shard_dirs:
+        return {}
+    _sanitize_shard_jsonl_tails(shard_dirs)
+
+    from scripts.run_matrix import _load_jsonl, merge_shard_caches
+
+    seed_items = _load_jsonl(data_dir / "seed_60.jsonl")
+    dev_items = _load_jsonl(data_dir / "dev_60.jsonl")
+    eval_items = _load_jsonl(data_dir / "eval_450.jsonl")
+    diag_file = "ifeval_diag_341_strict.jsonl" if strict_diag else "ifeval_diag_491.jsonl"
+    diag_items = _load_jsonl(data_dir / diag_file)
+    merged = merge_shard_caches(model_dir, seed_items, dev_items, eval_items, diag_items)
+    for sd in shard_dirs:
+        shutil.rmtree(sd, ignore_errors=True)
+    try:
+        if shards_root.is_dir() and not any(shards_root.iterdir()):
+            shards_root.rmdir()
+    except OSError:
+        pass
+    return merged
+
+
 def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     data_dir = pathlib.Path(args.data_dir)
     out_dir = pathlib.Path(args.out_dir)
@@ -468,6 +530,12 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     model_dir = _resolve_model_dir(out_dir, args.model, cmd_base)
     strict_diag = "--strict-diag" in cmd_base
     calibrate_only = "--calibrate-only" in cmd_base
+    pre_harvested = _merge_and_prune_matrix_shards(data_dir, model_dir, strict_diag=strict_diag)
+    if pre_harvested:
+        print(
+            f"[{_utc_iso()}] [sharded] Harvested prior partial shards -> {pre_harvested}",
+            flush=True,
+        )
     specs = _split_specs(calibrate_only=calibrate_only, strict_diag=strict_diag)
     total_targets, shard_targets, shard_canon, total_canon = _load_split_baselines(
         data_dir, model_dir, specs, n_shards
@@ -618,6 +686,16 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
 
         for th in threads:
             th.join(timeout=2.0)
+
+        if interrupted_sig or rc_all != 0:
+            post_harvested = _merge_and_prune_matrix_shards(
+                data_dir, model_dir, strict_diag=strict_diag
+            )
+            if post_harvested:
+                print(
+                    f"[{_utc_iso()}] [sharded] Harvested completed shard progress -> {post_harvested}",
+                    flush=True,
+                )
 
         if interrupted_sig:
             sig_num = interrupted_sig[0]
