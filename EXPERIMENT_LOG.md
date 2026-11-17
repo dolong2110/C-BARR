@@ -240,9 +240,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (after W7: DeltaNet Blend (Qwen/Qwen3.5-4B))** (Updated 2026-11-17 18:32:15 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `cdfd4a9` | **Last Loop**: `W7: DeltaNet Blend (Qwen/Qwen3.5-4B)` | **Wall Time**: `47m 41.0s` (2861.0s)
-- **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
+### Run `20261117T174419Z` — **RUNNING (after W7: Prefill MLP Probe (Qwen/Qwen3.5-4B))** (Updated 2026-11-17 18:33:57 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `8a1c85c` | **Last Loop**: `W7: Prefill MLP Probe (Qwen/Qwen3.5-4B)` | **Wall Time**: `49m 29.0s` (2969.0s)
+- **Hardware**: 1x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache --gpu 3,4,6,7`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
 
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "cdfd4a9",
+  "git_rev": "8a1c85c",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -297,6 +297,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached) | PASS | 35.0s (35.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached) | PASS | 35.0s (35.0s) |
 | W7: DeltaNet Blend (Qwen/Qwen3.5-4B) | PASS | 44m 36.0s (2676.0s) |
+| W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) | PASS | 1m 23.0s (83.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -339,5 +340,5 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
 #### 6. Optional W7 Extensions
-- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%)
+- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357)
 <!-- CBARR_RUN_END:20261117T174419Z -->
