@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.gpu_pool import select_worker_gpu_slots
 from scripts.run_matrix import resolve_device_and_dtype
 from src.engine import ensure_qwen35_device_safe_kernels
 from src.graders import grade_item
@@ -298,25 +299,49 @@ def _load_blend_cache(path: pathlib.Path) -> dict[tuple[str, str, bool, bool], d
     return out
 
 
-def _detect_auto_shards(model_id: str, n_items: int) -> tuple[int, list[str]]:
-    if not torch.cuda.is_available() or n_items <= 1:
-        return 1, ["0"]
-    raw_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-    if raw_vis:
-        vis = [x.strip() for x in raw_vis.split(",") if x.strip()]
-    else:
-        vis = [str(i) for i in range(torch.cuda.device_count())]
-    if len(vis) <= 1:
-        return 1, vis or ["0"]
+def _harvest_partial_blend_shards(
+    blend_cache_path: pathlib.Path, shard_dir: pathlib.Path
+) -> dict[tuple[str, str, bool, bool], dict[str, Any]]:
+    """Merges any completed or interrupted deltanet_blend_shard_*.jsonl files into canonical cache."""
+    merged = _load_blend_cache(blend_cache_path)
+    if not shard_dir.is_dir():
+        return merged
+    shard_files = sorted(shard_dir.glob("deltanet_blend_shard_*.jsonl"))
+    if not shard_files:
+        return merged
+    before_n = len(merged)
+    for sp in shard_files:
+        if sp.is_file():
+            merged.update(_load_blend_cache(sp))
+            sp.unlink(missing_ok=True)
     try:
-        min_gb = min(
-            torch.cuda.get_device_properties(i).total_memory // (1024**3)
-            for i in range(torch.cuda.device_count())
-        )
-    except Exception:
-        min_gb = 16
-    wpg = 2 if (min_gb >= 32 and "9b" not in model_id.lower()) else 1
-    return min(n_items, len(vis) * wpg), vis
+        if not any(shard_dir.iterdir()):
+            shard_dir.rmdir()
+    except OSError:
+        pass
+    if len(merged) > before_n or not blend_cache_path.is_file():
+        tmp_c = blend_cache_path.with_suffix(".jsonl.tmp")
+        with tmp_c.open("w", encoding="utf-8") as fh:
+            for rec in merged.values():
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        tmp_c.replace(blend_cache_path)
+    return merged
+
+
+def _detect_auto_slots(model_id: str, n_items: int) -> list[str]:
+    if not torch.cuda.is_available() or n_items <= 0:
+        return []
+    raw_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    cands = [x.strip() for x in raw_vis.split(",") if x.strip()] if raw_vis else None
+    wait_sec = int(os.environ.get("CBARR_WAIT_GPU_SEC", "3600"))
+    slots = select_worker_gpu_slots(
+        model_id,
+        candidate_ids=cands,
+        workers_per_gpu=os.environ.get("CBARR_WORKERS_PER_GPU", "auto"),
+        max_gpus=8,
+        wait_timeout_sec=wait_sec,
+    )
+    return slots[:n_items]
 
 
 def _summarize_and_save_blend(
@@ -438,7 +463,12 @@ def main() -> None:
     if args.max_items > 0:
         e_hurt = e_hurt[: args.max_items]
 
-    canon_cache = _load_blend_cache(blend_cache_path)
+    shard_dir = model_dir / "shards"
+    canon_cache = (
+        _harvest_partial_blend_shards(blend_cache_path, shard_dir)
+        if args.num_shards == 1
+        else _load_blend_cache(blend_cache_path)
+    )
     required_keys = [
         _blend_key(str(r["item"]["uid"]), a, args.blend_conv_state, args.evict_think_kv)
         for r in e_hurt
@@ -460,17 +490,29 @@ def main() -> None:
         )
         return
 
-    # Parent multi-GPU dispatcher when --num-shards == 1 and multiple GPUs are visible
+    # Only dispatch uncached E_hurt items across live free-VRAM GPU worker slots
     if args.num_shards == 1:
+        uncached_items = [
+            r
+            for r in e_hurt
+            if any(
+                _blend_key(str(r["item"]["uid"]), a, args.blend_conv_state, args.evict_think_kv)
+                not in canon_cache
+                for a in args.alphas
+            )
+        ]
         if args.shards == "auto":
-            eff_shards, vis_gpus = _detect_auto_shards(args.model, len(e_hurt))
+            slot_gpus = _detect_auto_slots(args.model, len(uncached_items))
         else:
-            eff_shards = max(1, min(len(e_hurt), int(args.shards)))
-            _, vis_gpus = _detect_auto_shards(args.model, len(e_hurt))
-        if eff_shards > 1:
+            req_n = max(1, min(len(uncached_items), int(args.shards)))
+            auto_s = _detect_auto_slots(args.model, req_n)
+            slot_gpus = (auto_s * ((req_n // max(1, len(auto_s))) + 1))[:req_n] if auto_s else []
+
+        if slot_gpus and (len(slot_gpus) > 1 or slot_gpus[0] != "0" or os.environ.get("CUDA_VISIBLE_DEVICES", "")):
+            eff_shards = len(slot_gpus)
             print(
-                f"[deltanet_blend] Spawning {eff_shards} parallel shards across GPUs {vis_gpus} "
-                f"for E_hurt={len(e_hurt)} items x {len(args.alphas)} alphas...",
+                f"[deltanet_blend] Spawning {eff_shards} worker(s) on live free GPUs {slot_gpus} "
+                f"for {len(uncached_items)}/{len(e_hurt)} remaining items x {len(args.alphas)} alphas...",
                 flush=True,
             )
             try:
@@ -481,13 +523,12 @@ def main() -> None:
             except Exception:
                 prewarmed = False
 
-            shard_dir = model_dir / "shards"
             shard_dir.mkdir(parents=True, exist_ok=True)
             procs: list[tuple[int, subprocess.Popen[str]]] = []
             try:
                 for s_idx in range(eff_shards):
                     env = os.environ.copy()
-                    env["CUDA_VISIBLE_DEVICES"] = vis_gpus[s_idx % len(vis_gpus)]
+                    env["CUDA_VISIBLE_DEVICES"] = slot_gpus[s_idx]
                     for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                         env.setdefault(tvar, "4")
                     env.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -527,20 +568,9 @@ def main() -> None:
                 for _, p in procs:
                     if p.poll() is None:
                         p.terminate()
+                # Always harvest completed shard rows into canonical cache even if another shard failed
+                merged = _harvest_partial_blend_shards(blend_cache_path, shard_dir)
 
-            merged = dict(canon_cache)
-            for s_idx in range(eff_shards):
-                sp = shard_dir / f"deltanet_blend_shard_{s_idx}_of_{eff_shards}.jsonl"
-                if sp.is_file():
-                    merged.update(_load_blend_cache(sp))
-                    sp.unlink(missing_ok=True)
-            if not any(shard_dir.iterdir()):
-                shard_dir.rmdir()
-            tmp_c = blend_cache_path.with_suffix(".jsonl.tmp")
-            with tmp_c.open("w", encoding="utf-8") as fh:
-                for rec in merged.values():
-                    fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            tmp_c.replace(blend_cache_path)
             _summarize_and_save_blend(
                 out_path,
                 args.model,

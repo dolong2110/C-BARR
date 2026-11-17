@@ -62,6 +62,7 @@ MAX_SHARDS_ARG=8
 WORKERS_PER_GPU_ARG="${CBARR_WORKERS_PER_GPU:-auto}"
 SHARD_PROGRESS_SEC="${CBARR_SHARD_PROGRESS_SEC:-20}"
 SHARD_LOG_MODE="${CBARR_SHARD_LOG:-auto}"
+WAIT_GPU_MIN="${CBARR_WAIT_GPU_MIN:-60}"
 WITH_9B="0"
 WITH_W7=0
 IS_MOCK=0
@@ -329,6 +330,11 @@ while [ "$#" -gt 0 ]; do
       shift
       SHARD_LOG_MODE="$1"
       ;;
+    --wait-gpu-min)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      WAIT_GPU_MIN="$1"
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 1
@@ -367,9 +373,15 @@ if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
   fi
 fi
 
+PINNED_GPU_CSV=""
 if [ -n "$GPU_ID" ]; then
+  PINNED_GPU_CSV="$GPU_ID"
   export CUDA_VISIBLE_DEVICES="$GPU_ID"
+elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+  PINNED_GPU_CSV="$CUDA_VISIBLE_DEVICES"
 fi
+export CBARR_WAIT_GPU_SEC=$((WAIT_GPU_MIN * 60))
+export CBARR_WORKERS_PER_GPU="$WORKERS_PER_GPU_ARG"
 
 VISIBLE_GPUS=()
 if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
@@ -774,27 +786,52 @@ run_matrix_sharded() {
     "$@"
     ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
   )
-  local eff_wpg eff_shards rc_all=0 slug="${model_id//\//__}"
-  eff_wpg="$(effective_workers_per_gpu "$model_id")"
-  eff_shards=$((N_SHARDS * eff_wpg))
+  local eff_wpg eff_shards rc_all=0 slug="${model_id//\//__}" stage_vis_csv="$SHARD_VIS_GPUS_CSV"
+
+  if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
+    log_banner "=== [$stage_name] All items already cached — skipping GPU launch ==="
+    run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+    return $?
+  fi
+
+  if [ "$IS_MOCK" -eq 0 ] && [ "$SHARDS_ARG" = "auto" ]; then
+    local live_slots=""
+    if ! live_slots="$("$PY_BIN" scripts/gpu_pool.py \
+      --model "$model_id" \
+      --candidates "$PINNED_GPU_CSV" \
+      --workers-per-gpu "$WORKERS_PER_GPU_ARG" \
+      --max-gpus "$MAX_SHARDS_ARG" \
+      --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+      record_stage_timing "$stage_name" "FAIL(no_free_gpu)" 0
+      log_banner "=== [$stage_name] FAILED: no GPU with sufficient free VRAM became available ==="
+      return 1
+    fi
+    if [ "$live_slots" != "NO_CUDA" ] && [ -n "$live_slots" ]; then
+      local slot_arr=()
+      IFS=',' read -r -a slot_arr <<< "$live_slots"
+      eff_shards="${#slot_arr[@]}"
+      stage_vis_csv="$live_slots"
+      if [ "$eff_shards" -eq 1 ]; then
+        CUDA_VISIBLE_DEVICES="${slot_arr[0]}" run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
+        return $?
+      fi
+    else
+      eff_wpg="$(effective_workers_per_gpu "$model_id")"
+      eff_shards=$((N_SHARDS * eff_wpg))
+    fi
+  else
+    eff_wpg="$(effective_workers_per_gpu "$model_id")"
+    eff_shards=$((N_SHARDS * eff_wpg))
+  fi
+
   if [ "$eff_shards" -le 1 ]; then
     run_stage "$stage_name" "${base_args[@]}" "${MATRIX_PARAM_FLAGS[@]}"
     return $?
   fi
 
-  if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
-    log_banner "=== [$stage_name] All items already cached — skipping ${eff_shards}-shard GPU launch ==="
-    run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
-    return $?
-  fi
-
   local t0 t1 dur
   t0="$(date -u +%s)"
-  if [ "$eff_wpg" -gt 1 ]; then
-    log_banner "=== [$stage_name] START (${eff_shards} shards across ${N_SHARDS} GPU(s), ${eff_wpg} workers/GPU) ==="
-  else
-    log_banner "=== [$stage_name] START (${N_SHARDS}-GPU sharded) ==="
-  fi
+  log_banner "=== [$stage_name] START (${eff_shards} shards on GPU slots [${stage_vis_csv}]) ==="
   set +e
   "$PY_BIN" scripts/run_sharded.py \
     --stage-name "$stage_name" \
@@ -804,7 +841,7 @@ run_matrix_sharded() {
     --log-dir "$LOG_DIR" \
     --run-id "$RUN_ID" \
     --shards "$eff_shards" \
-    --visible-gpus "$SHARD_VIS_GPUS_CSV" \
+    --visible-gpus "$stage_vis_csv" \
     --progress-sec "$SHARD_PROGRESS_SEC" \
     --shard-log "$SHARD_LOG_MODE" \
     -- \
@@ -864,13 +901,18 @@ for pkg in ('fla', 'causal_conv1d'):
         print(f'Optional kernel {pkg}: unavailable ({exc}) -> PyTorch fallback will be used')
 "
   if [ "$run_smoke" -eq 1 ]; then
-    local smoke_args=()
+    local smoke_args=() smoke_gpu=""
     if [ "$#" -gt 0 ]; then
       smoke_args=(--models "$@")
     elif [ "${#MODELS_ARG[@]}" -gt 0 ]; then
       smoke_args=(--models "${MODELS_ARG[@]}")
     fi
-    run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    smoke_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "Qwen/Qwen3.5-4B" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC" 2>/dev/null || echo NO_CUDA)"
+    if [ -n "$smoke_gpu" ] && [ "$smoke_gpu" != "NO_CUDA" ]; then
+      CUDA_VISIBLE_DEVICES="$smoke_gpu" run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    else
+      run_stage "Step 0a: Live GPU 12-Item Smoke" "$PY_BIN" scripts/run_smoke_test.py --live-gpu --resume --device "$DEVICE_ARG" --dtype "$DTYPE" --out-dir "$OUT_DIR" ${smoke_args[@]+"${smoke_args[@]}"}
+    fi
     RAN_LIVE_SMOKE=1
   fi
 }
@@ -900,14 +942,27 @@ run_w7_stage() {
   if [ "$WITH_W7" -ne 1 ]; then
     return 0
   fi
-  local w7_flags=()
+  local w7_flags=() mlp_gpu="NO_CUDA"
   if [ "$IS_MOCK" -eq 1 ]; then
     w7_flags+=(--mock)
   fi
-  run_stage "W7: DeltaNet Blend (${w7_model})" \
-    "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
-  run_stage "W7: Prefill MLP Probe (${w7_model})" \
-    "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  if [ -n "$PINNED_GPU_CSV" ]; then
+    CUDA_VISIBLE_DEVICES="$PINNED_GPU_CSV" run_stage "W7: DeltaNet Blend (${w7_model})" \
+      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  else
+    env -u CUDA_VISIBLE_DEVICES run_stage "W7: DeltaNet Blend (${w7_model})" \
+      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  fi
+  if [ "$IS_MOCK" -eq 0 ]; then
+    mlp_gpu="$("$PY_BIN" scripts/gpu_pool.py --model "$w7_model" --candidates "$PINNED_GPU_CSV" --single --wait-sec "$CBARR_WAIT_GPU_SEC" 2>/dev/null || echo NO_CUDA)"
+  fi
+  if [ -n "$mlp_gpu" ] && [ "$mlp_gpu" != "NO_CUDA" ]; then
+    CUDA_VISIBLE_DEVICES="$mlp_gpu" run_stage "W7: Prefill MLP Probe (${w7_model})" \
+      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  else
+    run_stage "W7: Prefill MLP Probe (${w7_model})" \
+      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  fi
 }
 
 run_phase7_stage() {

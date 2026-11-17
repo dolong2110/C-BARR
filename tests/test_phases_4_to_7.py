@@ -3169,6 +3169,60 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("All items already cached — skipping", proc.stdout)
             self.assertIn("M2_Prec (Aux.)", tmp_exp.read_text(encoding="utf-8"))
 
+    def test_gpu_pool_live_free_vram_slots_and_partial_blend_recovery(self) -> None:
+        from scripts.ext_deltanet_blend import _harvest_partial_blend_shards
+        from scripts.gpu_pool import compute_slots_from_free_mem
+
+        # Simulate shared 8x L40 server where 7 GPUs are occupied (~8.5G free) and only GPU 4 is free (44.4G)
+        shared_lab_gpus = [
+            {"id": str(i), "free_gb": 44.4 if i == 4 else 8.5, "total_gb": 44.4}
+            for i in range(8)
+        ]
+        self.assertEqual(
+            compute_slots_from_free_mem(shared_lab_gpus, "Qwen/Qwen3.5-4B", workers_per_gpu="auto"),
+            ["4", "4"],
+        )
+        self.assertEqual(
+            compute_slots_from_free_mem(shared_lab_gpus, "Qwen/Qwen3.5-9B", workers_per_gpu="auto"),
+            ["4"],
+        )
+        # Mixed free VRAM: GPU 4 has 44.4G (2 slots), GPU 7 has 18.0G (1 slot), others <12.5G (0 slots)
+        mixed_gpus = [
+            {"id": "0", "free_gb": 3.5, "total_gb": 44.4},
+            {"id": "4", "free_gb": 44.4, "total_gb": 44.4},
+            {"id": "7", "free_gb": 18.0, "total_gb": 44.4},
+        ]
+        self.assertEqual(
+            compute_slots_from_free_mem(mixed_gpus, "Qwen/Qwen3.5-4B", workers_per_gpu="auto"),
+            ["4", "7", "4"],
+        )
+
+        # Verify interrupted deltanet_blend shard files are harvested cleanly into canonical cache
+        with tempfile.TemporaryDirectory() as td:
+            model_dir = pathlib.Path(td)
+            shard_dir = model_dir / "shards"
+            shard_dir.mkdir()
+            _write_jsonl(
+                shard_dir / "deltanet_blend_shard_1_of_8.jsonl",
+                [
+                    {
+                        "uid": "ifeval_100",
+                        "alpha": 0.25,
+                        "blend_conv_state": False,
+                        "evict_think_kv": False,
+                        "n_blended_layers": 24,
+                        "a_final": "ok",
+                        "grade": {"z": 1},
+                    }
+                ],
+            )
+            harvested = _harvest_partial_blend_shards(
+                model_dir / "ext_deltanet_blend_cache.jsonl", shard_dir
+            )
+            self.assertEqual(len(harvested), 1)
+            self.assertTrue((model_dir / "ext_deltanet_blend_cache.jsonl").is_file())
+            self.assertFalse(shard_dir.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

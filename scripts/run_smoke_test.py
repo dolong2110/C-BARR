@@ -418,6 +418,46 @@ def main() -> None:
         out_dir / "smoke_12.jsonl",
     ]
     smoke_items = build_smoke_12(eval_path, out_smoke_paths)
+    summary_path = out_dir / "smoke_test_gate3_report.json"
+
+    if args.live_gpu and args.resume and summary_path.is_file():
+        try:
+            cur_fp = _smoke_code_fingerprint()
+            prior_rep = json.loads(summary_path.read_text(encoding="utf-8"))
+            rep_by_m = {str(r.get("model")): r for r in prior_rep if isinstance(r, dict)}
+            all_valid = True
+            reused = []
+            for model_id in args.models:
+                tag = model_id.replace("/", "__")
+                c_out = out_dir / f"smoke_12_{tag}.jsonl"
+                m_out = out_dir / f"smoke_12_{tag}_meta.json"
+                if not (c_out.is_file() and m_out.is_file() and model_id in rep_by_m):
+                    all_valid = False
+                    break
+                meta = json.loads(m_out.read_text(encoding="utf-8"))
+                n_lines = sum(1 for ln in c_out.read_text(encoding="utf-8").splitlines() if ln.strip())
+                r_ent = rep_by_m[model_id]
+                if (
+                    meta.get("code_fingerprint") != cur_fp
+                    or n_lines != 12
+                    or not r_ent.get("gate3_no_hash_prefix_on_ifeval")
+                    or not r_ent.get("gate3_no_32tok_truncation")
+                    or not r_ent.get("gate3_p_term_and_zero_reminder_leak")
+                    or not r_ent.get("d13_delib_le_250_verified")
+                ):
+                    all_valid = False
+                    break
+                reused.append(r_ent)
+            if all_valid and len(reused) == len(args.models):
+                print(
+                    f"[smoke] All {len(reused)} model(s) already passed Gate 3 for fingerprint={cur_fp}; skipping GPU reload.",
+                    flush=True,
+                )
+                print(banner(f"Phase 3 (W3) 12-Example Pipeline Smoke Test: {hl('PASSED (CACHED)', 'green')}", "green"))
+                print(json.dumps(reused, indent=2), flush=True)
+                return
+        except Exception:
+            pass
 
     results = []
     for model_id in args.models:
