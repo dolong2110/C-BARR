@@ -1,21 +1,23 @@
 [
   {
     "model": "Qwen/Qwen3.5-4B",
-    "code_version": "0.5.7",
-    "git_rev": "d95a532-dirty",
+    "code_version": "0.5.10",
+    "git_rev": "bc5d92b-dirty",
     "n_items": 12,
     "gate3_no_hash_prefix_on_ifeval": true,
     "gate3_no_32tok_truncation": true,
     "gate3_p_term_and_zero_reminder_leak": true,
-    "gate3_trailing_bridge_quotes": [],
+    "gate3_trailing_bridge_quotes": [
+      "ifeval_3369:m2_b64@char2352"
+    ],
     "gate3_smollm3_frozen_date": false,
     "d13_delib_le_250_verified": true,
     "cache_path": "outputs/smoke_12_Qwen__Qwen3.5-4B.jsonl"
   },
   {
     "model": "HuggingFaceTB/SmolLM3-3B",
-    "code_version": "0.5.7",
-    "git_rev": "d95a532-dirty",
+    "code_version": "0.5.10",
+    "git_rev": "bc5d92b-dirty",
     "n_items": 12,
     "gate3_no_hash_prefix_on_ifeval": true,
     "gate3_no_32tok_truncation": true,
