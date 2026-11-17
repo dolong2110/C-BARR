@@ -652,8 +652,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T114416Z -->
 
 <!-- CBARR_RUN_START:20261117T142919Z -->
-### Run `20261117T142919Z` — **RUNNING (after Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached))** (Updated 2026-11-17 14:32:37 UTC)
-- **Code Version**: `v0.5.12` | **Git Commit**: `3bb57cd-dirty` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached)` | **Wall Time**: `3m 10.0s` (190.0s)
+### Run `20261117T142919Z` — **FAILED (exit=127 at Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached))** (Updated 2026-11-17 14:32:48 UTC)
+- **Code Version**: `v0.5.12` | **Git Commit**: `4be1be4-dirty` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached)` | **Wall Time**: `3m 22.0s` (202.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261117T142919Z.log`
