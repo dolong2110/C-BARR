@@ -1,8 +1,8 @@
 [
   {
     "model": "Qwen/Qwen3.5-4B",
-    "code_version": "0.5.10",
-    "git_rev": "bc5d92b-dirty",
+    "code_version": "0.5.11",
+    "git_rev": "4d03fad-dirty",
     "n_items": 12,
     "gate3_no_hash_prefix_on_ifeval": true,
     "gate3_no_32tok_truncation": true,
@@ -16,8 +16,8 @@
   },
   {
     "model": "HuggingFaceTB/SmolLM3-3B",
-    "code_version": "0.5.10",
-    "git_rev": "bc5d92b-dirty",
+    "code_version": "0.5.11",
+    "git_rev": "4d03fad-dirty",
     "n_items": 12,
     "gate3_no_hash_prefix_on_ifeval": true,
     "gate3_no_32tok_truncation": true,

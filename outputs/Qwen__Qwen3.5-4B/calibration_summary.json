@@ -254,7 +254,7 @@
         "ifeval_conflict": 0.0
       },
       "micro_acc": 0.8833333333333333,
-      "macro_acc": 0.75,
+      "macro_acc": 0.9,
       "oaa_250": 0.8833333333333333,
       "auc_oaa_2048": 0.8833333333333333,
       "u_005": 0.8161466666666667,
@@ -282,7 +282,7 @@
         "ifeval_conflict": 0.0
       },
       "micro_acc": 0.4,
-      "macro_acc": 0.31666666666666665,
+      "macro_acc": 0.38,
       "oaa_250": 0.0,
       "auc_oaa_2048": 0.1842041015625,
       "u_005": 0.05119666666666666,
@@ -310,7 +310,7 @@
         "ifeval_conflict": 0.0
       },
       "micro_acc": 0.8833333333333333,
-      "macro_acc": 0.75,
+      "macro_acc": 0.9,
       "oaa_250": 0.8833333333333333,
       "auc_oaa_2048": 0.8723958333333334,
       "u_005": 0.8102800000000002,
@@ -329,20 +329,20 @@
       }
     }
   },
-  "wall_time_sec": 0.14,
+  "wall_time_sec": 0.13,
   "runtime": {
     "device": "cuda",
     "dtype": "torch.bfloat16"
   },
-  "code_version": "0.5.8",
-  "git_rev": "91efc2f",
-  "run_id": "",
+  "code_version": "0.5.12",
+  "git_rev": "13c1e5a-dirty",
+  "run_id": "20261117T142919Z",
   "training_params": {
-    "code_version": "0.5.8",
-    "git_rev": "91efc2f",
-    "run_id": "",
+    "code_version": "0.5.12",
+    "git_rev": "13c1e5a-dirty",
+    "run_id": "20261117T142919Z",
     "model": "Qwen/Qwen3.5-4B",
-    "diag_pool": "strict341",
+    "diag_pool": "diag491",
     "device": "cuda",
     "dtype": "torch.bfloat16",
     "seed": 42,
