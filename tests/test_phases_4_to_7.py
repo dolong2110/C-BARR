@@ -3078,6 +3078,97 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("best_tau", mlp_rep)
             self.assertTrue(callable(epm.train_and_evaluate_prefill_mlp))
 
+    def test_non_mock_sharded_fast_skip_bash_and_kernel_error_extractor(self) -> None:
+        import os
+
+        from scripts import setup_fast_kernels as sfk
+
+        sample_pip_err = (
+            "  × Building wheel for causal-conv1d (pyproject.toml) did not run successfully.\n"
+            "  ╰─> [3 lines of output]\n"
+            "      RuntimeError: The detected CUDA version (12.4) mismatches PyTorch (13.2)\n"
+            "      [end of output]\n"
+            "  note: This error originates from a subprocess.\n"
+            "╰─> causal-conv1d\n"
+        )
+        extracted = sfk._extract_pip_build_error(sample_pip_err)
+        self.assertIn("RuntimeError: The detected CUDA version", extracted)
+        self.assertNotIn("╰─> causal-conv1d", extracted)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_data = tmp / "data"
+            tmp_out = tmp / "outputs"
+            tmp_figs = tmp / "figs"
+            tmp_exp = tmp / "exp.md"
+            tmp_patch = tmp / "py_patch"
+            tmp_data.mkdir()
+            tmp_patch.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            # Stub AutoTokenizer inside subprocess so IS_MOCK=0 --merge-shards runs 100% offline on CPU
+            (tmp_patch / "sitecustomize.py").write_text(
+                "import transformers\n"
+                "from scripts.run_smoke_test import MockTokenizer\n"
+                "transformers.AutoTokenizer.from_pretrained = staticmethod(lambda m, **kw: MockTokenizer('smollm3' in str(m).lower()))\n",
+                encoding="utf-8",
+            )
+
+            # Populate canonical cache via mock, then run non-mock bash with --shards 2 to exercise
+            # run_matrix_sharded's live IS_MOCK=0 --check-fully-cached fast-skip under `set -euo pipefail`.
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            prev_pp = os.environ.get("PYTHONPATH", "")
+            sub_pp = f"{tmp_patch}:{ROOT}:{prev_pp}" if prev_pp else f"{tmp_patch}:{ROOT}"
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part",
+                    "all",
+                    "--shards",
+                    "2",
+                    "--no-setup",
+                    "--skip-preflight",
+                    "--skip-smoke",
+                    "--no-w7",
+                    "--no-9b",
+                    "--no-push",
+                    "--strict-only",
+                    "--models",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--exp-log",
+                    str(tmp_exp),
+                ],
+                cwd=str(ROOT),
+                env={**os.environ, "PYTHON_BIN": sys.executable, "PYTHONPATH": sub_pp},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, msg=f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+            self.assertIn("All items already cached — skipping", proc.stdout)
+            self.assertIn("M2_Prec (Aux.)", tmp_exp.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

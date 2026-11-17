@@ -353,6 +353,10 @@ def _format_variant_table_lines(report: dict[str, Any]) -> list[str]:
         if k in systems:
             p_h = f"{systems[k]['p_holm_vs_b1b']:.3g}" if k != "B1b" and "p_holm_vs_b1b" in systems[k] else "-"
             rows_to_render.append((k, systems[k], p_h))
+    if "M2_Prec" in aux:
+        mc_p = aux["M2_Prec"].get("mcnemar_vs_b1b", {}).get("p_exact")
+        p_s = f"{mc_p:.3g} (raw)" if mc_p is not None else "-"
+        rows_to_render.append(("M2_Prec (Aux.)", aux["M2_Prec"], p_s))
     if "M2_B512" in aux:
         mc_p = aux["M2_B512"].get("mcnemar_vs_b1b", {}).get("p_exact")
         p_s = f"{mc_p:.3g} (raw)" if mc_p is not None else "-"

@@ -381,6 +381,14 @@ if [ -z "$LOG_DIR" ]; then
 fi
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
+# When --hf-home points to a roomy scratch/NFS mount while /tmp is nearly full, route TMPDIR & Triton cache there.
+if [ -n "${HF_HOME:-}" ]; then
+  mkdir -p "${HF_HOME}/.tmp" "${HF_HOME}/.triton" 2>/dev/null || true
+  if [ -d "${HF_HOME}/.triton" ] && [ -z "${TRITON_CACHE_DIR:-}" ]; then
+    export TRITON_CACHE_DIR="${HF_HOME}/.triton"
+  fi
+fi
+
 PY_BIN="${PYTHON_BIN:-python3}"
 if [ -x ".venv/bin/python" ] && [ -z "${PYTHON_BIN:-}" ]; then
   PY_BIN=".venv/bin/python"
@@ -756,6 +764,7 @@ run_matrix_sharded() {
   local stage_name="$1"
   local model_id="$2"
   shift 2
+  CURRENT_STAGE="$stage_name"
   local base_args=(
     "$PY_BIN" scripts/run_matrix.py
     --model "$model_id"
@@ -773,23 +782,12 @@ run_matrix_sharded() {
     return $?
   fi
 
-  if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/run_matrix.py \
-    --model "$model_id" \
-    --data-dir "$DATA_DIR" \
-    --out-dir "$OUT_DIR" \
-    --seed "$SEED" \
-    --temperature "$TEMPERATURE" \
-    --top-p "$TOP_P" \
-    --presence-penalty "$PRESENCE_PENALTY" \
-    "$@" \
-    ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
-    --check-fully-cached >/dev/null 2>&1; then
+  if [ "$IS_MOCK" -eq 0 ] && "${base_args[@]}" --seed "$SEED" --check-fully-cached >/dev/null 2>&1; then
     log_banner "=== [$stage_name] All items already cached — skipping ${eff_shards}-shard GPU launch ==="
     run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
     return $?
   fi
 
-  CURRENT_STAGE="$stage_name"
   local t0 t1 dur
   t0="$(date -u +%s)"
   if [ "$eff_wpg" -gt 1 ]; then

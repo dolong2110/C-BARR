@@ -583,6 +583,8 @@ def generate_latex_tables(
             lines.append(r"\midrule")
         sig = r"$^\dagger$" if float(t1_sys[k].get("p_holm_vs_b1b", 1.0)) < 0.05 else ""
         lines.append(_row_tex(VARIANT_LATEX_LABELS[k], t1_sys[k], sig=sig))
+    if "M2_Prec" in t1_rep.get("auxiliary_systems", {}):
+        lines.append(_row_tex(r"M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$)", t1_rep["auxiliary_systems"]["M2_Prec"]))
     if "M2_B512" in t1_rep.get("auxiliary_systems", {}):
         lines.append(_row_tex(r"M2-512: C-BARR Aux.\ Cap ($B=512$, R3)", t1_rep["auxiliary_systems"]["M2_B512"]))
     lines.append(r"\midrule")
