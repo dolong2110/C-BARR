@@ -652,10 +652,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T114416Z -->
 
 <!-- CBARR_RUN_START:20261117T142919Z -->
-### Run `20261117T142919Z` — **RUNNING (Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (diag491))** (Updated 2026-11-17 14:32:24 UTC)
-- **Code Version**: `v0.5.12` | **Git Commit**: `eb1dab9-dirty` | **Last Loop**: `Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (diag491)` | **Wall Time**: `26.7s` (26.7s)
+### Run `20261117T142919Z` — **RUNNING (after Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached))** (Updated 2026-11-17 14:32:37 UTC)
+- **Code Version**: `v0.5.12` | **Git Commit**: `3bb57cd-dirty` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached)` | **Wall Time**: `3m 10.0s` (190.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_matrix.py`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261117T142919Z.log`
 
 #### 1. Training & Experiment Parameters
@@ -707,6 +707,13 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Step 0a: Hardware & Kernel Probe | PASS | 8.0s (8.0s) |
 | Step 0a: Live GPU 12-Item Smoke | PASS | 6.0s (6.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached) | PASS | 42.0s (42.0s) |
+| Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached) | PASS | 44.0s (44.0s) |
+
+#### 3. Gate-3 Live 12-Item Smoke Check
+| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
+| :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
+| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
