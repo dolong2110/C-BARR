@@ -240,8 +240,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (Eval-450: HuggingFaceTB/SmolLM3-3B (diag491))** (Updated 2026-11-17 21:21:37 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `9083b05` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Eval-450: HuggingFaceTB/SmolLM3-3B (diag491)` | **Wall Time**: `17.0s` (17.0s)
+### Run `20261117T174419Z` — **RUNNING (Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (diag491))** (Updated 2026-11-17 21:21:48 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `9d509d8` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (diag491)` | **Wall Time**: `27.7s` (27.7s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "9083b05",
+  "git_rev": "9d509d8",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -332,9 +332,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | M2_Prec (Aux.) | 69.9% | 80.0% | 72.0% | 74.0% | 63.3% | 83.3% | 46.7% | 72.7% | 70.0% | 64.7% | 400 | 1.31 | 0.749 (raw) |
 | **Oracle_UB** | 86.8% | 97.3% | 96.0% | 89.3% | 83.3% | 95.0% | 60.0% | 88.4% | 88.0% | 84.1% | 283 | 1.00 | - |
 
-- **`HuggingFaceTB/SmolLM3-3B` (`diag491`**, n_diag=491) — ver=`v0.5.14` (`3214526-dirty`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`17.0s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.400, esc=46.7%
+- **`HuggingFaceTB/SmolLM3-3B` (`diag491`**, n_diag=491) — ver=`v0.5.14` (`3214526-dirty`) | dtype=`torch.bfloat16` | wall=`27.7s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
   - **4-Regime**: Helped=13.6%, Hurt=9.6%, Flip=23.1%, TiePass=60.0%, TieFail=16.9%
-  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+  - **Section 6 Causal (`|E_hurt|=80`)**: rho_rec=62.5%, rho_int=37.5% | A1_strip=100.0%, B2a_post=62.5%, B1_pre=58.8%, B2b_raw=33.8%, A2_swap=60.0%, B3_cut=62.5%
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
 - **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`cdfd4a9-dirty`) | dtype=`torch.bfloat16` | wall=`20.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.650, esc=20.0%
