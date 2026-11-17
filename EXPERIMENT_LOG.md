@@ -534,8 +534,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T112446Z -->
 
 <!-- CBARR_RUN_START:20261117T114416Z -->
-### Run `20261117T114416Z` — **RUNNING (Calibration: Qwen/Qwen3.5-4B)** (Updated 2026-11-17 11:47:49 UTC)
-- **Code Version**: `v0.5.11` | **Git Commit**: `4d03fad-dirty` | **Last Loop**: `Calibration: Qwen/Qwen3.5-4B` | **Wall Time**: `2.1s` (2.1s)
+### Run `20261117T114416Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-4B (strict341))** (Updated 2026-11-17 11:48:02 UTC)
+- **Code Version**: `v0.5.11` | **Git Commit**: `bf66372-dirty` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-4B (strict341)` | **Wall Time**: `13.7s` (13.7s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T114416Z.log`
@@ -596,9 +596,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
-- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.8` (`91efc2f`) | dtype=`torch.bfloat16` | wall=`2.7s` (calib=0.1s, eval=0.5s, diag=0.1s) | tau=0.650, esc=20.0%
+- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.11` (`4d03fad-dirty`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`13.7s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.650, esc=20.0%
   - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
-  - **Section 6 Causal (`|E_hurt|=237`)**: rho_rec=96.2%, rho_int=3.8% | A1_strip=100.0%, B2a_post=96.2%, B1_pre=95.8%, B2b_raw=46.4%, A2_swap=73.0%, B3_cut=87.3%
+  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
 
 | Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
