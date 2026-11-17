@@ -2917,6 +2917,82 @@ class TestPhases4To7(unittest.TestCase):
             summary = json.loads((model_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
             self.assertIn("M2_Prec", summary["auxiliary_systems"])
 
+    def test_populated_slice_macro_acc_and_check_fully_cached(self) -> None:
+        from src.metrics import evaluate_system_table
+
+        # 5-slice split (omitting ifeval_conflict, like dev_60) averages only over populated slices
+        items_5 = [
+            {"slice": s}
+            for s in ("gsm8k_easy", "gsm8k_hard", "csqa", "ifeval_planning", "ifeval_precision")
+        ]
+        runs_5 = [
+            {"z": 1, "T_total": 50, "T_probe": 0, "T_think": 0, "calls": 1}
+            for _ in items_5
+        ]
+        tab_5 = evaluate_system_table(items_5, runs_5)
+        self.assertAlmostEqual(tab_5["macro_acc"], 1.0, places=6)
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = pathlib.Path(td)
+            tmp_data = tmp / "data"
+            tmp_out = tmp / "outputs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            pre_chk = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--check-fully-cached",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(pre_chk.returncode, 1)
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--mock",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            post_chk = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_matrix.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                    "--check-fully-cached",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(post_chk.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

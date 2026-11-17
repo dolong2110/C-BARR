@@ -773,6 +773,22 @@ run_matrix_sharded() {
     return $?
   fi
 
+  if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/run_matrix.py \
+    --model "$model_id" \
+    --data-dir "$DATA_DIR" \
+    --out-dir "$OUT_DIR" \
+    --seed "$SEED" \
+    --temperature "$TEMPERATURE" \
+    --top-p "$TOP_P" \
+    --presence-penalty "$PRESENCE_PENALTY" \
+    "$@" \
+    ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
+    --check-fully-cached >/dev/null 2>&1; then
+    log_banner "=== [$stage_name] All items already cached — skipping ${eff_shards}-shard GPU launch ==="
+    run_stage "${stage_name} (cached)" "${base_args[@]}" --merge-shards "${MATRIX_PARAM_FLAGS[@]}"
+    return $?
+  fi
+
   CURRENT_STAGE="$stage_name"
   local t0 t1 dur
   t0="$(date -u +%s)"

@@ -198,7 +198,8 @@ def evaluate_system_table(
     per_slice_acc = {
         s: (float(np.mean(vals)) if vals else 0.0) for s, vals in slice_scores.items()
     }
-    macro_acc = float(np.mean(list(per_slice_acc.values())))
+    populated_accs = [float(np.mean(vals)) for vals in slice_scores.values() if vals]
+    macro_acc = float(np.mean(populated_accs)) if populated_accs else 0.0
     u_vec = np.asarray(z_all, dtype=np.float64) - lam_utility * (
         np.asarray(t_tot_all, dtype=np.float64) / norm_tokens
     )

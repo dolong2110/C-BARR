@@ -852,6 +852,18 @@ def merge_shard_caches(
     return merged_counts
 
 
+def _load_uid_map_union(
+    out_dir: pathlib.Path, fname: str, include_shards: bool = False
+) -> dict[str, dict[str, Any]]:
+    merged = _load_uid_map(out_dir / fname)
+    if include_shards and (out_dir / "shards").is_dir():
+        for sd in sorted((out_dir / "shards").glob("shard_*")):
+            if (sd / fname).is_file():
+                for row in _load_jsonl(sd / fname):
+                    merged[str(row["item"]["uid"])] = row
+    return merged
+
+
 def _is_model_fully_cached(
     out_dir: pathlib.Path,
     seed_items: list[dict[str, Any]],
@@ -860,9 +872,10 @@ def _is_model_fully_cached(
     diag_items: list[dict[str, Any]],
     calibrate_only: bool,
     include_b512: bool,
+    include_shards: bool = False,
 ) -> bool:
-    seed_map = _load_uid_map(out_dir / "seed_60_cache.jsonl")
-    dev_map = _load_uid_map(out_dir / "dev_60_cache.jsonl")
+    seed_map = _load_uid_map_union(out_dir, "seed_60_cache.jsonl", include_shards)
+    dev_map = _load_uid_map_union(out_dir, "dev_60_cache.jsonl", include_shards)
     if not all(str(x["uid"]) in seed_map for x in seed_items):
         return False
     if not all(str(x["uid"]) in dev_map for x in dev_items):
@@ -870,7 +883,7 @@ def _is_model_fully_cached(
     if calibrate_only:
         return True
 
-    eval_map = _load_uid_map(out_dir / "eval_450_cache.jsonl")
+    eval_map = _load_uid_map_union(out_dir, "eval_450_cache.jsonl", include_shards)
     for x in eval_items:
         u = str(x["uid"])
         if u not in eval_map:
@@ -878,7 +891,7 @@ def _is_model_fully_cached(
         if include_b512 and "m2_b512" not in eval_map[u]:
             return False
 
-    ehurt_map = _load_uid_map(out_dir / "diag_ehurt_cache.jsonl")
+    ehurt_map = _load_uid_map_union(out_dir, "diag_ehurt_cache.jsonl", include_shards)
     ehurt_uids: list[str] = []
     for x in diag_items:
         u = str(x["uid"])
@@ -890,13 +903,16 @@ def _is_model_fully_cached(
 
     if not ehurt_uids:
         return True
-    ctrl_path = out_dir / "diag_controls_cache.jsonl"
-    if not ctrl_path.is_file():
+    ctrl_sources = [out_dir / "diag_controls_cache.jsonl"]
+    if include_shards and (out_dir / "shards").is_dir():
+        ctrl_sources.extend(sorted((out_dir / "shards").glob("shard_*/diag_controls_cache.jsonl")))
+    ctrl_keys: set[tuple[str, str]] = set()
+    for cp in ctrl_sources:
+        if cp.is_file():
+            for rec in _load_jsonl(cp):
+                ctrl_keys.add((str(rec["uid"]), str(rec["mode"])))
+    if not ctrl_keys:
         return False
-    ctrl_keys = {
-        (str(rec["uid"]), str(rec["mode"]))
-        for rec in _load_jsonl(ctrl_path)
-    }
     for u in ehurt_uids:
         for m in _DIAG_MODES:
             if (u, m) not in ctrl_keys:
@@ -1236,6 +1252,11 @@ def main() -> None:
         default="classic",
         help="Stage-2 close bridge for truncated <think> runs ('classic' preserves v0.5.7 caches; 'solve_first' adds a Turn-2 reasoning instruction).",
     )
+    parser.add_argument(
+        "--check-fully-cached",
+        action="store_true",
+        help="Exit 0 immediately if all required canonical/shard caches exist for this model, else exit 1.",
+    )
     args = parser.parse_args()
 
     if args.num_shards < 1:
@@ -1251,6 +1272,27 @@ def main() -> None:
     if args.temperature > 0.0:
         tag = f"{tag}__T{args.temperature:g}_tp{args.top_p:g}_pp{args.presence_penalty:g}_s{args.seed}"
     out_dir = pathlib.Path(args.out_dir) / tag
+
+    if args.check_fully_cached:
+        if not out_dir.is_dir():
+            sys.exit(1)
+        seed_items = _load_jsonl(data_dir / "seed_60.jsonl")
+        dev_items = _load_jsonl(data_dir / "dev_60.jsonl")
+        eval_items = _load_jsonl(data_dir / "eval_450.jsonl")
+        diag_file = "ifeval_diag_341_strict.jsonl" if args.strict_diag else "ifeval_diag_491.jsonl"
+        diag_items = _load_jsonl(data_dir / diag_file)
+        ok = _is_model_fully_cached(
+            out_dir,
+            seed_items,
+            dev_items,
+            eval_items,
+            diag_items,
+            calibrate_only=args.calibrate_only,
+            include_b512=args.include_b512,
+            include_shards=True,
+        )
+        sys.exit(0 if ok else 1)
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     seed_items = _load_jsonl(data_dir / "seed_60.jsonl")
@@ -1322,7 +1364,6 @@ def main() -> None:
 
     if (
         not shard_mode
-        and args.merge_shards
         and not args.mock
         and _is_model_fully_cached(
             out_dir,
@@ -1334,7 +1375,7 @@ def main() -> None:
             include_b512=args.include_b512,
         )
     ):
-        print("[merge] All shard items cached; finalizing summaries on tokenizer-only path.", flush=True)
+        print("[cache] All items cached; finalizing summaries on tokenizer-only path.", flush=True)
         engine = _TokenizerOnlyEngine(args.model, local_files_only=args.offline)
     else:
         engine = _build_engine(
