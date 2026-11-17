@@ -1,13 +1,61 @@
 {
-  "results_seq": 1,
-  "results_version": "v0.5.14-res.1",
+  "results_seq": 2,
+  "results_version": "v0.5.14-res.2",
   "code_version": "0.5.14",
-  "git_rev": "89bdcd4-dirty",
-  "sync_label": "checkpoint-Qwen3.5-4B:20261117T174419Z",
-  "updated_utc": "2026-11-17T18:34:03Z",
+  "git_rev": "776dd95-dirty",
+  "sync_label": "checkpoint-SmolLM3-3B:20261117T174419Z",
+  "updated_utc": "2026-11-17T21:22:04Z",
   "consistent_code_versions": true,
   "version_warnings": [],
   "models": {
+    "HuggingFaceTB__SmolLM3-3B": {
+      "model": "HuggingFaceTB/SmolLM3-3B",
+      "code_version": "0.5.14",
+      "git_rev": "3214526-dirty",
+      "run_id": "20261117T174419Z",
+      "sync_seq": 1,
+      "result_version": "v0.5.14+m1",
+      "diag_pools": {
+        "default": {
+          "code_version": "0.5.14",
+          "git_rev": "3214526-dirty",
+          "run_id": "20261117T174419Z",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "strict341": {
+          "code_version": "0.5.14",
+          "git_rev": "421cf4a",
+          "run_id": "20261117T174419Z",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "diag491": {
+          "code_version": "0.5.14",
+          "git_rev": "3214526-dirty",
+          "run_id": "20261117T174419Z",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        }
+      },
+      "artifact_sha256": {
+        "calibration_summary.json": "53e1802decbd62bb1770a06780f027cbe005c58f85516fe0d7f204bfbec602c4",
+        "matrix_summary.json": "bd159a17b4cd3743f3e9a0e8de49b667ff783669347016a73de5f9daf68fedb7",
+        "matrix_summary_diag491.json": "bd159a17b4cd3743f3e9a0e8de49b667ff783669347016a73de5f9daf68fedb7",
+        "matrix_summary_strict341.json": "9a2bfb793f873fb23a81f810a0cc54f592b53a4986439584bea8a6c2cd355c7f",
+        "tables_rows.tex": "331387c592af9cfeb98ec3111f9bf2a07c51ba69f28b0081ecb61eb6dce05606",
+        "tables_rows_diag491.tex": "331387c592af9cfeb98ec3111f9bf2a07c51ba69f28b0081ecb61eb6dce05606",
+        "tables_rows_strict341.tex": "331387c592af9cfeb98ec3111f9bf2a07c51ba69f28b0081ecb61eb6dce05606",
+        "seed_60_cache.jsonl.gz": "37892998a28e2de8675e399ed786967f8bf852d17222e011d6569ee779bb8139",
+        "dev_60_cache.jsonl.gz": "ddc313caadc8973e12d4eaa74ec866cf20f69e3854715b676a5f065a53fcf236",
+        "eval_450_cache.jsonl.gz": "e24c1876ee1eb2bb6c9104f79a8734b7c5db49f05f4ea5a9694177827af26ec5",
+        "diag_ehurt_cache.jsonl.gz": "2471779b6e4211a5353054e960d133f5508e4a54d75c228da749108ce889a15e",
+        "diag_controls_cache.jsonl.gz": "a56ac99093a0061e66af5be56834e391ceaa09ba0f0346c617bbbafabb8b4b60"
+      }
+    },
     "Qwen__Qwen3.5-4B": {
       "model": "Qwen/Qwen3.5-4B",
       "code_version": "0.5.14",
