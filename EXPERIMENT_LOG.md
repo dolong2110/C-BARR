@@ -240,8 +240,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (Eval-450: HuggingFaceTB/SmolLM3-3B (strict341))** (Updated 2026-11-17 21:03:45 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `5b38fe0` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Eval-450: HuggingFaceTB/SmolLM3-3B (strict341)` | **Wall Time**: `19.2s` (19.2s)
+### Run `20261117T174419Z` — **RUNNING (Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341))** (Updated 2026-11-17 21:03:55 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `93dbe5b` | **Results Release**: `v0.5.14-res.1` | **Last Loop**: `Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341)` | **Wall Time**: `29.9s` (29.9s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "5b38fe0",
+  "git_rev": "93dbe5b",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -308,9 +308,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
-- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`421cf4a`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`19.2s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.400, esc=46.7%
+- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`421cf4a`) | dtype=`torch.bfloat16` | wall=`29.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
   - **4-Regime**: Helped=13.6%, Hurt=9.6%, Flip=23.1%, TiePass=60.0%, TieFail=16.9%
-  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+  - **Section 6 Causal (`|E_hurt|=58`)**: rho_rec=63.8%, rho_int=36.2% | A1_strip=100.0%, B2a_post=63.8%, B1_pre=62.1%, B2b_raw=34.5%, A2_swap=55.2%, B3_cut=60.3%
 
 | Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
