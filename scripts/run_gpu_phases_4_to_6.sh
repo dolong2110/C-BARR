@@ -46,8 +46,11 @@ set -euo pipefail
 #   --checkpoint-every <N>  Mid-eval_450 checkpoint cadence in new items (default: 150 live, 0 mock)
 #   --with-9b / --auto-9b / --no-9b  Enable Qwen3.5-9B always, automatically on >=22 GB GPUs, or disable
 #   --with-w7 / --no-w7     Enable/disable optional W7 extensions (DeltaNet conv+KV, Dense KV evict, Prefill MLP, Stage-2 solve_first)
-#   --with-r6 / --auto-r6 / --no-r6  Run Contingency R6 sampled validation (T=0.6, top_p=0.95, pp=1.5)
-#   --r6-models "<list>"    Override R6 model list (default: "Qwen/Qwen3.5-4B Qwen/Qwen3.5-0.8B")
+#   --with-r6 / --auto-r6 / --no-r6  Run Contingency R6 3-seed sampled validation (T=0.6, top_p=0.95, pp=1.5)
+#   --r6-models "<list>"    Override R6 model list (default: "Qwen/Qwen3.5-4B")
+#   --r6-seeds "<list>"     Override R6 seed list (default: "42 43 44" live, "42" mock)
+#   --with-ifbench / --auto-ifbench / --no-ifbench  Run Appendix B OOD evaluation on allenai/IFBench_test
+#   --ifbench-models "<list>"  Override IFBench OOD model list (default: "Qwen/Qwen3.5-4B")
 #   --include-b512 / --auto-b512 / --no-b512  Contingency R3 B=512 sweep (always / auto on trigger / off)
 #   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
 #   --skip-preflight        Skip Gate 0 offline unittest discovery
@@ -73,7 +76,10 @@ STAGE_RETRIES="${CBARR_STAGE_RETRIES:-2}"
 WITH_9B="0"
 WITH_W7=0
 WITH_R6="auto"
-R6_MODELS_ARG=("Qwen/Qwen3.5-4B" "Qwen/Qwen3.5-0.8B")
+R6_MODELS_ARG=("Qwen/Qwen3.5-4B")
+R6_SEEDS_ARG=()
+WITH_IFBENCH="auto"
+IFBENCH_MODELS_ARG=("Qwen/Qwen3.5-4B")
 AUTO_B512="auto"
 INCLUDE_B512=0
 IS_MOCK=0
@@ -185,6 +191,19 @@ while [ "$#" -gt 0 ]; do
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
       shift
       read -r -a R6_MODELS_ARG <<< "$1"
+      ;;
+    --r6-seeds)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      read -r -a R6_SEEDS_ARG <<< "$1"
+      ;;
+    --with-ifbench) WITH_IFBENCH="1" ;;
+    --auto-ifbench) WITH_IFBENCH="auto" ;;
+    --no-ifbench) WITH_IFBENCH="0" ;;
+    --ifbench-models)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      read -r -a IFBENCH_MODELS_ARG <<< "$1"
       ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
@@ -376,8 +395,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PART_MODE" in
-  all|1|2|3|4|5|combine) ;;
-  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, 4, 5, or combine)" >&2; exit 1 ;;
+  all|1|2|3|4|5|combine|ifbench) ;;
+  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, 4, 5, combine, or ifbench)" >&2; exit 1 ;;
 esac
 
 WORKER_MODE=0
@@ -770,6 +789,22 @@ if [ "$WITH_R6" = "auto" ]; then
   fi
 fi
 
+if [ "$WITH_IFBENCH" = "auto" ]; then
+  if [ "$IS_MOCK" -ne 0 ] || [ "$PART_MODE" != "all" ] || [ "$STRICT_ONLY" -ne 0 ] || [ "$CALIBRATE_ONLY" -ne 0 ] || [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+    WITH_IFBENCH=0
+  else
+    WITH_IFBENCH=1
+  fi
+fi
+
+if [ "${#R6_SEEDS_ARG[@]}" -eq 0 ]; then
+  if [ "$IS_MOCK" -eq 0 ]; then
+    R6_SEEDS_ARG=(42 43 44)
+  else
+    R6_SEEDS_ARG=(42)
+  fi
+fi
+
 if [ -z "$CHECKPOINT_EVERY" ]; then
   if [ "$IS_MOCK" -eq 1 ] || [ "$WORKER_MODE" -eq 1 ]; then
     CHECKPOINT_EVERY=0
@@ -779,32 +814,36 @@ if [ -z "$CHECKPOINT_EVERY" ]; then
 fi
 
 # Shared hyperparameters and per-step checkpoint flags forwarded into every scripts/run_matrix.py invocation
-MATRIX_PARAM_FLAGS=(
-  --device "$DEVICE_ARG"
-  --seed "$SEED"
-  --lam-utility "$LAM_UTILITY"
-  --norm-tokens "$NORM_TOKENS"
-  --reg-c "$REG_C"
-  --tau-min "$TAU_MIN"
-  --tau-max "$TAU_MAX"
-  --tau-steps "$TAU_STEPS"
-  --run-id "$RUN_ID"
-  --timings-file "$TIMINGS_FILE"
-  --log-file "$RUN_LOG"
-  --params-json "@${PARAMS_FILE}"
-  --step-checkpoint-every "$CHECKPOINT_EVERY"
-)
-MATRIX_CACHED_PARAM_FLAGS=("${MATRIX_PARAM_FLAGS[@]}")
-if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
-  MATRIX_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
-  MATRIX_CACHED_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
-  if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ]; then
-    MATRIX_PARAM_FLAGS+=(--git-push)
-    if [ -n "$GIT_BRANCH" ]; then
-      MATRIX_PARAM_FLAGS+=(--git-branch "$GIT_BRANCH")
+_rebuild_matrix_param_flags() {
+  local eff_seed="${1:-$SEED}"
+  MATRIX_PARAM_FLAGS=(
+    --device "$DEVICE_ARG"
+    --seed "$eff_seed"
+    --lam-utility "$LAM_UTILITY"
+    --norm-tokens "$NORM_TOKENS"
+    --reg-c "$REG_C"
+    --tau-min "$TAU_MIN"
+    --tau-max "$TAU_MAX"
+    --tau-steps "$TAU_STEPS"
+    --run-id "$RUN_ID"
+    --timings-file "$TIMINGS_FILE"
+    --log-file "$RUN_LOG"
+    --params-json "@${PARAMS_FILE}"
+    --step-checkpoint-every "$CHECKPOINT_EVERY"
+  )
+  MATRIX_CACHED_PARAM_FLAGS=("${MATRIX_PARAM_FLAGS[@]}")
+  if [ "$NO_EXP_LOG" -eq 0 ] && [ -n "$EXP_LOG" ]; then
+    MATRIX_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
+    MATRIX_CACHED_PARAM_FLAGS+=(--exp-log "$EXP_LOG")
+    if [ "$AUTO_PUSH" -eq 1 ] && [ "$IS_MOCK" -eq 0 ] && [ "$WORKER_MODE" -eq 0 ]; then
+      MATRIX_PARAM_FLAGS+=(--git-push)
+      if [ -n "$GIT_BRANCH" ]; then
+        MATRIX_PARAM_FLAGS+=(--git-branch "$GIT_BRANCH")
+      fi
     fi
   fi
-fi
+}
+_rebuild_matrix_param_flags "$SEED"
 
 "$PY_BIN" -c "
 import json, pathlib, sys
@@ -825,9 +864,11 @@ payload = {
     'setup_mode': sys.argv[15],
     'with_r6': bool(int(sys.argv[17])),
     'auto_b512': sys.argv[18],
+    'with_ifbench': bool(int(sys.argv[19])),
+    'r6_seeds': [int(s) for s in sys.argv[20].split() if s.strip()],
 }
 pathlib.Path(sys.argv[16]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE" "$WITH_R6" "$AUTO_B512"
+" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE" "$WITH_R6" "$AUTO_B512" "$WITH_IFBENCH" "${R6_SEEDS_ARG[*]}"
 
 checkpoint_exp_log() {
   local loop_label="$1"
@@ -1308,17 +1349,58 @@ run_w7_stage() {
   fi
 }
 
+run_ifbench_ood_stage() {
+  if [ "$WITH_IFBENCH" != "1" ] || [ "$STRICT_ONLY" -ne 0 ] || [ "$CALIBRATE_ONLY" -ne 0 ]; then
+    return 0
+  fi
+  local _ifbm _ifb_slug
+  for _ifbm in "${IFBENCH_MODELS_ARG[@]}"; do
+    check_workspace_disk_space "IFBench OOD (${_ifbm})" || return 1
+    _ifb_slug="${_ifbm//\//__}"
+    local ifb_args=(
+      --model "$_ifbm"
+      --out-dir "$OUT_DIR"
+      --dtype "$DTYPE"
+    )
+    if [ "$OFFLINE_MODE" -eq 1 ]; then
+      ifb_args+=(--local-files-only)
+    fi
+    if [ "$IS_MOCK" -eq 1 ]; then
+      ifb_args+=(--mock --allow-default-params --shards 1)
+    else
+      if [ -f "${OUT_DIR}/${_ifb_slug}/ext_ifbench_ood.json" ] && "$PY_BIN" scripts/ext_ifbench_ood.py "${ifb_args[@]}" --check-cached >/dev/null 2>&1; then
+        log_banner "=== [Appendix B: IFBench OOD (${_ifbm})] Already cached — skipping GPU launch ==="
+        record_stage_timing "Appendix B: IFBench OOD (${_ifbm}) (cached)" "PASS" 0
+        continue
+      fi
+      ifb_args+=(--shards auto --workers-per-gpu "$WORKERS_PER_GPU_ARG" --wait-gpu-min "$WAIT_GPU_MIN" --max-retries "$STAGE_RETRIES")
+      if [ -n "$PINNED_GPU_CSV" ]; then
+        ifb_args+=(--gpu-ids "$PINNED_GPU_CSV")
+      fi
+    fi
+    run_stage "Appendix B: IFBench OOD (${_ifbm})" "$PY_BIN" scripts/ext_ifbench_ood.py "${ifb_args[@]}"
+    sync_model_checkpoint "$_ifbm"
+  done
+}
+
 run_r6_sampled_stage() {
   if [ "$WITH_R6" != "1" ] || [ "$STRICT_ONLY" -ne 0 ] || [ "$CALIBRATE_ONLY" -ne 0 ]; then
     return 0
   fi
-  local _r6m _r6_slug
+  local _r6m _r6_seed _r6_slug _orig_seed
+  _orig_seed="$SEED"
   for _r6m in "${R6_MODELS_ARG[@]}"; do
-    run_matrix_sharded "Contingency R6 Sampled (T=0.6): ${_r6m}" "$_r6m" \
-      --strict-diag --temperature 0.6 --top-p 0.95 --presence-penalty 1.5
-    _r6_slug="${_r6m//\//__}__T0.6_tp0.95_pp1.5_s${SEED}"
-    sync_model_checkpoint "$_r6_slug"
+    for _r6_seed in "${R6_SEEDS_ARG[@]}"; do
+      SEED="$_r6_seed"
+      _rebuild_matrix_param_flags "$SEED"
+      run_matrix_sharded "Contingency R6 Sampled (T=0.6, seed=${_r6_seed}): ${_r6m}" "$_r6m" \
+        --strict-diag --temperature 0.6 --top-p 0.95 --presence-penalty 1.5
+      _r6_slug="${_r6m//\//__}__T0.6_tp0.95_pp1.5_s${_r6_seed}"
+      sync_model_checkpoint "$_r6_slug"
+    done
   done
+  SEED="$_orig_seed"
+  _rebuild_matrix_param_flags "$SEED"
 }
 
 run_phase7_stage() {
@@ -1519,9 +1601,23 @@ case "$PART_MODE" in
     if [ -d "${OUT_DIR}/HuggingFaceTB__SmolLM3-3B" ]; then
       run_w7_stage HuggingFaceTB/SmolLM3-3B
     fi
+    run_ifbench_ood_stage
+    run_r6_sampled_stage
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     sync_part_results "script-part5-combined" 1
+    ;;
+
+  ifbench)
+    if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
+      run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
+    fi
+    run_gate0_preflight
+    WITH_IFBENCH="1"
+    run_ifbench_ood_stage
+    run_phase7_stage
+    run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    sync_part_results "script-part-ifbench" 1 "${IFBENCH_MODELS_ARG[@]}"
     ;;
 
   all)
@@ -1547,6 +1643,7 @@ case "$PART_MODE" in
         fi
       done
       if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+        run_ifbench_ood_stage
         run_r6_sampled_stage
         run_phase7_stage
       fi
@@ -1581,6 +1678,7 @@ case "$PART_MODE" in
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
       sync_model_checkpoint Qwen/Qwen3.5-9B
     fi
+    run_ifbench_ood_stage
     run_r6_sampled_stage
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh

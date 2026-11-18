@@ -32,6 +32,7 @@ from src.metrics import (
 )
 from src.routers import (
     CalibratedRouterParams,
+    _build_gate2_feature_vec,
     _gate2_target_label,
     _get_slow_rec,
     fit_gate2_logistic_weights,
@@ -39,6 +40,14 @@ from src.routers import (
     score_gate2_probability,
     select_cost_aware_tau,
     select_tiered_budget,
+)
+
+# Pre-registered 4-pair confirmatory family (Nov 17 audit: avoids m=12 dilution to alpha=0.00417)
+CONFIRMATORY_HOLM_PAIRS: tuple[tuple[str, str], ...] = (
+    ("B1b", "M2"),
+    ("B0", "M2"),
+    ("B2a", "M2"),
+    ("M1c", "M2"),
 )
 
 VARIANT_ORDER: tuple[str, ...] = (
@@ -208,6 +217,11 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         m2v2_comparison = json.loads(
             (model_dir / "eval_450_m2v2_comparison.json").read_text(encoding="utf-8")
         )
+    ext_ifbench_ood = None
+    if (model_dir / "ext_ifbench_ood.json").exists():
+        ext_ifbench_ood = json.loads(
+            (model_dir / "ext_ifbench_ood.json").read_text(encoding="utf-8")
+        )
 
     eval_cache_path = model_dir / "eval_450_cache.jsonl"
     items: list[dict[str, Any]] = []
@@ -259,6 +273,7 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         "ext_deltanet_blend_evict_kv": ext_deltanet_blend_evict_kv,
         "prefill_mlp": prefill_mlp,
         "m2v2_comparison": m2v2_comparison,
+        "ext_ifbench_ood": ext_ifbench_ood,
         "items": items,
         "per_system_runs": per_system_runs,
     }
@@ -476,6 +491,196 @@ def _probe_horizon_ablation(
     return out
 
 
+def _l2_regularization_sensitivity(
+    model_dir: pathlib.Path,
+    lam_utility: float = 0.05,
+    norm_tokens: float = 250.0,
+    tau_grid: tuple[float, float, int] = (0.15, 0.85, 29),
+    seed: int = 42,
+    c_values: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0),
+) -> list[dict[str, Any]]:
+    """CPU-only sensitivity check over uncapped L2 inverse strength C in {0.1, 0.25, 0.5, 1.0}."""
+    seed_p = model_dir / "seed_60_cache.jsonl"
+    dev_p = model_dir / "dev_60_cache.jsonl"
+    eval_p = model_dir / "eval_450_cache.jsonl"
+    if not (seed_p.exists() and dev_p.exists() and eval_p.exists()):
+        return []
+    seed_rows = _load_jsonl(seed_p)
+    dev_rows = _load_jsonl(dev_p)
+    eval_rows = _load_jsonl(eval_p)
+    if not seed_rows or not dev_rows or not eval_rows:
+        return []
+    for row in seed_rows + dev_rows + eval_rows:
+        _regrade_cached_gsm8k_row(row)
+
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.preprocessing import StandardScaler
+
+    x_seed_l, y_seed_l, h_help = [], [], []
+    for rec in seed_rows:
+        g1 = rec.get("g1") or run_gate1_lexical(rec["item"]["prompt"])
+        rec["g1"] = g1
+        x_seed_l.append(_build_gate2_feature_vec(g1, rec["probe"]))
+        y_seed_l.append(_gate2_target_label(rec))
+        if int(rec["m2_b128"]["z"]) > int(rec["fast_done"]["z"]):
+            h_help.append(float(rec["probe"]["H_max"]))
+    for rec in dev_rows:
+        rec["g1"] = rec.get("g1") or run_gate1_lexical(rec["item"]["prompt"])
+
+    x_arr = np.vstack(x_seed_l)
+    y_arr = np.asarray(y_seed_l, dtype=int)
+    tau_h_high = float(np.median(h_help)) if h_help else 0.85
+    eval_items = [r["item"] for r in eval_rows]
+
+    out: list[dict[str, Any]] = []
+    for c_val in c_values:
+        if len(np.unique(y_arr)) < 2:
+            coef_list, intercept = [0.6, 0.8, 0.4, 1.0, 0.5], -1.0
+        else:
+            scaler = StandardScaler()
+            x_scaled = scaler.fit_transform(x_arr)
+            clf = LogisticRegression(C=float(c_val), class_weight="balanced", random_state=seed)
+            clf.fit(x_scaled, y_arr)
+            scales = np.where(np.abs(scaler.scale_) > 1e-9, scaler.scale_, 1.0)
+            coef_raw = clf.coef_[0] / scales
+            intercept = float(clf.intercept_[0] - np.dot(coef_raw, scaler.mean_))
+            coef_list = [float(x) for x in coef_raw]
+
+        w_vec = np.asarray(coef_list, dtype=np.float64)
+        tau_sweep: list[dict[str, float]] = []
+        for tau in np.linspace(tau_grid[0], tau_grid[1], tau_grid[2]):
+            utilities: list[float] = []
+            escs: list[int] = []
+            for rec in dev_rows:
+                g1 = rec["g1"]
+                prompt_str = rec["item"]["prompt"]
+                if g1.phi_prec == 1 and g1.phi_plan == 0 and g1.phi_sym == 0:
+                    z_sel, t_sel, e_f = rec["b0"]["z"], rec["b0"]["T_total"], 0
+                elif g1.phi_plan == 1:
+                    b_dir = select_tiered_budget(prompt_str, g1, None, tau_h_high)
+                    sr = _get_slow_rec(rec, b_dir, direct=True)
+                    z_sel, t_sel, e_f = sr["z"], sr["T_total"], 1
+                else:
+                    fv = _build_gate2_feature_vec(g1, rec["probe"])
+                    prob = 1.0 / (1.0 + np.exp(-float(np.dot(w_vec, fv) + intercept)))
+                    if prob >= float(tau):
+                        b_esc = select_tiered_budget(prompt_str, g1, rec["probe"], tau_h_high)
+                        sr = _get_slow_rec(rec, b_esc, direct=False)
+                        z_sel = sr["z"]
+                        t_sel = rec["probe"]["T_probe"] + sr["T_total"]
+                        e_f = 1
+                    else:
+                        z_sel, t_sel, e_f = rec["fast_done"]["z"], rec["fast_done"]["T_total"], 0
+                utilities.append(float(z_sel) - lam_utility * (float(t_sel) / norm_tokens))
+                escs.append(e_f)
+            tau_sweep.append(
+                {"tau": float(tau), "utility_u005": float(np.mean(utilities)), "esc_rate": float(np.mean(escs))}
+            )
+
+        best = select_cost_aware_tau(tau_sweep)
+        params_c = CalibratedRouterParams(
+            coef=coef_list,
+            intercept=intercept,
+            tau_prob=float(best["tau"]),
+            tau_h_high=tau_h_high,
+            m2_escalation_rate_dev=float(best["esc_rate"]),
+        )
+        rng_b2b = np.random.default_rng(seed)
+        m2_runs = [
+            resolve_all_variants_for_item(r, params_c, rng_b2b, float(best["esc_rate"]))["M2"]
+            for r in eval_rows
+        ]
+        m2_tab = evaluate_system_table(eval_items, m2_runs, lam_utility=lam_utility, norm_tokens=norm_tokens)
+        out.append(
+            {
+                "reg_c": float(c_val),
+                "is_prod_effective_c": bool(abs(float(c_val) - 0.25) < 1e-9),
+                "tau_prob": float(params_c.tau_prob),
+                "tau_h_high": float(tau_h_high),
+                "coef_l2_norm": float(np.linalg.norm(w_vec)),
+                "dev_esc_rate": float(best["esc_rate"]),
+                "eval_m2_macro": float(m2_tab["macro_acc"]),
+                "eval_m2_oaa250": float(m2_tab["oaa_250"]),
+                "eval_m2_u005": float(m2_tab["u_005"]),
+                "eval_m2_tok": float(m2_tab["mean_t_tot"]),
+            }
+        )
+    return out
+
+
+def _collect_diag_k_over_n(
+    model_dir: pathlib.Path,
+    diag_dict: dict[str, Any] | None,
+    *,
+    strict_pool: bool,
+) -> dict[str, Any]:
+    """Extracts exact k/n counts and, when diag_controls_cache.jsonl is present, paired vectors."""
+    if not diag_dict:
+        return {}
+    modes = ("A1_strip", "B2a_post_anchor", "B1_pre_anchor", "B2b_post_raw", "A2_math_swap", "B3_early_cut_no_anchor")
+    out: dict[str, Any] = {"modes": {}}
+    n_expected = 0
+    for m in modes:
+        md = diag_dict.get(m)
+        if not isinstance(md, dict):
+            continue
+        n_val = int(md.get("n_ehurt", 0))
+        if n_val > 0:
+            n_expected = n_val
+        k_val = md.get("overall_pass_count")
+        if k_val is None and n_val > 0 and "overall_recovery_pct" in md:
+            k_val = int(round((float(md["overall_recovery_pct"]) / 100.0) * n_val))
+        k_int = int(k_val or 0)
+        rate, w_lo, w_hi = wilson_ci(k_int, n_val)
+        out["modes"][m] = {
+            "k": k_int,
+            "n": n_val,
+            "pct": 100.0 * rate,
+            "wilson_ci95_pct": [100.0 * w_lo, 100.0 * w_hi],
+        }
+
+    if n_expected > 0 and "B2a_post_anchor" in out["modes"]:
+        k_post = out["modes"]["B2a_post_anchor"]["k"]
+        mc_vs_b1b = exact_and_midp_mcnemar([0] * n_expected, [1] * k_post + [0] * (n_expected - k_post))
+        out["b2a_vs_b1b_all_fail"] = mc_vs_b1b
+
+    ctrl_path = model_dir / "diag_controls_cache.jsonl"
+    if ctrl_path.is_file() and n_expected > 0:
+        eval_uids: set[str] = set()
+        eval_p = model_dir / "eval_450_cache.jsonl"
+        if strict_pool and eval_p.is_file():
+            eval_uids = {str(r["item"]["uid"]) for r in _load_jsonl(eval_p)}
+        strict_file_uids: set[str] | None = None
+        if strict_pool:
+            sf = ROOT / "data" / "frozen_splits" / "ifeval_diag_341_strict.jsonl"
+            if sf.is_file():
+                strict_file_uids = {str(r["uid"]) for r in _load_jsonl(sf)}
+
+        by_mode_uid: dict[str, dict[str, int]] = {m: {} for m in modes}
+        for row in _load_jsonl(ctrl_path):
+            m = str(row.get("mode", ""))
+            uid = str(row.get("uid", ""))
+            if m not in by_mode_uid:
+                continue
+            if strict_pool:
+                if strict_file_uids is not None and uid not in strict_file_uids:
+                    continue
+                if strict_file_uids is None and uid in eval_uids:
+                    continue
+            by_mode_uid[m][uid] = int(row.get("grade", {}).get("z", 0))
+
+        common_uids = sorted(
+            set(by_mode_uid["A1_strip"].keys()) & set(by_mode_uid["B2a_post_anchor"].keys())
+        )
+        if len(common_uids) == n_expected:
+            z_a1 = [by_mode_uid["A1_strip"][u] for u in common_uids]
+            z_b2a = [by_mode_uid["B2a_post_anchor"][u] for u in common_uids]
+            out["paired_uids"] = common_uids
+            out["paired_z"] = {"A1_strip": z_a1, "B2a_post_anchor": z_b2a}
+            out["b2a_vs_a1_strip"] = exact_and_midp_mcnemar(z_a1, z_b2a)
+    return out
+
+
 def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict[str, Any]:
     """Runs statistical inference, Clean-446 audit, and Gate checks on a single model bundle."""
     report = bundle["report"]
@@ -509,7 +714,7 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         clean_sensitivity["max_abs_macro_delta_pp"] = 100.0 * max_macro_delta
 
         # 10k Paired bootstrap 95% CIs for key comparisons
-        for base_k in ("B1b", "B0", "M1c", "M2_Pre"):
+        for base_k in ("B1b", "B0", "B2a", "M1c", "M2_Pre"):
             paired_bootstrap[f"M2_minus_{base_k}"] = paired_metric_bootstrap_ci(
                 items, runs[base_k], runs["M2"], n_boot=n_boot, seed=seed
             )
@@ -522,10 +727,38 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         p_holm = holm_bonferroni([m["p_exact"] for m in mcnemar_raw])
         for k, mc, pa in zip(comp_keys, mcnemar_raw, p_holm):
             targeted_mcnemar[f"{k}_vs_B1b"] = {**mc, "p_holm": float(pa)}
-        for base_k in ("B0", "M1c", "M2_Pre"):
+        for base_k in ("B0", "B2a", "M1c", "M2_Pre"):
             targeted_mcnemar[f"M2_vs_{base_k}"] = exact_and_midp_mcnemar(
                 [int(r["z"]) for r in runs[base_k]], z_m2
             )
+
+    # Pre-registered 4-pair Confirmatory Holm Family (avoids 12-row FWER alpha=0.00417 dilution)
+    confirmatory_holm_family: dict[str, Any] = {
+        "family_size": len(CONFIRMATORY_HOLM_PAIRS),
+        "alpha_bonferroni_worst": round(0.05 / max(1, len(CONFIRMATORY_HOLM_PAIRS)), 6),
+        "pairs": {},
+    }
+    if items and len(runs["M2"]) == len(items):
+        z_m2_c = [int(r["z"]) for r in runs["M2"]]
+        t_m2_tok = float(systems["M2"]["mean_t_tot"])
+        raw_c_stats: list[tuple[str, str, str, dict[str, float]]] = []
+        for base_k, cand_k in CONFIRMATORY_HOLM_PAIRS:
+            pk = f"{cand_k}_vs_{base_k}"
+            mc = exact_and_midp_mcnemar([int(r["z"]) for r in runs[base_k]], z_m2_c)
+            raw_c_stats.append((pk, base_k, cand_k, mc))
+        adj_exact_c = holm_bonferroni([m[3]["p_exact"] for m in raw_c_stats])
+        adj_midp_c = holm_bonferroni([m[3]["p_midp"] for m in raw_c_stats])
+        for (pk, base_k, cand_k, mc), p_he, p_hm in zip(raw_c_stats, adj_exact_c, adj_midp_c):
+            b_tok = max(1e-6, float(systems[base_k]["mean_t_tot"]))
+            confirmatory_holm_family["pairs"][pk] = {
+                "base": base_k,
+                "method": cand_k,
+                **mc,
+                "p_holm_exact": float(p_he),
+                "p_holm_midp": float(p_hm),
+                "tok_savings_vs_base_pct": 100.0 * (1.0 - (t_m2_tok / b_tok)),
+                "paired_bootstrap": paired_bootstrap.get(f"M2_minus_{base_k}", {}),
+            }
 
     # Gate 4 + Gate 6 + Contingencies R1-R4 audit
     b1b_s = systems["B1b"]
@@ -614,6 +847,17 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         tau_grid=tau_grid,
         seed=int(tp.get("seed", 42)),
     )
+    l2_sensitivity = _l2_regularization_sensitivity(
+        bundle["dir"],
+        lam_utility=float(tp.get("lam_utility", 0.05)),
+        norm_tokens=float(tp.get("norm_tokens", 250.0)),
+        tau_grid=tau_grid,
+        seed=int(tp.get("seed", 42)),
+    )
+    section6_k_over_n = {
+        "strict341": _collect_diag_k_over_n(bundle["dir"], bundle["strict_diag"], strict_pool=True),
+        "diag491": _collect_diag_k_over_n(bundle["dir"], bundle["full_diag"], strict_pool=False),
+    }
 
     return {
         "model": report["model"],
@@ -622,14 +866,18 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         "clean_446_sensitivity": clean_sensitivity,
         "paired_bootstrap_95ci": paired_bootstrap,
         "targeted_mcnemar": targeted_mcnemar,
+        "confirmatory_holm_family": confirmatory_holm_family,
         "gate_audit": gate_audit,
         "conformal_risk_audit": conformal_audit,
         "oracle_efficiency_audit": oracle_eff,
         "probe_horizon_ablation": probe_horizons,
+        "l2_regularization_sensitivity": l2_sensitivity,
         "oracle_and_4regime": report["oracle_and_4regime"],
         "auxiliary_systems": report.get("auxiliary_systems", {}),
         "section6_strict341": bundle["strict_diag"],
         "section6_diag491": bundle["full_diag"],
+        "section6_k_over_n": section6_k_over_n,
+        "ext_ifbench_ood": bundle.get("ext_ifbench_ood"),
     }
 
 
@@ -647,8 +895,11 @@ def generate_latex_table_parts(
     dense_model: str,
     stats_models: dict[str, Any] | None = None,
     r6_sampled: list[dict[str, Any]] | None = None,
+    pooled_diag: dict[str, Any] | None = None,
+    r6_summary: list[dict[str, Any]] | None = None,
+    ifbench_ood: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Builds modular LaTeX tables (tab1..tab4) populated from observed bundle & W7 metrics."""
+    """Builds modular LaTeX tables (tab1..tab5) populated from observed bundle & W7/Appendix B metrics."""
     header = "% Auto-generated by scripts/analyze_and_plot.py from frozen matrix outputs\n"
 
     # Table 1: Primary (or first available) model
@@ -656,17 +907,19 @@ def generate_latex_table_parts(
     t1_rep = bundles[t1_key]["report"]
     t1_sys = t1_rep["systems"]
     t1_orc = t1_rep["oracle_and_4regime"]["oracle_summary"]
+    t1_conf = (stats_models or {}).get(t1_key, {}).get("confirmatory_holm_family", {}).get("pairs", {})
+    m2_conf_p = float(t1_conf.get("M2_vs_B1b", {}).get("p_holm_exact", 1.0)) if t1_conf else 1.0
 
     t1_lines = [
         rf"% Table 1: Main C-BARR Comparison ({t1_key})",
         r"\begin{table}[t]",
         r"\centering",
-        rf"\caption{{Main results across the frozen $N=450$ suite (\texttt{{{_tex_escape_tt(t1_key)}}}). $^\dagger p < 0.05$ vs.\ \textbf{{B1b}} (Holm-Bonferroni exact McNemar).}}",
+        rf"\caption{{Main results across the frozen $N=450$ suite (\texttt{{{_tex_escape_tt(t1_key)}}}). Headline evaluation leads with MacroAcc, $U_{{0.05}}$, $\text{{AUC}}_{{\text{{OAA}}}}$, and Token Savings; $\text{{OAA}}_{{250}}$ equals MicroAcc on \textbf{{M2}} by D13 cap design ($\le 250$ SLA). $^\dagger p_{{\text{{Holm}},12}} < 0.05$ vs.\ \textbf{{B1b}} (exploratory 12-way exact McNemar); $^\ddagger p_{{\text{{Holm}},4}} < 0.05$ (pre-registered 4-pair confirmatory family).}}",
         r"\label{tab:main_results}",
         r"\resizebox{\textwidth}{!}{%",
         r"\begin{tabular}{lccccccccccc}",
         r"\toprule",
-        r"\textbf{System Variant} & \textbf{GSM-E} & \textbf{GSM-H} & \textbf{CSQA} & \textbf{IFE-Plan} & \textbf{IFE-Prec} & \textbf{IFE-Conf} & \textbf{MacroAcc} $\uparrow$ & $\textbf{OAA}_{250}$ $\uparrow$ & $\textbf{AUC}_{\text{OAA}}$ $\uparrow$ & ${U}_{0.05}$ $\uparrow$ & ${\overline{T}}_{\text{tot}}$ / \textbf{Calls} $\downarrow$ \\",
+        r"\textbf{System Variant} & \textbf{GSM-E} & \textbf{GSM-H} & \textbf{CSQA} & \textbf{IFE-Plan} & \textbf{IFE-Prec} & \textbf{IFE-Conf} & \textbf{MacroAcc} $\uparrow$ & $\textbf{OAA}_{250}$ (SLA) $\uparrow$ & $\textbf{AUC}_{\text{OAA}}$ $\uparrow$ & ${U}_{0.05}$ $\uparrow$ & ${\overline{T}}_{\text{tot}}$ / \textbf{Calls} $\downarrow$ \\",
         r"\midrule",
     ]
 
@@ -682,6 +935,8 @@ def generate_latex_table_parts(
         if k in ("M1a", "M2_B64"):
             t1_lines.append(r"\midrule")
         sig = r"$^\dagger$" if float(t1_sys[k].get("p_holm_vs_b1b", 1.0)) < 0.05 else ""
+        if k == "M2" and m2_conf_p < 0.05:
+            sig = rf"{sig}$^\ddagger$"
         t1_lines.append(_row_tex(VARIANT_LATEX_LABELS[k], t1_sys[k], sig=sig))
     if "M2_Prec" in t1_rep.get("auxiliary_systems", {}):
         t1_lines.append(_row_tex(r"M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$)", t1_rep["auxiliary_systems"]["M2_Prec"]))
@@ -752,33 +1007,62 @@ def generate_latex_table_parts(
         val = rho_r if which == "rho_recency" else rho_i
         return f"{100.0 * val:.1f}"
 
+    def _d_all_kn(d: dict[str, Any], mode: str) -> str:
+        if not d or mode not in d:
+            return "--"
+        md = d[mode]
+        n_v = int(md.get("n_ehurt", 0))
+        if n_v <= 0:
+            return f"{float(md.get('overall_recovery_pct', 0.0)):.1f}"
+        k_v = md.get("overall_pass_count")
+        if k_v is None:
+            k_v = int(round((float(md.get("overall_recovery_pct", 0.0)) / 100.0) * n_v))
+        return f"{float(md['overall_recovery_pct']):.1f} ({int(k_v)}/{n_v})"
+
+    p_ehurt_n = int((p_diag or {}).get("A1_strip", {}).get("n_ehurt", 0))
+    d_ehurt_n = int((d_diag or {}).get("A1_strip", {}).get("n_ehurt", 0))
+    pooled_all_341 = (pooled_diag or {}).get("diag_491_pooled", {}).get("all_models") or (pooled_diag or {}).get("strict341_pooled", {}).get("all_models")
+    pooled_footer = ""
+    if isinstance(pooled_all_341, dict) and pooled_all_341.get("B2a_post_anchor"):
+        pb2a = pooled_all_341["B2a_post_anchor"]
+        pa1 = pooled_all_341.get("A1_strip", {})
+        mc_p = (pooled_all_341.get("b2a_vs_a1_strip") or {}).get("p_midp")
+        mc_b = (pooled_all_341.get("b2a_vs_b1b_all_fail") or {}).get("p_midp")
+        pooled_footer = (
+            f" Pooled ({pooled_all_341.get('pool_label', 'diag')}): "
+            f"A1={pa1.get('pct', 0.0):.1f}\\% ({pa1.get('k', 0)}/{pa1.get('n', 0)}), "
+            f"B2a={pb2a.get('pct', 0.0):.1f}\\% ({pb2a.get('k', 0)}/{pb2a.get('n', 0)}), "
+            + (f"$p_{{\\text{{mid}},\\text{{B2a vs A1}}}}={mc_p:.3g}$, " if mc_p is not None else "")
+            + (f"$p_{{\\text{{mid}},\\text{{B2a vs B1b}}}}={mc_b:.3g}$." if mc_b is not None else "")
+        )
+
     t3_lines = [
         r"% Table 3: Section 6 Causal Diagnostic Control on E_hurt",
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Strict prompt-level recovery (\%) on held-out IFEval ``Hurt'' prompts comparing Trace Stripping vs.\ Post-Think Constraint Re-Anchoring.}",
+        rf"\caption{{Strict prompt-level recovery (\% and exact $k/n$) on held-out IFEval ``Hurt'' prompts comparing Trace Stripping vs.\ Post-Think Constraint Re-Anchoring.{pooled_footer}}}",
         r"\label{tab:diagnostic_control}",
         r"\resizebox{\textwidth}{!}{%",
-        r"\begin{tabular}{llcccc}",
+        r"\begin{tabular}{llcccccc}",
         r"\toprule",
-        r"\textbf{Intervention Condition (Fixed $t_{\text{think}}$)} & \textbf{Causal Factor Isolated} & \multicolumn{2}{c}{\textbf{Qwen3.5-4B (DeltaNet)}} & \multicolumn{2}{c}{\textbf{SmolLM3-3B (Dense)}} \\",
-        r"\cmidrule(lr){3-4} \cmidrule(lr){5-6}",
-        r" & & \textbf{Inhibition} & \textbf{Structural} & \textbf{Inhibition} & \textbf{Structural} \\",
+        rf"\textbf{{Intervention Condition (Fixed $t_{{\text{{think}}}}$)}} & \textbf{{Causal Factor Isolated}} & \multicolumn{{3}}{{c}}{{\textbf{{Qwen3.5-4B (DeltaNet, $n={p_ehurt_n}$)}}}} & \multicolumn{{3}}{{c}}{{\textbf{{SmolLM3-3B (Dense, $n={d_ehurt_n}$)}}}} \\",
+        r"\cmidrule(lr){3-5} \cmidrule(lr){6-8}",
+        r" & & \textbf{All ($k/n$)} & \textbf{Inhib.} & \textbf{Struct.} & \textbf{All ($k/n$)} & \textbf{Inhib.} & \textbf{Struct.} \\",
         r"\midrule",
-        r"B1b: Unmodified \texttt{<think>} ($|t_{\text{think}}|$) & Baseline failure state (0\%) & 0.0 & 0.0 & 0.0 & 0.0 \\",
+        rf"B1b: Unmodified \texttt{{<think>}} ($|t_{{\text{{think}}}}|$) & Baseline failure state (0\%) & 0.0 (0/{p_ehurt_n}) & 0.0 & 0.0 & 0.0 (0/{d_ehurt_n}) & 0.0 & 0.0 \\",
     ]
     for m_key, m_lbl, m_desc in DIAG_MODES:
         if m_key == "B1_pre_anchor":
             t3_lines.append(r"\midrule")
         t3_lines.append(
             f"{m_lbl} & {m_desc} & "
-            f"{_d_val(p_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(p_diag, m_key, 'structural_recovery_pct')} & "
-            f"{_d_val(d_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(d_diag, m_key, 'structural_recovery_pct')} \\\\"
+            f"{_d_all_kn(p_diag, m_key)} & {_d_val(p_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(p_diag, m_key, 'structural_recovery_pct')} & "
+            f"{_d_all_kn(d_diag, m_key)} & {_d_val(d_diag, m_key, 'inhibition_recovery_pct')} & {_d_val(d_diag, m_key, 'structural_recovery_pct')} \\\\"
         )
     t3_lines.extend([
         r"\midrule",
-        rf"\textit{{Derived Recency-Decay Share ($\rho_{{\text{{recency}}}}$, \%)}} & $R_{{\text{{post}}}}/R_{{\text{{strip}}}}$ & \multicolumn{{2}}{{c}}{{{_rho_val(p_diag, 'rho_recency')}}} & \multicolumn{{2}}{{c}}{{{_rho_val(d_diag, 'rho_recency')}}} \\",
-        rf"\textit{{Residual Semantic Interference ($\rho_{{\text{{interf}}}}$, \%)}} & $(R_{{\text{{strip}}}}-\max(R_{{\text{{post}}}},R_{{\text{{pre}}}}))/R_{{\text{{strip}}}}$ & \multicolumn{{2}}{{c}}{{{_rho_val(p_diag, 'rho_interference')}}} & \multicolumn{{2}}{{c}}{{{_rho_val(d_diag, 'rho_interference')}}} \\",
+        rf"\textit{{Derived Recency-Decay Share ($\rho_{{\text{{recency}}}}$, \%)}} & $R_{{\text{{post}}}}/R_{{\text{{strip}}}}$ & \multicolumn{{3}}{{c}}{{{_rho_val(p_diag, 'rho_recency')}}} & \multicolumn{{3}}{{c}}{{{_rho_val(d_diag, 'rho_recency')}}} \\",
+        rf"\textit{{Residual Semantic Interference ($\rho_{{\text{{interf}}}}$, \%)}} & $(R_{{\text{{strip}}}}-\max(R_{{\text{{post}}}},R_{{\text{{pre}}}}))/R_{{\text{{strip}}}}$ & \multicolumn{{3}}{{c}}{{{_rho_val(p_diag, 'rho_interference')}}} & \multicolumn{{3}}{{c}}{{{_rho_val(d_diag, 'rho_interference')}}} \\",
         r"\bottomrule",
         r"\end{tabular}}",
         r"\end{table}",
@@ -934,11 +1218,96 @@ def generate_latex_table_parts(
 
     t4_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
 
+    # Table 5 (Appendix B): OOD IFBench_test, 3-Seed Sampled Validation (T=0.6), and L2 C Sensitivity
+    ood_map = ifbench_ood or {
+        m: bundles[m]["ext_ifbench_ood"]
+        for m in bundles
+        if isinstance(bundles[m].get("ext_ifbench_ood"), dict)
+    }
+    l2_models = [
+        m for m in bundles
+        if (stats_models or {}).get(m, {}).get("l2_regularization_sensitivity")
+    ]
+    t5_lines = [
+        r"% Table 5 (Appendix B): OOD IFBench_test, 3-Seed Sampled Regime (T=0.6), and L2 C Sensitivity",
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Appendix B Robustness Checks: (A) Zero-refit OOD generalization on \texttt{allenai/IFBench\_test} ($N=300$ prompts, 58 unseen constraints); (B) 3-seed sampled validation ($T=0.6, p=0.95, \text{pp}=1.5$, mean $\pm$ SD); (C) Gate-2 L2 inverse regularization sensitivity $C \in \{0.1, 0.25\text{ (prod)}, 0.5, 1.0\}$.}",
+        r"\label{tab:appendix_b_robustness}",
+        r"\resizebox{\textwidth}{!}{%",
+        r"\begin{tabular}{llcccc}",
+        r"\toprule",
+        r"\textbf{Robustness Suite} & \textbf{Backbone / Variant} & \textbf{Primary Acc.\ / Macro} & \textbf{Instr.\ / OAA$_{250}$} & \textbf{$U_{0.05}$ / Mean Tok} & \textbf{Stat.\ / Delta} \\",
+        r"\midrule",
+    ]
+    if ood_map:
+        for m_id, ood in ood_map.items():
+            m_short = _tex_escape_tt(str(m_id).split("/")[-1])
+            syss = ood.get("systems", {})
+            mc_b1b = ood.get("mcnemar", {}).get("M2_vs_B1b", {})
+            for v_k in ("B0", "B1b", "M2"):
+                vs = syss.get(v_k)
+                if not isinstance(vs, dict) or not vs.get("n"):
+                    continue
+                stat_col = (
+                    f"$p_{{\\text{{exact}}}}={float(mc_b1b.get('p_exact', 1.0)):.3g}$ (vs B1b)"
+                    if v_k == "M2" and mc_b1b
+                    else f"$N={int(vs.get('n', 0))}$"
+                )
+                t5_lines.append(
+                    f"A: IFBench OOD (\\texttt{{{m_short}}}) & \\textbf{{{v_k}}} & "
+                    f"{float(vs.get('prompt_strict_pct', 0.0)):.1f}\\% ({int(vs.get('prompt_pass', 0))}/{int(vs.get('n', 0))}) & "
+                    f"{float(vs.get('inst_strict_pct', 0.0)):.1f}\\% / {float(vs.get('oaa_250_pct', 0.0)):.1f}\\% & "
+                    f"{float(vs.get('u_005_pct', 0.0)):.1f}\\% / {float(vs.get('mean_t_tot', 0.0)):.0f} & {stat_col} \\\\"
+                )
+    else:
+        t5_lines.append(r"A: IFBench OOD & Pending cluster execution & -- & -- & -- & -- \\")
+
+    t5_lines.append(r"\midrule")
+    if r6_summary:
+        for rs in r6_summary:
+            m_short = _tex_escape_tt(str(rs["model"]).split("/")[-1])
+            seeds_str = ",".join(str(s) for s in rs["seeds"])
+            t5_lines.append(
+                f"B: Sampled ($k={rs['n_seeds']}$: {seeds_str}) & \\texttt{{{m_short}}} ($T={rs['temperature']:g}, pp={rs['presence_penalty']:g}$) & "
+                f"M2 ${100*rs['m2_macro_mean']:.1f} \\pm {100*rs['m2_macro_std']:.1f}$\\% & "
+                f"OAA ${100*rs['m2_oaa250_mean']:.1f} \\pm {100*rs['m2_oaa250_std']:.1f}$\\% & "
+                f"${100*rs['m2_u005_mean']:.1f}$ / ${rs['m2_tok_mean']:.0f} \\pm {rs['m2_tok_std']:.0f}$ & "
+                f"$\\Delta$B1b ${rs['delta_m2_minus_b1b_pp']:+.1f}$ pp ({rs['delta_tok_savings_pct']:.1f}\\% saved) \\\\"
+            )
+    elif r6_sampled:
+        for r6 in r6_sampled:
+            m_short = _tex_escape_tt(str(r6["model"]).split("/")[-1])
+            t5_lines.append(
+                f"B: Sampled (seed {int(r6.get('seed', 42))}) & \\texttt{{{m_short}}} ($T={float(r6['temperature']):g}$) & "
+                f"M2 {_fmt_pct(r6['sampled_m2_macro'])}\\% & OAA {_fmt_pct(r6['sampled_m2_oaa250'])}\\% & "
+                f"Tok {float(r6['sampled_m2_tok']):.0f} & B1b {_fmt_pct(r6['sampled_b1b_macro'])}\\% \\\\"
+            )
+    else:
+        t5_lines.append(r"B: 3-Seed Sampled ($T=0.6$) & Pending cluster execution & -- & -- & -- & -- \\")
+
+    t5_lines.append(r"\midrule")
+    if l2_models:
+        for m_id in l2_models:
+            m_short = _tex_escape_tt(str(m_id).split("/")[-1])
+            for crow in (stats_models or {})[m_id]["l2_regularization_sensitivity"]:
+                tag = " (prod)" if crow.get("is_prod_effective_c") else ""
+                t5_lines.append(
+                    f"C: Gate-2 L2 (\\texttt{{{m_short}}}) & $C={float(crow['reg_c']):g}${tag} & "
+                    f"{_fmt_pct(crow['eval_m2_macro'])}\\% & {_fmt_pct(crow['eval_m2_oaa250'])}\\% & "
+                    f"{_fmt_pct(crow['eval_m2_u005'])}\\% / {float(crow['eval_m2_tok']):.0f} & "
+                    f"$\\tau^*={float(crow['tau_prob']):.3f}$, $\\|w\\|_2={float(crow['coef_l2_norm']):.2f}$ \\\\"
+                )
+    else:
+        t5_lines.append(r"C: Gate-2 L2 ($C \in \{0.1,0.25,0.5,1.0\}$) & Requires cached shards & -- & -- & -- & -- \\")
+    t5_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
+
     return {
         "tab1_main_results.tex": header + "\n".join(t1_lines) + "\n",
         "tab2_scale_pathology.tex": header + "\n".join(t2_lines) + "\n",
         "tab3_diagnostic_control.tex": header + "\n".join(t3_lines) + "\n",
         "tab4_extensions_w7.tex": header + "\n".join(t4_lines) + "\n",
+        "tab5_appendix_ood_r6_l2.tex": header + "\n".join(t5_lines) + "\n",
     }
 
 
@@ -948,10 +1317,20 @@ def generate_latex_tables(
     dense_model: str,
     stats_models: dict[str, Any] | None = None,
     r6_sampled: list[dict[str, Any]] | None = None,
+    pooled_diag: dict[str, Any] | None = None,
+    r6_summary: list[dict[str, Any]] | None = None,
+    ifbench_ood: dict[str, Any] | None = None,
 ) -> str:
-    """Emits complete LaTeX Tables 1-4 populated from observed bundle & W7 metrics."""
+    """Emits complete LaTeX Tables 1-5 populated from observed bundle & W7/Appendix B metrics."""
     parts = generate_latex_table_parts(
-        bundles, primary_model, dense_model, stats_models=stats_models, r6_sampled=r6_sampled
+        bundles,
+        primary_model,
+        dense_model,
+        stats_models=stats_models,
+        r6_sampled=r6_sampled,
+        pooled_diag=pooled_diag,
+        r6_summary=r6_summary,
+        ifbench_ood=ifbench_ood,
     )
     blocks = [
         "% Auto-generated by scripts/analyze_and_plot.py from frozen matrix outputs",
@@ -1337,6 +1716,147 @@ def discover_bundles(
     return bundles
 
 
+def _build_confirmatory_pooled_diag(
+    stats_models: dict[str, Any],
+) -> dict[str, Any]:
+    """Pools E_hurt k/n recovery counts and mid-p McNemar tests across backbones (strict341 & diag491)."""
+    out: dict[str, Any] = {}
+    modes = ("A1_strip", "B2a_post_anchor", "B1_pre_anchor", "B2b_post_raw", "A2_math_swap", "B3_early_cut_no_anchor")
+    groups = {
+        "deltanet_models": lambda m: "qwen" in m.lower(),
+        "dense_models": lambda m: "smol" in m.lower(),
+        "all_models": lambda _m: True,
+    }
+    for pool_key, out_key, label in (
+        ("strict341", "strict341_pooled", "diag_341_strict"),
+        ("diag491", "diag_491_pooled", "diag_491"),
+    ):
+        pool_block: dict[str, Any] = {}
+        for grp_name, pred in groups.items():
+            matched = [m for m in stats_models if pred(m)]
+            mode_totals: dict[str, list[int]] = {m_k: [0, 0] for m_k in modes}
+            pooled_a1_z: list[int] = []
+            pooled_b2a_z: list[int] = []
+            all_have_paired = bool(matched)
+            models_included: list[str] = []
+
+            for m_id in matched:
+                kn = (stats_models[m_id].get("section6_k_over_n") or {}).get(pool_key, {})
+                md = kn.get("modes", {})
+                if not md:
+                    all_have_paired = False
+                    continue
+                models_included.append(m_id)
+                for mk in modes:
+                    if mk in md:
+                        mode_totals[mk][0] += int(md[mk]["k"])
+                        mode_totals[mk][1] += int(md[mk]["n"])
+                pz = kn.get("paired_z")
+                if isinstance(pz, dict) and "A1_strip" in pz and "B2a_post_anchor" in pz:
+                    pooled_a1_z.extend(int(v) for v in pz["A1_strip"])
+                    pooled_b2a_z.extend(int(v) for v in pz["B2a_post_anchor"])
+                else:
+                    all_have_paired = False
+
+            if not models_included:
+                continue
+            grp_entry: dict[str, Any] = {
+                "pool_label": label,
+                "models": models_included,
+            }
+            for mk in modes:
+                k_sum, n_sum = mode_totals[mk]
+                if n_sum > 0:
+                    rate, lo, hi = wilson_ci(k_sum, n_sum)
+                    grp_entry[mk] = {
+                        "k": k_sum,
+                        "n": n_sum,
+                        "pct": 100.0 * rate,
+                        "wilson_ci95_pct": [100.0 * lo, 100.0 * hi],
+                    }
+            if "B2a_post_anchor" in grp_entry:
+                kb = grp_entry["B2a_post_anchor"]["k"]
+                nb = grp_entry["B2a_post_anchor"]["n"]
+                grp_entry["b2a_vs_b1b_all_fail"] = exact_and_midp_mcnemar(
+                    [0] * nb, [1] * kb + [0] * (nb - kb)
+                )
+            if all_have_paired and pooled_a1_z and len(pooled_a1_z) == len(pooled_b2a_z):
+                grp_entry["b2a_vs_a1_strip"] = {
+                    **exact_and_midp_mcnemar(pooled_a1_z, pooled_b2a_z),
+                    "paired_n": len(pooled_a1_z),
+                }
+            pool_block[grp_name] = grp_entry
+        if pool_block:
+            out[out_key] = pool_block
+
+    # Strip large per-UID vectors from per-model k/n dicts before writing stats_summary.json
+    for m_stats in stats_models.values():
+        k_n = m_stats.get("section6_k_over_n") or {}
+        for pk in ("strict341", "diag491"):
+            if isinstance(k_n.get(pk), dict):
+                k_n[pk].pop("paired_z", None)
+                k_n[pk].pop("paired_uids", None)
+    return out
+
+
+def _aggregate_r6_sampled_summary(r6_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aggregates multi-seed Contingency R6 sampled validation runs into mean +/- std per model/regime."""
+    if not r6_rows:
+        return []
+    grouped: dict[tuple[str, float, float, float], list[dict[str, Any]]] = {}
+    for row in r6_rows:
+        key = (
+            str(row["model"]),
+            round(float(row["temperature"]), 4),
+            round(float(row["top_p"]), 4),
+            round(float(row["presence_penalty"]), 4),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    def _mean_std(vals: list[float]) -> tuple[float, float]:
+        arr = np.asarray(vals, dtype=np.float64)
+        mean_v = float(np.mean(arr))
+        std_v = float(np.std(arr, ddof=1)) if len(arr) >= 2 else 0.0
+        return mean_v, std_v
+
+    summary: list[dict[str, Any]] = []
+    for (model_id, temp, top_p, pp), grp in sorted(grouped.items()):
+        grp_sorted = sorted(grp, key=lambda x: int(x.get("seed", 42)))
+        m2_m_mu, m2_m_sd = _mean_std([float(x["sampled_m2_macro"]) for x in grp_sorted])
+        m2_o_mu, m2_o_sd = _mean_std([float(x["sampled_m2_oaa250"]) for x in grp_sorted])
+        m2_u_mu, m2_u_sd = _mean_std([float(x.get("sampled_m2_u005", 0.0)) for x in grp_sorted])
+        m2_t_mu, m2_t_sd = _mean_std([float(x["sampled_m2_tok"]) for x in grp_sorted])
+        b1b_m_mu, b1b_m_sd = _mean_std([float(x["sampled_b1b_macro"]) for x in grp_sorted])
+        b1b_t_mu, _ = _mean_std([float(x.get("sampled_b1b_tok", 0.0)) for x in grp_sorted])
+        b0_m_mu, b0_m_sd = _mean_std([float(x["sampled_b0_macro"]) for x in grp_sorted])
+        tok_sav = (100.0 * (b1b_t_mu - m2_t_mu) / b1b_t_mu) if b1b_t_mu > 1e-6 else 0.0
+        summary.append(
+            {
+                "model": model_id,
+                "temperature": temp,
+                "top_p": top_p,
+                "presence_penalty": pp,
+                "n_seeds": len(grp_sorted),
+                "seeds": [int(x.get("seed", 42)) for x in grp_sorted],
+                "b0_macro_mean": b0_m_mu,
+                "b0_macro_std": b0_m_sd,
+                "b1b_macro_mean": b1b_m_mu,
+                "b1b_macro_std": b1b_m_sd,
+                "m2_macro_mean": m2_m_mu,
+                "m2_macro_std": m2_m_sd,
+                "m2_oaa250_mean": m2_o_mu,
+                "m2_oaa250_std": m2_o_sd,
+                "m2_u005_mean": m2_u_mu,
+                "m2_u005_std": m2_u_sd,
+                "m2_tok_mean": m2_t_mu,
+                "m2_tok_std": m2_t_sd,
+                "delta_m2_minus_b1b_pp": 100.0 * (m2_m_mu - b1b_m_mu),
+                "delta_tok_savings_pct": tok_sav,
+            }
+        )
+    return summary
+
+
 def discover_sampled_bundles(out_dir: pathlib.Path) -> list[dict[str, Any]]:
     """Discovers Contingency R6 sampled bundles (temperature > 0) without clobbering greedy keys."""
     out: list[dict[str, Any]] = []
@@ -1478,14 +1998,31 @@ def main() -> None:
                 "n_eval": len(sb.get("items") or []) or 450,
                 "sampled_b0_macro": float(b0_s.get("macro_acc", 0.0)),
                 "sampled_b1b_macro": float(b1b_s.get("macro_acc", 0.0)),
+                "sampled_b1b_tok": float(b1b_s.get("mean_t_tot", 0.0)),
                 "sampled_m2_macro": float(m2_s.get("macro_acc", 0.0)),
                 "sampled_m2_oaa250": float(m2_s.get("oaa_250", 0.0)),
+                "sampled_m2_u005": float(m2_s.get("u_005", 0.0)),
                 "sampled_m2_tok": float(m2_s.get("mean_t_tot", 0.0)),
                 "sampled_m2_loop_rate": float(m2_s.get("loop_rate", 0.0)),
             }
         )
     if r6_sampled_rows:
         stats_out["r6_sampled_validation"] = r6_sampled_rows
+    r6_sampled_summary = _aggregate_r6_sampled_summary(r6_sampled_rows)
+    if r6_sampled_summary:
+        stats_out["r6_sampled_summary"] = r6_sampled_summary
+
+    confirmatory_pooled_diag = _build_confirmatory_pooled_diag(stats_out["models"])
+    if confirmatory_pooled_diag:
+        stats_out["confirmatory_pooled_diag"] = confirmatory_pooled_diag
+
+    ifbench_ood_out: dict[str, Any] = {
+        m_name: bundle["ext_ifbench_ood"]
+        for m_name, bundle in bundles.items()
+        if isinstance(bundle.get("ext_ifbench_ood"), dict)
+    }
+    if ifbench_ood_out:
+        stats_out["ifbench_ood"] = ifbench_ood_out
 
     w7_summary_out: dict[str, Any] = {}
     for m_name, bundle in bundles.items():
@@ -1513,6 +2050,9 @@ def main() -> None:
         args.dense_model,
         stats_models=stats_out["models"],
         r6_sampled=r6_sampled_rows,
+        pooled_diag=confirmatory_pooled_diag,
+        r6_summary=r6_sampled_summary,
+        ifbench_ood=ifbench_ood_out,
     )
     for t_name, t_tex in table_parts.items():
         (table_dir / t_name).write_text(t_tex, encoding="utf-8")
@@ -1523,6 +2063,9 @@ def main() -> None:
             args.dense_model,
             stats_models=stats_out["models"],
             r6_sampled=r6_sampled_rows,
+            pooled_diag=confirmatory_pooled_diag,
+            r6_summary=r6_sampled_summary,
+            ifbench_ood=ifbench_ood_out,
         ),
         encoding="utf-8",
     )

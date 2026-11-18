@@ -12,3 +12,4 @@ nltk
 immutabledict
 langdetect
 absl-py
+ifbench

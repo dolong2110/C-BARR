@@ -108,5 +108,11 @@ if [ ! -f "data/manifest_sha256.json" ]; then
 fi
 "$PY_BIN" -c "import pathlib; from scripts.run_matrix import verify_manifest_integrity; verify_manifest_integrity(pathlib.Path('data'))"
 
+# Optional allenai/IFBench OOD verifier package (Appendix B OOD extension; non-fatal offline)
+if ! "$PY_BIN" -c "import ifbench" >/dev/null 2>&1; then
+    "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} ifbench \
+        || echo "[setup_env] WARN: optional 'ifbench' install skipped (offline or unavailable); OOD script supports --mock/--dataset-path."
+fi
+
 # Verify seeded langdetect import (Patch D3) before running any evaluation
 "$PY_BIN" -c "from langdetect import DetectorFactory; DetectorFactory.seed = 0; print('Environment setup OK')"

@@ -43,6 +43,7 @@ COMPACT_CACHE_NAMES: tuple[str, ...] = (
     "diag_ehurt_cache.jsonl",
     "diag_controls_cache.jsonl",
     "ext_deltanet_blend_cache.jsonl",
+    "ext_ifbench_ood_cache.jsonl",
 )
 
 MODEL_SUMMARY_FILES: tuple[str, ...] = (
@@ -58,6 +59,7 @@ MODEL_SUMMARY_FILES: tuple[str, ...] = (
     "ext_deltanet_blend_evict_kv.json",
     "prefill_mlp_summary.json",
     "eval_450_m2v2_comparison.json",
+    "ext_ifbench_ood.json",
     "run_manifest.json",
 )
 

@@ -4102,5 +4102,266 @@ class TestPhases4To7(unittest.TestCase):
             self.assertEqual(chk_v2.returncode, 0, chk_v2.stderr)
 
 
+    def test_v0517_ifbench_ood_mock_multi_shard_and_cache(self) -> None:
+        """Verifies ext_ifbench_ood.py --mock --shards 2 + --check-cached and schema invariants."""
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = pathlib.Path(td) / "outputs"
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_ifbench_ood.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(out_dir),
+                    "--mock",
+                    "--shards",
+                    "2",
+                    "--stagger-sec",
+                    "0",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            summary_p = out_dir / "Qwen__Qwen3.5-4B" / "ext_ifbench_ood.json"
+            self.assertTrue(summary_p.is_file())
+            summary = json.loads(summary_p.read_text(encoding="utf-8"))
+            self.assertEqual(summary["extension"], "E5_ifbench_ood")
+            self.assertEqual(summary["n_prompts"], 12)
+            for k in ("B0", "B1b", "M2"):
+                self.assertIn(k, summary["systems"])
+                self.assertEqual(summary["systems"][k]["n"], 12)
+                self.assertIn("prompt_strict_pct", summary["systems"][k])
+                self.assertIn("inst_strict_pct", summary["systems"][k])
+                self.assertIn("oaa_250_pct", summary["systems"][k])
+            self.assertIn("M2_vs_B1b", summary["mcnemar"])
+            self.assertGreater(summary["gate_stats"]["gate2_routed_n"], 0)
+
+            chk = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_ifbench_ood.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(out_dir),
+                    "--mock",
+                    "--check-cached",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+
+    def test_v0517_confirmatory_holm_pooled_ehurt_l2_and_tab5(self) -> None:
+        """Verifies 4-pair confirmatory Holm, pooled E_hurt k/n, L2 C sweep, 3-seed R6 aggregation, and Tab 5."""
+        with tempfile.TemporaryDirectory() as td:
+            td_p = pathlib.Path(td)
+            data_dir = td_p / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = td_p / "outputs"
+            fig_dir = td_p / "figs"
+            table_dir = td_p / "tables"
+            _build_mini_frozen_dir(data_dir)
+
+            runs_to_exec = [
+                ["--model", "Qwen/Qwen3.5-4B", "--mock", "--strict-diag"],
+                ["--model", "Qwen/Qwen3.5-4B", "--mock"],
+                ["--model", "HuggingFaceTB/SmolLM3-3B", "--mock", "--strict-diag"],
+                ["--model", "HuggingFaceTB/SmolLM3-3B", "--mock"],
+                ["--model", "Qwen/Qwen3.5-4B", "--mock", "--strict-diag", "--temperature", "0.6", "--top-p", "0.95", "--presence-penalty", "1.5", "--seed", "42"],
+                ["--model", "Qwen/Qwen3.5-4B", "--mock", "--strict-diag", "--temperature", "0.6", "--top-p", "0.95", "--presence-penalty", "1.5", "--seed", "43"],
+            ]
+            for extra in runs_to_exec:
+                r = subprocess.run(
+                    [sys.executable, str(ROOT / "scripts" / "run_matrix.py"), "--data-dir", str(data_dir), "--out-dir", str(out_dir), *extra],
+                    cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+            ifb = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "ext_ifbench_ood.py"), "--model", "Qwen/Qwen3.5-4B", "--out-dir", str(out_dir), "--mock"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(ifb.returncode, 0, ifb.stdout + ifb.stderr)
+
+            # Inject deterministic non-empty E_hurt diagnostic pools + paired diag_controls_cache.jsonl
+            # so k/n extraction and cross-backbone pooled mid-p McNemar are exercised with n > 0.
+            for slug_name, b2a_z_list in (
+                ("Qwen__Qwen3.5-4B", [1, 1, 1, 0]),
+                ("HuggingFaceTB__SmolLM3-3B", [1, 1, 0, 1]),
+            ):
+                mdir = out_dir / slug_name
+                uids = [f"ifeval_diag_{i}" for i in range(4)]
+                ctrl_rows = []
+                for idx_u, uid_s in enumerate(uids):
+                    ctrl_rows.append({"uid": uid_s, "mode": "A1_strip", "grade": {"z": 1}})
+                    ctrl_rows.append({"uid": uid_s, "mode": "B2a_post_anchor", "grade": {"z": int(b2a_z_list[idx_u])}})
+                    ctrl_rows.append({"uid": uid_s, "mode": "B1_pre_anchor", "grade": {"z": 0}})
+                    ctrl_rows.append({"uid": uid_s, "mode": "B2b_post_raw", "grade": {"z": 0}})
+                    ctrl_rows.append({"uid": uid_s, "mode": "A2_math_swap", "grade": {"z": 0}})
+                    ctrl_rows.append({"uid": uid_s, "mode": "B3_early_cut_no_anchor", "grade": {"z": 0}})
+                _write_jsonl(mdir / "diag_controls_cache.jsonl", ctrl_rows)
+
+                k_b2a = sum(b2a_z_list)
+                diag_block = {
+                    "A1_strip": {"n_ehurt": 4, "overall_pass_count": 4, "overall_recovery_pct": 100.0, "inhibition_recovery_pct": 100.0, "structural_recovery_pct": 100.0},
+                    "B2a_post_anchor": {"n_ehurt": 4, "overall_pass_count": k_b2a, "overall_recovery_pct": 25.0 * k_b2a, "inhibition_recovery_pct": 25.0 * k_b2a, "structural_recovery_pct": 25.0 * k_b2a},
+                    "B1_pre_anchor": {"n_ehurt": 4, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                    "B2b_post_raw": {"n_ehurt": 4, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                    "A2_math_swap": {"n_ehurt": 4, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                    "B3_early_cut_no_anchor": {"n_ehurt": 4, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                    "causal_attribution": {"rho_recency": 0.75, "rho_interference": 0.25},
+                }
+                for sname in ("matrix_summary.json", "matrix_summary_strict341.json", "matrix_summary_diag491.json"):
+                    sp = mdir / sname
+                    rep_d = json.loads(sp.read_text(encoding="utf-8"))
+                    rep_d["section6_diagnostics"] = diag_block
+                    sp.write_text(json.dumps(rep_d, indent=2) + "\n", encoding="utf-8")
+
+            p7 = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze_and_plot.py"), "--out-dir", str(out_dir), "--fig-dir", str(fig_dir), "--table-dir", str(table_dir), "--n-boot", "100"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(p7.returncode, 0, p7.stdout + p7.stderr)
+
+            stats = json.loads((out_dir / "stats_summary.json").read_text(encoding="utf-8"))
+            q4 = stats["models"]["Qwen/Qwen3.5-4B"]
+            conf = q4["confirmatory_holm_family"]
+            self.assertEqual(conf["family_size"], 4)
+            self.assertEqual(
+                set(conf["pairs"].keys()),
+                {"M2_vs_B1b", "M2_vs_B0", "M2_vs_B2a", "M2_vs_M1c"},
+            )
+            self.assertIn("p_holm_exact", conf["pairs"]["M2_vs_B1b"])
+            self.assertIn("p_holm_midp", conf["pairs"]["M2_vs_B1b"])
+
+            l2 = q4["l2_regularization_sensitivity"]
+            self.assertEqual([round(float(x["reg_c"]), 2) for x in l2], [0.1, 0.25, 0.5, 1.0])
+            self.assertTrue(l2[1]["is_prod_effective_c"])
+            self.assertFalse(l2[2]["is_prod_effective_c"])
+
+            pooled = stats["confirmatory_pooled_diag"]
+            self.assertIn("diag_491_pooled", pooled)
+            all_491 = pooled["diag_491_pooled"]["all_models"]
+            self.assertEqual(all_491["A1_strip"]["k"], 8)
+            self.assertEqual(all_491["A1_strip"]["n"], 8)
+            self.assertEqual(all_491["B2a_post_anchor"]["k"], 6)
+            self.assertEqual(all_491["B2a_post_anchor"]["n"], 8)
+            self.assertIn("b2a_vs_b1b_all_fail", all_491)
+            self.assertIn("b2a_vs_a1_strip", all_491)
+            self.assertAlmostEqual(all_491["b2a_vs_a1_strip"]["p_midp"], 0.25, places=6)
+
+            r6_sum = stats["r6_sampled_summary"]
+            self.assertEqual(len(r6_sum), 1)
+            self.assertEqual(r6_sum[0]["n_seeds"], 2)
+            self.assertEqual(r6_sum[0]["seeds"], [42, 43])
+            self.assertIn("Qwen/Qwen3.5-4B", stats["ifbench_ood"])
+
+            tab1 = (table_dir / "tab1_main_results.tex").read_text(encoding="utf-8")
+            tab3 = (table_dir / "tab3_diagnostic_control.tex").read_text(encoding="utf-8")
+            tab5 = (table_dir / "tab5_appendix_ood_r6_l2.tex").read_text(encoding="utf-8")
+            self.assertIn("OAA}_{250}$ (SLA)", tab1)
+            self.assertIn(r"All ($k/n$)", tab3)
+            self.assertIn("A: IFBench OOD", tab5)
+            self.assertIn("B: Sampled ($k=2$: 42,43)", tab5)
+            self.assertIn("C: Gate-2 L2", tab5)
+
+            exp_md = td_p / "EXPERIMENT_LOG.md"
+            lg = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "log_experiment.py"),
+                    "--md-log",
+                    str(exp_md),
+                    "--out-dir",
+                    str(out_dir),
+                    "--run-id",
+                    "test-v0517",
+                    "--loop-name",
+                    "v0517-check",
+                    "--status",
+                    "PASS",
+                    "--command",
+                    "unittest_v0517",
+                    "--upsert",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(lg.returncode, 0, lg.stdout + lg.stderr)
+            md_txt = exp_md.read_text(encoding="utf-8")
+            self.assertIn("IFBenchOOD", md_txt)
+            self.assertIn("Confirmatory Audit & Appendix B Summary", md_txt)
+
+    def test_v0517_runner_ifbench_and_multiseed_r6_mock(self) -> None:
+        """Verifies run_gpu_phases_4_to_6.sh --with-ifbench + multi-seed --r6-seeds and preserved smoke fingerprint."""
+        from scripts.run_smoke_test import _smoke_code_fingerprint
+
+        self.assertEqual(_smoke_code_fingerprint(), "9ea57163a00915cc")
+        with tempfile.TemporaryDirectory() as td:
+            td_p = pathlib.Path(td)
+            data_dir = td_p / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = td_p / "outputs"
+            fig_dir = td_p / "figs"
+            table_dir = td_p / "tables"
+            log_dir = td_p / "logs"
+            exp_md = td_p / "EXP.md"
+            _build_mini_frozen_dir(data_dir)
+
+            res = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part",
+                    "all",
+                    "--mock",
+                    "--models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--skip-preflight",
+                    "--skip-smoke",
+                    "--data-dir",
+                    str(data_dir),
+                    "--out-dir",
+                    str(out_dir),
+                    "--fig-dir",
+                    str(fig_dir),
+                    "--table-dir",
+                    str(table_dir),
+                    "--log-dir",
+                    str(log_dir),
+                    "--exp-log",
+                    str(exp_md),
+                    "--with-ifbench",
+                    "--ifbench-models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--with-r6",
+                    "--r6-models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--r6-seeds",
+                    "42 43",
+                ],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertTrue((out_dir / "Qwen__Qwen3.5-0.8B" / "ext_ifbench_ood.json").is_file())
+            self.assertTrue((out_dir / "Qwen__Qwen3.5-0.8B__T0.6_tp0.95_pp1.5_s42" / "matrix_summary.json").is_file())
+            self.assertTrue((out_dir / "Qwen__Qwen3.5-0.8B__T0.6_tp0.95_pp1.5_s43" / "matrix_summary.json").is_file())
+            self.assertTrue((table_dir / "tab5_appendix_ood_r6_l2.tex").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

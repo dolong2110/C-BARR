@@ -321,7 +321,8 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
         blend_evict_kv = _load_json_safe(sub / "ext_deltanet_blend_evict_kv.json")
         mlp = _load_json_safe(sub / "prefill_mlp_summary.json")
         m2v2 = _load_json_safe(sub / "eval_450_m2v2_comparison.json")
-        if any(isinstance(x, dict) for x in (blend, blend_conv_kv, blend_evict_kv, mlp, m2v2)):
+        ifbench_ood = _load_json_safe(sub / "ext_ifbench_ood.json")
+        if any(isinstance(x, dict) for x in (blend, blend_conv_kv, blend_evict_kv, mlp, m2v2, ifbench_ood)):
             items.append(
                 {
                     "dir": sub.name,
@@ -330,6 +331,7 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
                     "blend_evict_kv": blend_evict_kv,
                     "mlp": mlp,
                     "m2v2": m2v2,
+                    "ifbench_ood": ifbench_ood,
                 }
             )
     return items
@@ -484,6 +486,7 @@ def _render_run_markdown(
     code_version: str = "unknown",
     results_seq: int = 0,
     version_audit: dict[str, Any] | None = None,
+    stats_payload: dict[str, Any] | None = None,
 ) -> str:
     """Renders an upserted Markdown block summarizing params, live progress, timings, calibration, and matrix results."""
     hw_desc = (
@@ -693,6 +696,19 @@ def _render_run_markdown(
                     f"Macro={_fmt_pct(c_s.get('macro_acc'))}->{_fmt_pct(s_s.get('macro_acc'))}, "
                     f"OAA250={_fmt_pct(c_s.get('oaa_250'))}->{_fmt_pct(s_s.get('oaa_250'))})"
                 )
+            ifb = w7.get("ifbench_ood")
+            if isinstance(ifb, dict) and isinstance(ifb.get("systems"), dict):
+                isy = ifb["systems"]
+                b0i, b1bi, m2i = isy.get("B0", {}), isy.get("B1b", {}), isy.get("M2", {})
+                mc_i = ifb.get("mcnemar", {}).get("M2_vs_B1b", {})
+                parts.append(
+                    f"IFBenchOOD(N={ifb.get('n_prompts', 0)}: "
+                    f"B0={b0i.get('prompt_strict_pct', 0):.1f}%/"
+                    f"B1b={b1bi.get('prompt_strict_pct', 0):.1f}%/"
+                    f"M2={m2i.get('prompt_strict_pct', 0):.1f}%, "
+                    f"OAA250={m2i.get('oaa_250_pct', 0):.1f}%, "
+                    f"Tok={m2i.get('mean_t_tot', 0):.0f}, p_vs_B1b={mc_i.get('p_exact', 1.0):.3g})"
+                )
             if parts:
                 lines.append(f"- **`{w7['dir']}`**: " + " | ".join(parts))
 
@@ -734,6 +750,39 @@ def _render_run_markdown(
                 f"{_fmt_pct(mr['m2_oaa250'])} | {ci_str} | {tred} | {ph} | {pb0} | {ppre} | "
                 f"{'PASS' if mr['gate4_pass'] else 'CHECK'} | {r2_str} |"
             )
+
+    if stats_payload and isinstance(stats_payload, dict):
+        conf_lines: list[str] = []
+        for m_id, m_d in stats_payload.get("models", {}).items():
+            pairs = (m_d.get("confirmatory_holm_family") or {}).get("pairs") or {}
+            if pairs:
+                p_str = ", ".join(
+                    f"{pk}: p_holm4={pv.get('p_holm_exact', 1.0):.3g} (midp={pv.get('p_holm_midp', 1.0):.3g})"
+                    for pk, pv in pairs.items()
+                )
+                conf_lines.append(f"- **`{m_id}` (Confirmatory 4-pair Holm)**: {p_str}")
+        pooled = stats_payload.get("confirmatory_pooled_diag") or {}
+        for pk_lbl, pk_name in (("strict341_pooled", "diag_341_strict"), ("diag_491_pooled", "diag_491")):
+            all_g = (pooled.get(pk_lbl) or {}).get("all_models")
+            if isinstance(all_g, dict) and "B2a_post_anchor" in all_g:
+                b2a = all_g["B2a_post_anchor"]
+                a1 = all_g.get("A1_strip", {})
+                mc_a1 = all_g.get("b2a_vs_a1_strip") or {}
+                conf_lines.append(
+                    f"- **Pooled E_hurt ({pk_name})**: A1={a1.get('pct', 0):.1f}% ({a1.get('k', 0)}/{a1.get('n', 0)}), "
+                    f"B2a={b2a.get('pct', 0):.1f}% ({b2a.get('k', 0)}/{b2a.get('n', 0)})"
+                    + (f", p_midp(B2a vs A1)={mc_a1.get('p_midp', 1.0):.3g}" if mc_a1 else "")
+                )
+        for rs in stats_payload.get("r6_sampled_summary") or []:
+            conf_lines.append(
+                f"- **R6 Multi-Seed (`{rs['model']}`, k={rs['n_seeds']} {rs['seeds']}, T={rs['temperature']:g})**: "
+                f"M2 Macro={100*rs['m2_macro_mean']:.1f}+/-{100*rs['m2_macro_std']:.1f}%, "
+                f"Tok={rs['m2_tok_mean']:.0f}+/-{rs['m2_tok_std']:.0f}, "
+                f"Delta_B1b={rs['delta_m2_minus_b1b_pp']:+.1f} pp"
+            )
+        if conf_lines:
+            lines.append("\n#### 8. Confirmatory Audit & Appendix B Summary")
+            lines.extend(conf_lines)
 
     lines.append(f"<!-- CBARR_RUN_END:{run_id} -->")
     return "\n".join(lines)
@@ -1034,6 +1083,7 @@ def main() -> None:
         code_version=code_version,
         results_seq=results_seq,
         version_audit=version_audit,
+        stats_payload=stats_payload,
     )
     _upsert_run_block(md_path, args.run_id, block, upsert=args.upsert)
     loop_msg = f" [{args.loop_name}]" if args.loop_name else ""

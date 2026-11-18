@@ -180,7 +180,7 @@ SPECS: tuple[NotebookSpec, ...] = (
         summary_bullets=(
             "**Final Combiner (Run After Workers 1–4 Finish)**: Pulls `dolong2110/C-BARR`, unpacks all worker models (`Qwen3.5-4B`, `SmolLM3-3B`, `Qwen3.5-2B`, `Qwen3.5-0.8B`, `+9B` if present) via `scripts/sync_results.py --mode unpack`, verifies `VERSION` match across workers, optionally runs **W7** (`RUN_W7_EXTENSIONS = True`), and runs **Combined Phase 7**.",
             "**Runs on CPU (~2 min) when `RUN_W7_EXTENSIONS = False`**: Fails fast in Cell 5 before analysis if no worker summaries exist yet (set `RUN_PREFLIGHT_TESTS = True` only if you want to re-run Gate 0 here).",
-            "**Unified Paper Outputs & Push**: Generates `outputs/stats_summary.json` (with `version_audit`), `outputs/paper_tables.tex`, anonymized `paper/figures/*.pdf`, `outputs/RESULTS_VERSION`, and unified `EXPERIMENT_LOG.md`, then pushes everything cleanly to GitHub.",
+            "**Unified Paper Outputs & Push**: Generates `outputs/stats_summary.json` (with `version_audit`, 4-pair confirmatory Holm, pooled `E_hurt`, and L2 sensitivity), `outputs/paper_tables.tex`, `paper/tables/tab{1..5}_*.tex`, anonymized `paper/figures/*.pdf`, `outputs/RESULTS_VERSION`, and unified `EXPERIMENT_LOG.md`, then pushes everything cleanly to GitHub.",
         ),
         models_primary=("Qwen/Qwen3.5-4B", "HuggingFaceTB/SmolLM3-3B"),
         models_scale=("Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B"),
@@ -1273,6 +1273,12 @@ if RUN_W7_EXTENSIONS:
             run_and_tee,
             [sys.executable, "scripts/compare_m2_v2.py", "--model", w7_model, "--out-dir", str(OUT_DIR), "--device", "auto", "--dtype", DTYPE],
         )
+        if "4b" in w7_model.lower():
+            run_logged_loop(
+                f"Appendix B: IFBench OOD ({w7_model})",
+                run_and_tee,
+                [sys.executable, "scripts/ext_ifbench_ood.py", "--model", w7_model, "--out-dir", str(OUT_DIR), "--dtype", DTYPE],
+            )
         sync_results_to_github(label="w7-extensions", models=[w7_model], include_phase7=False)'''
     return _code_cell("cbarr-scale-w7", code)
 
