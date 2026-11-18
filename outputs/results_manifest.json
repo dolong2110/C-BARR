@@ -1,12 +1,15 @@
 {
-  "results_seq": 4,
-  "results_version": "v0.5.14-res.4",
-  "code_version": "0.5.14",
-  "git_rev": "f8d76f8-dirty",
-  "sync_label": "checkpoint-Qwen3.5-2B:20261117T174419Z",
-  "updated_utc": "2026-11-18T05:49:01Z",
-  "consistent_code_versions": true,
-  "version_warnings": [],
+  "results_seq": 5,
+  "results_version": "v0.5.19-res.5",
+  "code_version": "0.5.19",
+  "git_rev": "715eb44-dirty",
+  "sync_label": "checkpoint-Qwen3.5-4B:20261118T215019Z",
+  "updated_utc": "2026-11-18T22:39:17Z",
+  "consistent_code_versions": false,
+  "version_warnings": [
+    "Multiple code versions across model results: 0.5.14, 0.5.19",
+    "Repo VERSION is v0.5.19, while models have versions: ['0.5.14', '0.5.19']"
+  ],
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
       "model": "HuggingFaceTB/SmolLM3-3B",
@@ -134,53 +137,55 @@
     },
     "Qwen__Qwen3.5-4B": {
       "model": "Qwen/Qwen3.5-4B",
-      "code_version": "0.5.14",
-      "git_rev": "cdfd4a9-dirty",
-      "run_id": "20261117T174419Z",
-      "sync_seq": 1,
-      "result_version": "v0.5.14+m1",
+      "code_version": "0.5.19",
+      "git_rev": "d0c0963-dirty",
+      "run_id": "20261118T215019Z",
+      "sync_seq": 2,
+      "result_version": "v0.5.19+m2",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.14",
-          "git_rev": "cdfd4a9-dirty",
-          "run_id": "20261117T174419Z",
+          "code_version": "0.5.19",
+          "git_rev": "d0c0963-dirty",
+          "run_id": "20261118T215019Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.14",
-          "git_rev": "cdfd4a9-dirty",
-          "run_id": "20261117T174419Z",
+          "code_version": "0.5.19",
+          "git_rev": "ba01e3b-dirty",
+          "run_id": "20261118T215019Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "diag491": {
-          "code_version": "0.5.14",
-          "git_rev": "cdfd4a9-dirty",
-          "run_id": "20261117T174419Z",
+          "code_version": "0.5.19",
+          "git_rev": "d0c0963-dirty",
+          "run_id": "20261118T215019Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "e77d54d61bb0251e8cb17c4fc129738cfc8ee8b542a715d36bf6f56a2c52bf88",
+        "calibration_summary.json": "70c17403767473f10bd4ac3a75c9b215de3e9462a334247d1d124e9e33d89d46",
+        "eval_450_m2v2_comparison.json": "3978f8972bcd132071a529794379f67fbb90fb3080b07036be2fc139bd2ef3cf",
         "ext_deltanet_blend.json": "860a52427057dd258bbb0b2392b2656d9504ab5b571fcef83faed083f7f78d2e",
-        "matrix_summary.json": "3e8580e4271e774ab912dcce7a002d594795268fc7f137eaadf3e409c9d68d75",
-        "matrix_summary_diag491.json": "3e8580e4271e774ab912dcce7a002d594795268fc7f137eaadf3e409c9d68d75",
-        "matrix_summary_strict341.json": "6b92f11f532966de8414bbec26c42161b1f111eb1712b4ce390626efc881f48a",
+        "ext_deltanet_blend_conv_kv.json": "d30d016b5b92c866a41dbd512715b73600eaee9e37f46201cf66348c5ccfe749",
+        "matrix_summary.json": "ab42acb8a945cd6822dcdc74ba81073401d640a6463010794dd1a82e1bdf5a8b",
+        "matrix_summary_diag491.json": "ab42acb8a945cd6822dcdc74ba81073401d640a6463010794dd1a82e1bdf5a8b",
+        "matrix_summary_strict341.json": "0d457375790777f3602827e8a4cc1197b49797a1bdc261e8099722a5888b7dce",
         "prefill_mlp_summary.json": "d46676e666bc770e14313482724660a7e49772217900bc15c5b87b632454bd04",
-        "tables_rows.tex": "3b777a0ec5490ad91b3765153cc6ea6d149a95c581aa443d707c7c6d322f5f09",
-        "tables_rows_diag491.tex": "3b777a0ec5490ad91b3765153cc6ea6d149a95c581aa443d707c7c6d322f5f09",
-        "tables_rows_strict341.tex": "3b777a0ec5490ad91b3765153cc6ea6d149a95c581aa443d707c7c6d322f5f09",
+        "tables_rows.tex": "425c20004965c01965a42dff2ed44ef049f31f2c04396ab701554ba20227733b",
+        "tables_rows_diag491.tex": "425c20004965c01965a42dff2ed44ef049f31f2c04396ab701554ba20227733b",
+        "tables_rows_strict341.tex": "425c20004965c01965a42dff2ed44ef049f31f2c04396ab701554ba20227733b",
         "seed_60_cache.jsonl.gz": "51f84a5d43080f9dabb0631a41067e78c88d52b33c8e2e7f6e8a041ec6844203",
         "dev_60_cache.jsonl.gz": "309e8d8021b8f367b0c4727cf2bda9465a8aedeb4d2878f8839875ed0bf259bb",
-        "eval_450_cache.jsonl.gz": "cfc2df46efd388fdcb31725c2490e7040b228faa56f718a47a8b8e987922a653",
-        "diag_ehurt_cache.jsonl.gz": "7a6b74052eada48256b1e31b18d71fd293c157eff5b88c24a8cc76c2575ff42c",
-        "diag_controls_cache.jsonl.gz": "3b1a76e26462a595b22fcc7f863aeabbf2e3b90ac518f77fc68103b5f99a9fe6",
-        "ext_deltanet_blend_cache.jsonl.gz": "aaee190c09f3d751e45b5791459e2893a772a11640997363d46ca7a47d4b2190"
+        "eval_450_cache.jsonl.gz": "db22ade8c8dc2b801b4237d86d59c02b165143e04b2dc4760580add0aac48a56",
+        "diag_ehurt_cache.jsonl.gz": "e37361fefe93a74588032893386c9c68279341dd13016cd3f0d14edcdb082ec7",
+        "diag_controls_cache.jsonl.gz": "a6b07e825b755a0b7df8dff3c2316735399a219d08d461381bc9a48c49dbb0ac",
+        "ext_deltanet_blend_cache.jsonl.gz": "aa02f600a2e4fed47d5ad140085dd9ab83c5f1547e6b6fa267e20050d1494c86"
       }
     }
   },
