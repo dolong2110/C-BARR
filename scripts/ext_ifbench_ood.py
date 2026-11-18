@@ -40,6 +40,14 @@ from scripts.sync_results import model_slug
 from scripts.versioning import get_version_provenance
 from src.engine import run_gate1_lexical
 from src.graders import has_4gram_repetition_loop, has_cot_spillover
+from src.logfmt import (
+    colorize_log_line,
+    colors_enabled,
+    fmt_progress_bar,
+    gpu_color,
+    hl,
+    status_badge,
+)
 from src.metrics import (
     compute_auc_oaa,
     compute_bsr_curve,
@@ -824,11 +832,69 @@ def _run_multi_shard(
             procs.append((sid, proc, s_log))
 
         failed_shards: list[int] = []
-        for sid, proc, s_log in procs:
-            rc = proc.wait()
-            if rc != 0:
-                print(f"[ext_ifbench] Shard {sid} exited {rc} (see {s_log})", flush=True)
-                failed_shards.append(sid)
+        reported_exit: set[int] = set()
+        t_batch = time.perf_counter()
+        last_prog_ts = t_batch
+        canon_n = len(_load_jsonl(out_dir / "ext_ifbench_ood_cache.jsonl")) if (out_dir / "ext_ifbench_ood_cache.jsonl").is_file() else 0
+        while True:
+            alive_cnt = 0
+            done_cnt = 0
+            fail_cnt = 0
+            for sid, proc, s_log in procs:
+                rc = proc.poll()
+                if rc is None:
+                    alive_cnt += 1
+                elif rc == 0:
+                    done_cnt += 1
+                    if sid not in reported_exit:
+                        reported_exit.add(sid)
+                        dev_lbl = worker_map[sid % len(worker_map)]
+                        print(
+                            f"{hl('[ext_ifbench]', 'cyan')} {status_badge('done', 'DONE')} "
+                            f"{hl(f'GPU{sid}(dev={dev_lbl})', gpu_color(sid))} finished ({done_cnt}/{len(procs)})",
+                            flush=True,
+                        )
+                else:
+                    fail_cnt += 1
+                    if sid not in reported_exit:
+                        reported_exit.add(sid)
+                        failed_shards.append(sid)
+                        print(
+                            f"{hl('[ext_ifbench]', 'cyan')} {status_badge('fail', f'EXIT {rc}')} "
+                            f"{hl(f'Shard {sid} exited {rc} (see {s_log})', 'red')}",
+                            flush=True,
+                        )
+                        if s_log.is_file():
+                            tail_lns = s_log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+                            for tln in tail_lns:
+                                print(f"  {hl(f'[IFBench GPU{sid}!]', 'red')} {colorize_log_line(tln)}", flush=True)
+            if alive_cnt == 0:
+                break
+            now_p = time.perf_counter()
+            if (now_p - last_prog_ts) >= 10.0:
+                shard_rows = sum(
+                    sum(1 for ln in (shard_dir / f"shard_{s:02d}_cache.jsonl").open("rb") if ln.strip())
+                    for s in range(num_shards)
+                    if (shard_dir / f"shard_{s:02d}_cache.jsonl").is_file()
+                )
+                done_items = min(len(items), canon_n + shard_rows)
+                pbar = fmt_progress_bar(done_items, len(items), width=18)
+                bar_s = f"{pbar} " if pbar else ""
+                title_p = (
+                    hl(f" [IFBench Progress | {args.model}] ", "badge_info")
+                    if colors_enabled()
+                    else f"[IFBench Progress | {args.model}]"
+                )
+                print(
+                    f"{title_p} elapsed={int(now_p - t_batch)}s | "
+                    f"{hl(f'active={alive_cnt}/{len(procs)}', 'yellow')} "
+                    f"{hl(f'done={done_cnt}/{len(procs)}', 'green')} "
+                    f"{hl(f'fail={fail_cnt}', 'red' if fail_cnt else 'muted')} | "
+                    f"{bar_s}{hl(f'items={done_items}/{len(items)}', 'cyan')}",
+                    flush=True,
+                )
+                last_prog_ts = now_p
+            time.sleep(0.5)
 
         if not failed_shards:
             break
@@ -889,7 +955,21 @@ def _run_multi_shard(
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     if not args.keep_shards and shard_dir.is_dir():
         shutil.rmtree(shard_dir, ignore_errors=True)
-    print(f"[ext_ifbench] Merged {len(ordered_rows)} IFBench rows -> {summary_path}", flush=True)
+    b0s = summary["systems"]["B0"]
+    b1bs = summary["systems"]["B1b"]
+    m2s = summary["systems"]["M2"]
+    b0_lbl = hl(f"B0={b0s['prompt_strict_pct']:.1f}%", "sky")
+    b1b_lbl = hl(f"B1b={b1bs['prompt_strict_pct']:.1f}%", "yellow")
+    m2_lbl = hl(f"M2={m2s['prompt_strict_pct']:.1f}%", "green")
+    oaa_lbl = hl(f"OAA250={m2s['oaa_250_pct']:.1f}%", "cyan")
+    print(
+        f"{hl('[ext_ifbench]', 'cyan')} {status_badge('done', 'DONE')} "
+        f"{hl(f'Merged {len(ordered_rows)} IFBench rows', 'green')} | "
+        f"{b0_lbl} ({b0s['mean_t_tot']:.0f} tok) | "
+        f"{b1b_lbl} ({b1bs['mean_t_tot']:.0f} tok) | "
+        f"{m2_lbl} ({m2s['mean_t_tot']:.0f} tok, {oaa_lbl}) -> {hl(str(summary_path), 'green')}",
+        flush=True,
+    )
 
 
 def _run_worker(
@@ -976,12 +1056,15 @@ def _run_worker(
     b0s = summary["systems"]["B0"]
     b1bs = summary["systems"]["B1b"]
     m2s = summary["systems"]["M2"]
+    b0_lbl = hl(f"B0={b0s['prompt_strict_pct']:.1f}%", "sky")
+    b1b_lbl = hl(f"B1b={b1bs['prompt_strict_pct']:.1f}%", "yellow")
+    m2_lbl = hl(f"M2={m2s['prompt_strict_pct']:.1f}%", "green")
+    oaa_lbl = hl(f"OAA250={m2s['oaa_250_pct']:.1f}%", "cyan")
     print(
-        f"[ext_ifbench] {args.model} (N={len(ordered_rows)}): "
-        f"B0={b0s['prompt_strict_pct']:.1f}% ({b0s['mean_t_tot']:.0f} tok) | "
-        f"B1b={b1bs['prompt_strict_pct']:.1f}% ({b1bs['mean_t_tot']:.0f} tok) | "
-        f"M2={m2s['prompt_strict_pct']:.1f}% ({m2s['mean_t_tot']:.0f} tok, "
-        f"OAA250={m2s['oaa_250_pct']:.1f}%) -> {summary_path}",
+        f"{hl('[ext_ifbench]', 'cyan')} {hl(f'{args.model} (N={len(ordered_rows)}):', 'white')} "
+        f"{b0_lbl} ({b0s['mean_t_tot']:.0f} tok) | "
+        f"{b1b_lbl} ({b1bs['mean_t_tot']:.0f} tok) | "
+        f"{m2_lbl} ({m2s['mean_t_tot']:.0f} tok, {oaa_lbl}) -> {hl(str(summary_path), 'green')}",
         flush=True,
     )
 

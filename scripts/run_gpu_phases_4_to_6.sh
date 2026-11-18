@@ -60,7 +60,15 @@ set -euo pipefail
 #   --mock                  Run full offline CPU orchestration dry-run without overwriting repo ledger
 
 export PYTHONUNBUFFERED=1
-export CBARR_COLOR="${CBARR_COLOR:-0}"
+if [ -z "${CBARR_COLOR:-}" ]; then
+  if [ -z "${NO_COLOR:-}" ] && { [ "${FORCE_COLOR:-0}" = "1" ] || [ -t 1 ]; }; then
+    export CBARR_COLOR=1
+  else
+    export CBARR_COLOR=0
+  fi
+else
+  export CBARR_COLOR
+fi
 export TRITON_DEFAULT_FP_FUSION="${TRITON_DEFAULT_FP_FUSION:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
@@ -213,6 +221,8 @@ while [ "$#" -gt 0 ]; do
     --strict-version-match) STRICT_VERSION_MATCH=1 ;;
     --unpack) UNPACK_MODE="on" ;;
     --no-unpack) UNPACK_MODE="off" ;;
+    --color) export CBARR_COLOR=1 ;;
+    --no-color) export CBARR_COLOR=0 ;;
     --offline) OFFLINE_MODE=1; export HF_HUB_OFFLINE=1; EXTRA_FLAGS+=("--offline") ;;
     --no-exp-log) NO_EXP_LOG=1 ;;
     --commit|--commit-only) AUTO_COMMIT=1 ;;
@@ -494,9 +504,29 @@ CURRENT_STAGE="Init"
 FINALIZED=0
 
 log_banner() {
-  local ts
+  local ts msg
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "[$ts] $*" | tee -a "$RUN_LOG"
+  msg="$*"
+  echo "[$ts] $msg" >> "$RUN_LOG"
+  if [ "${CBARR_COLOR:-0}" = "1" ] && [ -z "${NO_COLOR:-}" ]; then
+    local bar="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    case "$msg" in
+      *FAILED*|*ERROR*)
+        printf '\033[1;91m%s\033[0m\n\033[38;5;250m[%s]\033[0m \033[1;97;41m FAIL \033[0m \033[1;91m%s\033[0m\n\033[1;91m%s\033[0m\n' "$bar" "$ts" "$msg" "$bar"
+        ;;
+      *DONE*|*PASSED*|*"skipping GPU launch"*)
+        printf '\033[38;5;250m[%s]\033[0m \033[1;30;102m PASS \033[0m \033[1;92m%s\033[0m\n' "$ts" "$msg"
+        ;;
+      *START*)
+        printf '\033[1;96m%s\033[0m\n\033[38;5;250m[%s]\033[0m \033[1;30;106m STAGE \033[0m \033[1;96m%s\033[0m\n' "$bar" "$ts" "$msg"
+        ;;
+      *)
+        printf '\033[38;5;250m[%s]\033[0m \033[1;93m%s\033[0m\n' "$ts" "$msg"
+        ;;
+    esac
+  else
+    echo "[$ts] $msg"
+  fi
 }
 
 record_stage_timing() {
@@ -984,6 +1014,16 @@ finalize_run() {
   fi
   checkpoint_exp_log "$CURRENT_STAGE" "$status_str" 1 "$fail_notes"
   log_banner "Run ${RUN_ID} finished with status=${status_str} (total=${total_sec}s). Full log: ${RUN_LOG}"
+  if [ "${CBARR_COLOR:-0}" = "1" ] && [ -f "$RUN_LOG" ]; then
+    "$PY_BIN" - "$RUN_LOG" <<'PY' 2>/dev/null || true
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+raw = p.read_text(encoding="utf-8", errors="replace")
+clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw)
+if clean != raw:
+    p.write_text(clean, encoding="utf-8")
+PY
+  fi
 }
 # Persist final PASSED/FAILED status, hardware diagnostics, and total wall time even on unexpected abort
 trap finalize_run EXIT

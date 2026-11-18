@@ -23,7 +23,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.logfmt import hl  # noqa: E402
+from src.logfmt import (  # noqa: E402
+    colorize_log_line,
+    colors_enabled,
+    fmt_progress_bar,
+    gpu_color,
+    hl,
+    status_badge,
+)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _TQDM_LINE_RE = re.compile(r"^\s*[^:\n]{1,60}:\s+\d+%\|")
@@ -33,7 +40,7 @@ _PROGRESS_METRIC_RE = re.compile(
 )
 _MILESTONE_OR_ERR_RE = re.compile(
     r"completed\s+\d+\s+items|COMPLETED\s+(?:CALIBRATION\s+)?SHARD|\[diag_controls\]|\bslices\s*\("
-    r"|\[ERROR\]|Traceback\s*\(|OutOfMemoryError|CUDA out of memory|RuntimeError:|ValueError:|FileNotFoundError:|FAILED",
+    r"|\[ERROR\]|Traceback\s*\(|OutOfMemoryError|CUDA out of memory|RuntimeError:|ValueError:|OSError:|FileNotFoundError:|FAILED",
     re.IGNORECASE,
 )
 
@@ -215,7 +222,7 @@ def _should_echo_line(
         return False
     is_err = bool(
         re.search(
-            r"\[ERROR\]|Traceback\s*\(|OutOfMemoryError|CUDA out of memory|RuntimeError:|ValueError:|FAILED",
+            r"\[ERROR\]|Traceback\s*\(|OutOfMemoryError|CUDA out of memory|RuntimeError:|ValueError:|OSError:|FAILED",
             clean_line,
             re.IGNORECASE,
         )
@@ -357,47 +364,82 @@ def _render_snapshot(
         per_shard_done.append(s_counts)
 
     split_parts: list[str] = []
+    sum_done_all = 0
+    sum_tgt_all = 0
     for tag, short_lbl, _, _ in specs:
         tgt = total_targets.get(tag, 0)
         done_n = total_canon.get(tag, 0) + agg_done.get(tag, 0)
         if tgt > 0:
             done_n = min(tgt, done_n)
+            sum_done_all += done_n
+            sum_tgt_all += tgt
             pct = 100.0 * done_n / tgt
-            split_parts.append(f"{short_lbl}={done_n}/{tgt} ({pct:.0f}%)")
+            raw_sp = f"{short_lbl}={done_n}/{tgt} ({pct:.0f}%)"
+            sp_style = "green" if done_n >= tgt else ("yellow" if done_n > 0 else "sky")
+            split_parts.append(hl(raw_sp, sp_style))
         else:
-            split_parts.append(f"{short_lbl}={done_n}")
+            split_parts.append(hl(f"{short_lbl}={done_n}", "sky"))
 
-    header = (
-        f"[{_utc_iso()}] "
-        + hl(f"[Shards Progress | {stage_name}]", "cyan")
-        + f" elapsed={elapsed} | active={active}/{len(states)} done={done_ok}/{len(states)} fail={done_fail}\n"
-        + f"  Total (canon+shards): {'  '.join(split_parts)}"
+    use_color = colors_enabled()
+    title_pill = (
+        hl(f" [Shards Progress | {stage_name}] ", "badge_info")
+        if use_color
+        else f"[Shards Progress | {stage_name}]"
+    )
+    el_txt = hl(f"elapsed={elapsed}", "white")
+    act_txt = hl(f"active={active}/{len(states)}", "yellow" if active > 0 else "muted")
+    done_txt = hl(f"done={done_ok}/{len(states)}", "green" if done_ok > 0 else "muted")
+    fail_txt = (
+        hl(f" fail={done_fail} ", "badge_fail")
+        if (use_color and done_fail > 0)
+        else hl(f"fail={done_fail}", "red" if done_fail > 0 else "muted")
+    )
+    overall_bar = fmt_progress_bar(sum_done_all, sum_tgt_all, width=18)
+    bar_prefix = f"{overall_bar}  " if overall_bar else ""
+
+    border_style = "red" if done_fail > 0 else ("green" if active == 0 else "cyan")
+    rows: list[str] = []
+    if use_color:
+        rows.append(hl("━" * 96, border_style))
+    rows.append(
+        f"{hl(f'[{_utc_iso()}]', 'muted')} {title_pill} {el_txt} | {act_txt} {done_txt} {fail_txt}\n"
+        + f"  {hl('Total (canon+shards):', 'white')} {bar_prefix}{'  '.join(split_parts)}"
     )
 
-    rows = [header]
     for st in states:
         st_dur = _format_dur((st.end_ts or now) - st.start_ts)
         if st.rc is None:
-            badge = hl("RUN ", "yellow")
+            badge = status_badge("run", "RUN ")
         elif st.rc == 0:
-            badge = hl("DONE", "green")
+            badge = status_badge("done", "DONE")
         else:
-            badge = hl(f"FAIL({st.rc})", "red")
+            badge = status_badge("fail", f"FAIL({st.rc})")
 
         s_parts: list[str] = []
         for tag, short_lbl, _, _ in specs:
             d_n = per_shard_done[st.idx].get(tag, 0)
             t_n = shard_targets[st.idx].get(tag, 0)
-            s_parts.append(f"{short_lbl}={d_n}/{t_n}" if t_n > 0 else f"{short_lbl}={d_n}")
+            if t_n > 0:
+                cell = f"{short_lbl}={d_n}/{t_n}"
+                c_style = "green" if d_n >= t_n else ("yellow" if d_n > 0 else "muted")
+                s_parts.append(hl(cell, c_style))
+            else:
+                s_parts.append(hl(f"{short_lbl}={d_n}", "muted"))
 
         latest = st.last_progress or st.last_line or st.last_cr or "starting..."
         if len(latest) > 105:
             latest = latest[:102] + "..."
+        latest_col = hl(latest, "sky") if latest == "starting..." else colorize_log_line(latest)
         idle_s = int(max(0.0, now - st.last_activity_ts)) if st.last_activity_ts > 0 else 0
-        idle_note = f" ({idle_s}s ago)" if st.rc is None and idle_s >= 15 else ""
+        idle_note = hl(f" ({idle_s}s ago)", "orange") if st.rc is None and idle_s >= 15 else ""
+        gpu_lbl = hl(f"GPU{st.idx:<2d}(dev={st.cuda_dev})", gpu_color(st.idx)) if use_color else f"GPU{st.idx}(dev={st.cuda_dev})"
+        dur_lbl = hl(f"{st_dur:>6s}", "white")
+        sep = hl("|", "muted")
         rows.append(
-            f"  GPU{st.idx}(dev={st.cuda_dev}) {badge} {st_dur:>6s} | {' '.join(s_parts)} | {latest}{idle_note}"
+            f"  {gpu_lbl} {badge} {dur_lbl} {sep} {' '.join(s_parts)} {sep} {latest_col}{idle_note}"
         )
+    if use_color:
+        rows.append(hl("━" * 96, border_style))
     return "\n".join(rows)
 
 
@@ -539,14 +581,17 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     def _cuda_for(s_idx: int) -> str:
         return vis_list[s_idx % len(vis_list)] if vis_list else str(s_idx)
 
-    gpu_map = ", ".join(f"shard{i}->dev{_cuda_for(i)}" for i in range(n_shards))
+    gpu_map = ", ".join(
+        hl(f"shard{i}->dev{_cuda_for(i)}", gpu_color(i)) for i in range(n_shards)
+    )
     first_log = log_dir / f"cbarr_{args.run_id}_gpu0_{slug}.log"
-    print(f"[{_utc_iso()}] [sharded] GPU map ({n_shards}): {gpu_map}", flush=True)
+    sh_tag = hl("[sharded]", "cyan")
+    print(f"[{_utc_iso()}] {sh_tag} GPU map ({n_shards}): {gpu_map}", flush=True)
     print(
-        f"[{_utc_iso()}] [sharded] Per-GPU logs (threads={threads_cap}/worker): {log_dir}/cbarr_{args.run_id}_gpu{{0..{n_shards - 1}}}_{slug}.log",
+        f"[{_utc_iso()}] {sh_tag} Per-GPU logs (threads={threads_cap}/worker): {log_dir}/cbarr_{args.run_id}_gpu{{0..{n_shards - 1}}}_{slug}.log",
         flush=True,
     )
-    print(f"[{_utc_iso()}] [sharded] Live follow : tail -f {first_log}", flush=True)
+    print(f"[{_utc_iso()}] {sh_tag} Live follow : {hl(f'tail -f {first_log}', 'yellow')}", flush=True)
 
     event_q: queue.Queue[tuple[int, str, str]] = queue.Queue()
     states: list[_ShardState] = []
@@ -645,8 +690,8 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
 
             if kind == "line":
                 cuda_dev = states[s_idx].cuda_dev
-                tag = hl(f"[GPU{s_idx}](dev={cuda_dev})", "cyan" if s_idx == 0 else "dim")
-                print(f"{tag} {payload}", flush=True)
+                tag = hl(f"[GPU{s_idx}](dev={cuda_dev})", gpu_color(s_idx))
+                print(f"{tag} {colorize_log_line(payload)}", flush=True)
             elif kind == "exit":
                 remaining -= 1
                 rc_val = int(payload)
@@ -654,27 +699,33 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                 dur_s = _format_dur((st.end_ts or time.monotonic()) - st.start_ts)
                 if rc_val == 0:
                     done_cnt = sum(1 for x in states if x.rc == 0)
+                    pill = f"{status_badge('done', 'DONE')} " if colors_enabled() else ""
                     msg = hl(f"GPU{s_idx} (dev={st.cuda_dev}) DONE in {dur_s}", "green")
+                    cnt_lbl = hl(f"({done_cnt}/{n_shards} finished)", "cyan")
                     print(
-                        f"[{_utc_iso()}] [sharded] {msg} ({done_cnt}/{n_shards} finished)",
+                        f"[{_utc_iso()}] {sh_tag} {pill}{msg} {cnt_lbl}",
                         flush=True,
                     )
                 else:
                     rc_all = 1
+                    pill = f"{status_badge('fail', f'EXIT {rc_val}')} " if colors_enabled() else ""
                     msg = hl(f"GPU{s_idx} (dev={st.cuda_dev}) FAILED exit={rc_val} after {dur_s}", "red")
                     print(
-                        f"[{_utc_iso()}] [sharded] {msg} — log: {st.log_path}",
+                        f"[{_utc_iso()}] {sh_tag} {pill}{msg} — log: {hl(str(st.log_path), 'yellow')}",
                         flush=True,
                     )
                     tail = _tail_lines(st.log_path, max_lines=25)
                     if tail:
-                        print("--- Last lines of failed shard log ---", flush=True)
+                        print(hl("--- Last lines of failed shard log ---", "red"), flush=True)
                         for ln in tail:
-                            print(f"  [GPU{s_idx}!] {ln}", flush=True)
-                        print("--- End failed shard log ---", flush=True)
+                            print(f"  {hl(f'[GPU{s_idx}!]', 'red')} {colorize_log_line(ln)}", flush=True)
+                        print(hl("--- End failed shard log ---", "red"), flush=True)
                     if remaining > 0:
                         print(
-                            f"[{_utc_iso()}] [sharded] Waiting for {remaining} active sibling shard(s) to finish flushing caches...",
+                            hl(
+                                f"[{_utc_iso()}] [sharded] Waiting for {remaining} active sibling shard(s) to finish flushing caches...",
+                                "orange",
+                            ),
                             flush=True,
                         )
 

@@ -32,6 +32,7 @@ from scripts.gpu_pool import (
 from scripts.run_matrix import resolve_device_and_dtype
 from src.engine import ensure_qwen35_device_safe_kernels
 from src.graders import grade_item
+from src.logfmt import colorize_log_line, gpu_color, hl
 from src.metrics import wilson_ci
 
 
@@ -806,7 +807,8 @@ def main() -> None:
                                 ev_idx, ev_line = event_q.get_nowait()
                             except queue.Empty:
                                 break
-                            print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                            b_tag = hl(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})]", gpu_color(ev_idx))
+                            print(f"{b_tag} {colorize_log_line(ev_line)}", flush=True)
                         still_running: list[tuple[int, subprocess.Popen[Any]]] = []
                         for s_idx, p in pending:
                             rc = p.poll()
@@ -816,8 +818,11 @@ def main() -> None:
                                 failed_rc = rc
                                 w_log = worker_logs[s_idx]
                                 print(
-                                    f"[deltanet_blend] Worker shard={s_idx}/{eff_shards} (dev={slot_gpus[s_idx]}) "
-                                    f"failed (exit={rc}) — log: {w_log}",
+                                    hl(
+                                        f"[deltanet_blend] Worker shard={s_idx}/{eff_shards} (dev={slot_gpus[s_idx]}) "
+                                        f"failed (exit={rc}) — log: {w_log}",
+                                        "red",
+                                    ),
                                     flush=True,
                                 )
                                 _terminate_procs(
@@ -827,27 +832,30 @@ def main() -> None:
                                     th.join(timeout=2.0)
                                 while not event_q.empty():
                                     ev_idx, ev_line = event_q.get_nowait()
-                                    print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                                    b_tag = hl(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})]", gpu_color(ev_idx))
+                                    print(f"{b_tag} {colorize_log_line(ev_line)}", flush=True)
                                 tail = _tail_log_lines(w_log, max_lines=25)
                                 if tail:
-                                    print(f"--- Last lines of failed blend worker log ({w_log}) ---", flush=True)
+                                    print(hl(f"--- Last lines of failed blend worker log ({w_log}) ---", "red"), flush=True)
                                     for ln in tail:
-                                        print(f"  [Blend GPU{s_idx}!] {ln}", flush=True)
-                                    print("--- End failed blend worker log ---", flush=True)
+                                        print(f"  {hl(f'[Blend GPU{s_idx}!]', 'red')} {colorize_log_line(ln)}", flush=True)
+                                    print(hl("--- End failed blend worker log ---", "red"), flush=True)
                                 still_running = []
                                 break
                         pending = still_running
                         if pending:
                             try:
                                 ev_idx, ev_line = event_q.get(timeout=0.5)
-                                print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                                b_tag = hl(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})]", gpu_color(ev_idx))
+                                print(f"{b_tag} {colorize_log_line(ev_line)}", flush=True)
                             except queue.Empty:
                                 pass
                     for th in reader_threads:
                         th.join(timeout=2.0)
                     while not event_q.empty():
                         ev_idx, ev_line = event_q.get_nowait()
-                        print(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})] {ev_line}", flush=True)
+                        b_tag = hl(f"[Blend GPU{ev_idx}(dev={slot_gpus[ev_idx]})]", gpu_color(ev_idx))
+                        print(f"{b_tag} {colorize_log_line(ev_line)}", flush=True)
                 finally:
                     _terminate_procs(procs)
                     for th in reader_threads:

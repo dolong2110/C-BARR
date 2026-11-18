@@ -17,6 +17,12 @@ import sys
 import time
 from typing import Any
 
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from src.logfmt import hl  # noqa: E402
+
 _PARAM_BILLIONS_RE = re.compile(r"(?:^|[^0-9.])(\d+(?:\.\d+)?)\s*[bB](?:$|[^a-zA-Z0-9])")
 STAGE_CHOICES: tuple[str, ...] = (
     "matrix",
@@ -391,9 +397,9 @@ def select_worker_gpu_slots(
             summary = _format_gpu_live_summary(gpus)
             ram_s = f"{host_avail:.1f}G" if host_avail is not None else "?"
             print(
-                f"[gpu_pool] Selected {len(slots)} worker slot(s) {slots} for {model_id} "
+                f"{hl('[gpu_pool]', 'cyan')} {hl(f'Selected {len(slots)} worker slot(s) {slots}', 'green')} for {hl(model_id, 'white')} "
                 f"(stage={stage}, mult={eff_mult:.2f}, mode={workers_per_gpu}, need>={req_gb:.1f}G+res/worker, cpus={cpus or '?'}, "
-                f"host_avail={ram_s} | live: {summary})",
+                f"host_avail={ram_s} | live: {hl(summary, 'sky')})",
                 file=sys.stderr,
                 flush=True,
             )
@@ -402,8 +408,11 @@ def select_worker_gpu_slots(
         if now >= deadline:
             summary = _format_gpu_live_summary(gpus)
             print(
-                f"[gpu_pool] ERROR: 0 GPUs have >= {req_gb:.1f} GB + headroom free for {model_id} "
-                f"(stage={stage} | {summary})",
+                hl(
+                    f"[gpu_pool] ERROR: 0 GPUs have >= {req_gb:.1f} GB + headroom free for {model_id} "
+                    f"(stage={stage} | {summary})",
+                    "red",
+                ),
                 file=sys.stderr,
                 flush=True,
             )
@@ -411,8 +420,11 @@ def select_worker_gpu_slots(
         max_free = max(float(g["free_gb"]) for g in gpus)
         rem_m = int(max(1.0, (deadline - now) / 60.0))
         print(
-            f"[gpu_pool] All candidate GPUs busy (max free={max_free:.1f}G, stage={stage} needs >= {req_gb:.1f}G+res "
-            f"for {model_id}); waiting {poll_sec}s for free VRAM (up to {rem_m}m remaining)...",
+            hl(
+                f"[gpu_pool] All candidate GPUs busy (max free={max_free:.1f}G, stage={stage} needs >= {req_gb:.1f}G+res "
+                f"for {model_id}); waiting {poll_sec}s for free VRAM (up to {rem_m}m remaining)...",
+                "orange",
+            ),
             file=sys.stderr,
             flush=True,
         )
@@ -475,11 +487,14 @@ def prewarm_hf_model_weights(
         if _has_complete_hf_weights(cached_dir):
             return True
         print(
-            f"[hf_prewarm] Partial local cache for {model_id} (missing weight shards); downloading full checkpoint...",
+            hl(
+                f"[hf_prewarm] Partial local cache for {model_id} (missing weight shards); downloading full checkpoint...",
+                "orange",
+            ),
             flush=True,
         )
     except Exception:
-        print(f"[hf_prewarm] Pre-warming HF checkpoint once for {model_id}...", flush=True)
+        print(hl(f"[hf_prewarm] Pre-warming HF checkpoint once for {model_id}...", "cyan"), flush=True)
 
     base_ignore = ["*.gguf", "*.onnx*", "*.msgpack", "*.h5", "*.ot", "original/*", "consolidated*"]
     attempts = max(1, int(max_retries))
@@ -489,21 +504,29 @@ def prewarm_hf_model_weights(
                 str(snapshot_fn(repo_id=model_id, ignore_patterns=[*base_ignore, "*.bin"]))
             )
             if _has_complete_hf_weights(dl_dir):
+                print(hl(f"[hf_prewarm] Verified complete checkpoint shards for {model_id}.", "green"), flush=True)
                 return True
             # Fallback for legacy repos that publish only pytorch_model.bin without .safetensors
             dl_dir_bin = pathlib.Path(str(snapshot_fn(repo_id=model_id, ignore_patterns=base_ignore)))
             if _has_complete_hf_weights(dl_dir_bin):
+                print(hl(f"[hf_prewarm] Verified complete checkpoint shards for {model_id}.", "green"), flush=True)
                 return True
         except Exception as exc:
             if attempt >= attempts:
                 print(
-                    f"[hf_prewarm] HF pre-warm failed after {attempts} attempt(s) ({exc}); workers will resolve online.",
+                    hl(
+                        f"[hf_prewarm] HF pre-warm failed after {attempts} attempt(s) ({exc}); workers will resolve online.",
+                        "orange",
+                    ),
                     flush=True,
                 )
                 return False
             wait_s = 5 * (2 ** (attempt - 1))
             print(
-                f"[hf_prewarm] Attempt {attempt}/{attempts} for {model_id} hit transient error ({exc}); retrying in {wait_s}s...",
+                hl(
+                    f"[hf_prewarm] Attempt {attempt}/{attempts} for {model_id} hit transient error ({exc}); retrying in {wait_s}s...",
+                    "orange",
+                ),
                 flush=True,
             )
             time.sleep(wait_s)

@@ -4505,6 +4505,83 @@ class TestPhases4To7(unittest.TestCase):
                 if old_off is not None:
                     os.environ["HF_HUB_OFFLINE"] = old_off
 
+    def test_v0521_high_contrast_color_dashboard_and_auto_tty(self) -> None:
+        """Verifies bright high-contrast pill badges, progress bars, GPU palette, and clean plain-text log persistence."""
+        from src.logfmt import colorize_log_line, fmt_progress_bar, gpu_color, status_badge, strip_ansi
+
+        prev_c = os.environ.get("CBARR_COLOR")
+        prev_n = os.environ.get("NO_COLOR")
+        try:
+            os.environ.pop("NO_COLOR", None)
+            os.environ["CBARR_COLOR"] = "1"
+            # Distinct bright GPU colors (never dark \033[2m charcoal)
+            seen = {gpu_color(i) for i in range(8)}
+            self.assertEqual(len(seen), 8)
+            self.assertIn("\033[1;30;102m", status_badge("done", "DONE"))
+            self.assertIn("\033[1;97;41m", status_badge("fail", "FAIL(1)"))
+            pbar = fmt_progress_bar(75, 100, width=12)
+            self.assertIn("█", pbar)
+            self.assertIn("75%", strip_ansi(pbar))
+            err_ln = colorize_log_line("OSError: missing model.safetensors")
+            self.assertIn("\033[1;91m", err_ln)
+            met_ln = colorize_log_line("[eval_450 120/450] eta=3m10s | Acc B0=72.0% B1b=64.0% M2_250=74.5%")
+            self.assertIn("\033[1;95m", met_ln)
+            self.assertIn("\033[1;92m", met_ln)
+
+            # Verify --color flag emits vivid ANSI to stdout while stripping ANSI from persisted $RUN_LOG
+            with tempfile.TemporaryDirectory() as td:
+                td_p = pathlib.Path(td)
+                data_dir = td_p / "data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                out_dir = td_p / "outputs"
+                log_dir = td_p / "logs"
+                exp_md = td_p / "EXP.md"
+                _build_mini_frozen_dir(data_dir)
+                proc = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                        "--color",
+                        "--mock",
+                        "--part",
+                        "3",
+                        "--shards",
+                        "2",
+                        "--shard-progress-sec",
+                        "0.05",
+                        "--skip-preflight",
+                        "--skip-smoke",
+                        "--data-dir",
+                        str(data_dir),
+                        "--out-dir",
+                        str(out_dir),
+                        "--log-dir",
+                        str(log_dir),
+                        "--exp-log",
+                        str(exp_md),
+                        "--run-id",
+                        "color_ui_01",
+                    ],
+                    cwd=ROOT,
+                    env={k: v for k, v in os.environ.items() if k != "NO_COLOR"},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn("\033[1;30;106m STAGE \033[0m", proc.stdout)
+                self.assertIn("\033[1;30;102m PASS \033[0m", proc.stdout)
+                saved_log = (log_dir / "cbarr_color_ui_01.log").read_text(encoding="utf-8")
+                self.assertNotIn("\033[", saved_log)
+        finally:
+            if prev_c is None:
+                os.environ.pop("CBARR_COLOR", None)
+            else:
+                os.environ["CBARR_COLOR"] = prev_c
+            if prev_n is None:
+                os.environ.pop("NO_COLOR", None)
+            else:
+                os.environ["NO_COLOR"] = prev_n
+
 
 if __name__ == "__main__":
     unittest.main()
