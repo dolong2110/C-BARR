@@ -240,8 +240,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (Calibration: Qwen/Qwen3.5-2B)** (Updated 2026-11-18 05:48:19 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `464c22d` | **Results Release**: `v0.5.14-res.3` | **Last Loop**: `Calibration: Qwen/Qwen3.5-2B` | **Wall Time**: `3.1s` (3.1s)
+### Run `20261117T174419Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-2B (strict341))** (Updated 2026-11-18 05:48:31 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `90c2551` | **Results Release**: `v0.5.14-res.3` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-2B (strict341)` | **Wall Time**: `20.9s` (20.9s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "464c22d",
+  "git_rev": "90c2551",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -364,6 +364,28 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | **M2** | 53.6% | 66.7% | 42.7% | 60.7% | 58.3% | 56.7% | 36.7% | 56.2% | 54.7% | 47.5% | 436 | 1.13 | 7.79e-67 |
 | M2_Prec (Aux.) | 56.1% | 66.7% | 42.7% | 60.7% | 58.3% | 71.7% | 36.7% | 58.2% | 56.2% | 49.2% | 450 | 1.13 | 1.37e-70 (raw) |
 | **Oracle_UB** | 73.4% | 82.7% | 70.7% | 75.3% | 75.0% | 80.0% | 56.7% | 75.1% | 73.4% | 68.4% | 337 | 1.00 | - |
+
+- **`Qwen/Qwen3.5-2B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`464c22d`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`20.9s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.850, esc=16.7%
+  - **4-Regime**: Helped=1.1%, Hurt=52.7%, Flip=53.8%, TiePass=17.6%, TieFail=28.7%
+  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+
+| Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| B0 | 67.7% | 81.3% | 68.0% | 70.0% | 65.0% | 78.3% | 43.3% | 70.2% | 70.2% | 63.6% | 333 | 1.00 | 1.34e-62 |
+| B1a | 70.6% | 85.3% | 74.7% | 70.0% | 70.0% | 73.3% | 50.0% | 35.3% | 63.5% | 62.4% | 501 | 1.00 | 2.14e-66 |
+| **B1b** | 13.7% | 24.0% | 14.7% | 33.3% | 3.3% | 3.3% | 3.3% | 0.0% | 9.5% | -18.9% | 1879 | 1.00 | - |
+| B2a | 61.0% | 86.7% | 72.0% | 70.7% | 43.3% | 60.0% | 33.3% | 46.4% | 59.7% | 58.4% | 382 | 1.00 | 2.15e-55 |
+| B2b | 57.2% | 69.3% | 57.3% | 63.3% | 55.0% | 61.7% | 36.7% | 57.6% | 59.1% | 47.2% | 651 | 1.20 | 7.13e-51 |
+| M1a | 34.1% | 36.0% | 18.7% | 70.0% | 5.0% | 71.7% | 3.3% | 37.3% | 40.2% | 21.3% | 1078 | 1.00 | 8.63e-32 |
+| M1b | 67.4% | 81.3% | 68.0% | 70.0% | 65.0% | 76.7% | 43.3% | 69.8% | 69.8% | 63.2% | 341 | 1.01 | 2.25e-62 |
+| M1c | 49.8% | 80.0% | 65.3% | 70.0% | 5.0% | 75.0% | 3.3% | 57.6% | 57.9% | 45.4% | 655 | 1.00 | 9.98e-48 |
+| M2_B64 | 67.4% | 81.3% | 68.0% | 70.0% | 65.0% | 76.7% | 43.3% | 70.0% | 69.6% | 62.8% | 359 | 1.00 | 1.95e-61 |
+| M2_B128 | 70.2% | 81.3% | 68.0% | 70.0% | 70.0% | 78.3% | 53.3% | 71.6% | 70.7% | 64.0% | 377 | 1.00 | 3.39e-64 |
+| M2_B256 | 70.2% | 81.3% | 68.0% | 70.0% | 75.0% | 76.7% | 50.0% | 71.8% | 70.0% | 63.8% | 399 | 1.00 | 1.9e-64 |
+| M2_Pre | 68.8% | 81.3% | 68.0% | 70.0% | 63.3% | 80.0% | 50.0% | 70.7% | 69.6% | 62.7% | 399 | 1.00 | 4e-63 |
+| **M2** | 69.6% | 81.3% | 68.0% | 70.0% | 70.0% | 78.3% | 50.0% | 71.3% | 70.2% | 63.7% | 382 | 1.00 | 5.98e-64 |
+| M2_Prec (Aux.) | 69.6% | 81.3% | 68.0% | 70.0% | 70.0% | 75.0% | 53.3% | 71.1% | 69.4% | 62.9% | 413 | 1.00 | 1.3e-64 (raw) |
+| **Oracle_UB** | 87.2% | 94.7% | 92.0% | 86.7% | 86.7% | 90.0% | 73.3% | 88.4% | 86.6% | 82.3% | 308 | 1.00 | - |
 
 - **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`cdfd4a9-dirty`) | dtype=`torch.bfloat16` | wall=`20.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.650, esc=20.0%
   - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
