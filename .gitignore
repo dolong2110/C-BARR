@@ -21,3 +21,4 @@ outputs/*/*.npz
 outputs/*/*.tmp
 outputs/logs/
 outputs/experiment_history.jsonl
+ifbench/

@@ -108,10 +108,22 @@ if [ ! -f "data/manifest_sha256.json" ]; then
 fi
 "$PY_BIN" -c "import pathlib; from scripts.run_matrix import verify_manifest_integrity; verify_manifest_integrity(pathlib.Path('data'))"
 
-# Optional allenai/IFBench OOD verifier package (Appendix B OOD extension; non-fatal offline)
-if ! "$PY_BIN" -c "import ifbench" >/dev/null 2>&1; then
-    "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} ifbench \
-        || echo "[setup_env] WARN: optional 'ifbench' install skipped (offline or unavailable); OOD script supports --mock/--dataset-path."
+# Optional allenai/IFBench OOD verifier package (not published on PyPI; install from GitHub with sparse-clone fallback)
+if ! "$PY_BIN" -c "from ifbench import instructions_registry" >/dev/null 2>&1; then
+    if ! "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} "git+https://github.com/allenai/IFBench.git"; then
+        echo "[setup_env] pip install git+IFBench failed; installing deps + cloning allenai/IFBench..."
+        "$PY_BIN" -m pip install -q ${PIP_EXTRA_ARGS[@]+"${PIP_EXTRA_ARGS[@]}"} emoji "syllapy>=0.8.0" httpx tqdm "pydantic>=2" pydantic-settings || true
+        if [ ! -d "./ifbench" ]; then
+            rm -rf /tmp/ifb_repo
+            if git clone --depth 1 https://github.com/allenai/IFBench.git /tmp/ifb_repo >/dev/null 2>&1 && [ -d "/tmp/ifb_repo/ifbench" ]; then
+                cp -r /tmp/ifb_repo/ifbench ./ifbench
+            fi
+            rm -rf /tmp/ifb_repo
+        fi
+    fi
+    if ! "$PY_BIN" -c "from ifbench import instructions_registry" >/dev/null 2>&1; then
+        echo "[setup_env] WARN: optional 'ifbench' install skipped (offline or unavailable); OOD script supports --mock/--dataset-path."
+    fi
 fi
 
 # Verify seeded langdetect import (Patch D3) before running any evaluation

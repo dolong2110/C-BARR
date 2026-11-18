@@ -165,11 +165,17 @@ def load_ifbench_items(
             try:
                 import ifbench
 
+                cand_paths: list[pathlib.Path] = []
                 if hasattr(ifbench, "data_path"):
-                    bundled_p = pathlib.Path(str(ifbench.data_path()))
+                    cand_paths.append(pathlib.Path(str(ifbench.data_path())))
+                if getattr(ifbench, "__file__", None):
+                    cand_paths.append(pathlib.Path(ifbench.__file__).resolve().parent / "data" / "IFBench_test.jsonl")
+                cand_paths.append(ROOT / "ifbench" / "data" / "IFBench_test.jsonl")
+                for bundled_p in cand_paths:
                     if bundled_p.is_file():
                         rows = _load_jsonl(bundled_p)
                         source_tag = f"ifbench_pkg:{bundled_p.name}"
+                        break
             except Exception:
                 rows = []
             if not rows:
@@ -186,6 +192,11 @@ def load_ifbench_items(
         raw_kw = raw.get("kwargs", [])
         clean_kwargs: list[dict[str, Any]] = []
         for kw in raw_kw:
+            if isinstance(kw, str):
+                try:
+                    kw = json.loads(kw)
+                except Exception:
+                    kw = {}
             if isinstance(kw, dict):
                 clean_kwargs.append({k: v for k, v in kw.items() if v is not None})
             else:

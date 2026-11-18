@@ -12,4 +12,4 @@ nltk
 immutabledict
 langdetect
 absl-py
-ifbench
+ifbench @ git+https://github.com/allenai/IFBench.git
