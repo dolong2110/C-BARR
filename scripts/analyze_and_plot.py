@@ -1029,7 +1029,7 @@ def generate_latex_table_parts(
         mc_p = (pooled_all_341.get("b2a_vs_a1_strip") or {}).get("p_midp")
         mc_b = (pooled_all_341.get("b2a_vs_b1b_all_fail") or {}).get("p_midp")
         pooled_footer = (
-            f" Pooled ({pooled_all_341.get('pool_label', 'diag')}): "
+            f" Pooled (\\texttt{{{_tex_escape_tt(str(pooled_all_341.get('pool_label', 'diag')))}}}): "
             f"A1={pa1.get('pct', 0.0):.1f}\\% ({pa1.get('k', 0)}/{pa1.get('n', 0)}), "
             f"B2a={pb2a.get('pct', 0.0):.1f}\\% ({pb2a.get('k', 0)}/{pb2a.get('n', 0)}), "
             + (f"$p_{{\\text{{mid}},\\text{{B2a vs A1}}}}={mc_p:.3g}$, " if mc_p is not None else "")

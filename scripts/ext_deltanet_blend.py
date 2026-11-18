@@ -472,10 +472,12 @@ def _harvest_partial_blend_shards(
     return merged
 
 
-def _detect_auto_slots(model_id: str, n_items: int, attempt: int = 1) -> list[str]:
+def _detect_auto_slots(
+    model_id: str, n_items: int, attempt: int = 1, gpu_ids: str = ""
+) -> list[str]:
     if not torch.cuda.is_available() or n_items <= 0:
         return []
-    raw_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    raw_vis = (str(gpu_ids).strip() or os.environ.get("CUDA_VISIBLE_DEVICES", "").strip())
     cands = [x.strip() for x in raw_vis.split(",") if x.strip()] if raw_vis else None
     wait_sec = int(os.environ.get("CBARR_WAIT_GPU_SEC", "3600"))
     wpg = "1" if attempt >= 2 else os.environ.get("CBARR_WORKERS_PER_GPU", "auto")
@@ -578,6 +580,12 @@ def main() -> None:
         type=str,
         default="auto",
         help="Number of parallel GPU workers ('auto' or positive integer).",
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default="",
+        help="Optional comma-separated GPU IDs to constrain auto slot selection (defaults to CUDA_VISIBLE_DEVICES).",
     )
     parser.add_argument("--shard-idx", type=int, default=0)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -698,10 +706,14 @@ def main() -> None:
                 if not uncached_items:
                     break
                 if args.shards == "auto":
-                    slot_gpus = _detect_auto_slots(args.model, len(uncached_items), attempt=attempt)
+                    slot_gpus = _detect_auto_slots(
+                        args.model, len(uncached_items), attempt=attempt, gpu_ids=args.gpu_ids
+                    )
                 else:
                     req_n = max(1, min(len(uncached_items), int(args.shards)))
-                    auto_s = _detect_auto_slots(args.model, req_n, attempt=attempt)
+                    auto_s = _detect_auto_slots(
+                        args.model, req_n, attempt=attempt, gpu_ids=args.gpu_ids
+                    )
                     slot_gpus = (
                         (auto_s * ((req_n // max(1, len(auto_s))) + 1))[:req_n]
                         if auto_s

@@ -4362,6 +4362,94 @@ class TestPhases4To7(unittest.TestCase):
             self.assertTrue((out_dir / "Qwen__Qwen3.5-0.8B__T0.6_tp0.95_pp1.5_s43" / "matrix_summary.json").is_file())
             self.assertTrue((table_dir / "tab5_appendix_ood_r6_l2.tex").is_file())
 
+    def test_v0518_independent_parts_and_tab3_latex_escape(self) -> None:
+        """Verifies standalone --part r6, --part w7, --part analyze, --gpu-ids arg, and escaped Tab 3 pool labels."""
+        with tempfile.TemporaryDirectory() as td:
+            td_p = pathlib.Path(td)
+            data_dir = td_p / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = td_p / "outputs"
+            fig_dir = td_p / "figs"
+            table_dir = td_p / "tables"
+            log_dir = td_p / "logs"
+            exp_md = td_p / "EXP.md"
+            _build_mini_frozen_dir(data_dir)
+
+            # Seed one greedy 0.8B model + non-empty E_hurt pool so --part w7 / --part r6 / --part analyze all run cleanly
+            r_init = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "run_matrix.py"), "--data-dir", str(data_dir), "--out-dir", str(out_dir), "--model", "Qwen/Qwen3.5-0.8B", "--mock", "--strict-diag"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(r_init.returncode, 0, r_init.stdout + r_init.stderr)
+            mdir = out_dir / "Qwen__Qwen3.5-0.8B"
+            sp = mdir / "matrix_summary_strict341.json"
+            rep_d = json.loads(sp.read_text(encoding="utf-8"))
+            rep_d["section6_diagnostics"] = {
+                "A1_strip": {"n_ehurt": 2, "overall_pass_count": 2, "overall_recovery_pct": 100.0, "inhibition_recovery_pct": 100.0, "structural_recovery_pct": 100.0},
+                "B2a_post_anchor": {"n_ehurt": 2, "overall_pass_count": 2, "overall_recovery_pct": 100.0, "inhibition_recovery_pct": 100.0, "structural_recovery_pct": 100.0},
+                "B1_pre_anchor": {"n_ehurt": 2, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                "B2b_post_raw": {"n_ehurt": 2, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                "A2_math_swap": {"n_ehurt": 2, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                "B3_early_cut_no_anchor": {"n_ehurt": 2, "overall_pass_count": 0, "overall_recovery_pct": 0.0, "inhibition_recovery_pct": 0.0, "structural_recovery_pct": 0.0},
+                "causal_attribution": {"rho_recency": 1.0, "rho_interference": 0.0},
+            }
+            sp.write_text(json.dumps(rep_d, indent=2) + "\n", encoding="utf-8")
+            (mdir / "matrix_summary.json").write_text(json.dumps(rep_d, indent=2) + "\n", encoding="utf-8")
+
+            # Standalone --part w7 scoped to Qwen/Qwen3.5-0.8B + Phase 7 refresh
+            res_w7 = subprocess.run(
+                [
+                    "bash", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part", "w7", "--mock", "--models", "Qwen/Qwen3.5-0.8B",
+                    "--skip-preflight", "--data-dir", str(data_dir), "--out-dir", str(out_dir),
+                    "--fig-dir", str(fig_dir), "--table-dir", str(table_dir),
+                    "--log-dir", str(log_dir), "--exp-log", str(exp_md),
+                ],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(res_w7.returncode, 0, res_w7.stdout + res_w7.stderr)
+            self.assertTrue((mdir / "ext_deltanet_blend.json").is_file())
+            self.assertTrue((mdir / "prefill_mlp_summary.json").is_file())
+
+            # Standalone --part r6 + Phase 7 refresh
+            res_r6 = subprocess.run(
+                [
+                    "bash", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part", "r6", "--mock", "--r6-models", "Qwen/Qwen3.5-0.8B", "--r6-seeds", "42",
+                    "--skip-preflight", "--data-dir", str(data_dir), "--out-dir", str(out_dir),
+                    "--fig-dir", str(fig_dir), "--table-dir", str(table_dir),
+                    "--log-dir", str(log_dir), "--exp-log", str(exp_md),
+                ],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(res_r6.returncode, 0, res_r6.stdout + res_r6.stderr)
+            self.assertTrue((out_dir / "Qwen__Qwen3.5-0.8B__T0.6_tp0.95_pp1.5_s42" / "matrix_summary.json").is_file())
+
+            # Standalone CPU --part analyze + LaTeX Tab 3 escaping verification (no unescaped diag_341_strict)
+            res_an = subprocess.run(
+                [
+                    "bash", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part", "analyze", "--mock",
+                    "--skip-preflight", "--data-dir", str(data_dir), "--out-dir", str(out_dir),
+                    "--fig-dir", str(fig_dir), "--table-dir", str(table_dir),
+                    "--log-dir", str(log_dir), "--exp-log", str(exp_md),
+                ],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(res_an.returncode, 0, res_an.stdout + res_an.stderr)
+            tab3_txt = (table_dir / "tab3_diagnostic_control.tex").read_text(encoding="utf-8")
+            self.assertIn(r"\texttt{diag\_341\_strict}", tab3_txt)
+            self.assertNotIn("(diag_341_strict)", tab3_txt)
+
+            # Verify --gpu-ids flag accepted cleanly in ext_deltanet_blend --mock
+            bl = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "ext_deltanet_blend.py"), "--model", "Qwen/Qwen3.5-0.8B", "--out-dir", str(out_dir), "--gpu-ids", "3,4", "--mock"],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(bl.returncode, 0, bl.stdout + bl.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

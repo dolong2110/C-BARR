@@ -14,7 +14,7 @@ set -euo pipefail
 #   bash scripts/run_gpu_phases_4_to_6.sh --mock --out-dir /tmp/mock_out --exp-log /tmp/mock_log.md
 #
 # Key flags:
-#   --part <all|1|2|3|4|5|combine>  Select full A-Z pipeline, Parts 1-4 parallel GPU workers, or Part 5 combiner (default: all)
+#   --part <all|1|2|3|4|5|combine|w7|ifbench|r6|analyze>  Select full A-Z pipeline, Parts 1-4 parallel GPU workers, combiner (5), or independent step (w7/ifbench/r6/analyze) (default: all)
 #   --setup / --setup-mode <auto|on|off>  Provision packages, fast DeltaNet kernels, IFEval, NLTK, and frozen splits (default: off)
 #   --no-setup              Disable environment provisioning checks before running
 #   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, --max-shards) when >=2 GPUs visible (default: 1)
@@ -395,8 +395,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$PART_MODE" in
-  all|1|2|3|4|5|combine|ifbench) ;;
-  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, 4, 5, combine, or ifbench)" >&2; exit 1 ;;
+  all|1|2|3|4|5|combine|w7|ifbench|r6|analyze) ;;
+  *) echo "Unknown --part '$PART_MODE' (expected all, 1, 2, 3, 4, 5, combine, w7, ifbench, r6, or analyze)" >&2; exit 1 ;;
 esac
 
 WORKER_MODE=0
@@ -1597,15 +1597,70 @@ case "$PART_MODE" in
       run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
     fi
     run_gate0_preflight
-    run_w7_stage Qwen/Qwen3.5-4B
-    if [ -d "${OUT_DIR}/HuggingFaceTB__SmolLM3-3B" ]; then
-      run_w7_stage HuggingFaceTB/SmolLM3-3B
+    if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+      for _wm in "${MODELS_ARG[@]}"; do
+        run_w7_stage "$_wm"
+      done
+    else
+      run_w7_stage Qwen/Qwen3.5-4B
+      if [ -d "${OUT_DIR}/HuggingFaceTB__SmolLM3-3B" ]; then
+        run_w7_stage HuggingFaceTB/SmolLM3-3B
+      fi
     fi
     run_ifbench_ood_stage
     run_r6_sampled_stage
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     sync_part_results "script-part5-combined" 1
+    ;;
+
+  w7)
+    if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
+      run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
+    fi
+    run_gate0_preflight
+    WITH_W7=1
+    if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+      for _wm in "${MODELS_ARG[@]}"; do
+        run_w7_stage "$_wm"
+      done
+      _w7_sync_models=("${MODELS_ARG[@]}")
+    else
+      _w7_sync_models=()
+      if [ -d "${OUT_DIR}/Qwen__Qwen3.5-4B" ] || [ "$IS_MOCK" -eq 1 ]; then
+        run_w7_stage Qwen/Qwen3.5-4B
+        _w7_sync_models+=(Qwen/Qwen3.5-4B)
+      fi
+      if [ -d "${OUT_DIR}/HuggingFaceTB__SmolLM3-3B" ]; then
+        run_w7_stage HuggingFaceTB/SmolLM3-3B
+        _w7_sync_models+=(HuggingFaceTB/SmolLM3-3B)
+      fi
+    fi
+    run_phase7_stage
+    run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    sync_part_results "script-part-w7" 1 ${_w7_sync_models[@]+"${_w7_sync_models[@]}"}
+    ;;
+
+  r6)
+    if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
+      run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
+    fi
+    run_gate0_preflight
+    WITH_R6="1"
+    run_r6_sampled_stage
+    run_phase7_stage
+    run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    sync_part_results "script-part-r6" 1
+    ;;
+
+  analyze)
+    if [ "$UNPACK_MODE" = "on" ] || { [ "$UNPACK_MODE" = "auto" ] && [ "$IS_MOCK" -eq 0 ] && compgen -G "outputs/*/*_cache.jsonl.gz" >/dev/null; }; then
+      run_stage "Unpack Synced Worker Results" "$PY_BIN" scripts/sync_results.py --mode unpack --repo-dir . --out-dir "$OUT_DIR"
+    fi
+    run_gate0_preflight
+    run_phase7_stage
+    run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
+    sync_part_results "script-part-analyze" 1
     ;;
 
   ifbench)
