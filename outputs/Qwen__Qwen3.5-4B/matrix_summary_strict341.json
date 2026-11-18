@@ -1,8 +1,8 @@
 {
   "model": "Qwen/Qwen3.5-4B",
-  "code_version": "0.5.14",
-  "git_rev": "cdfd4a9-dirty",
-  "run_id": "20261117T174419Z",
+  "code_version": "0.5.19",
+  "git_rev": "ba01e3b-dirty",
+  "run_id": "20261118T215019Z",
   "diag_pool": "strict341",
   "diag_n_items": 341,
   "status": "completed",
@@ -11,9 +11,9 @@
     "dtype": "torch.bfloat16"
   },
   "training_params": {
-    "code_version": "0.5.14",
-    "git_rev": "cdfd4a9-dirty",
-    "run_id": "20261117T174419Z",
+    "code_version": "0.5.19",
+    "git_rev": "ba01e3b-dirty",
+    "run_id": "20261118T215019Z",
     "model": "Qwen/Qwen3.5-4B",
     "diag_pool": "strict341",
     "device": "cuda",
@@ -36,18 +36,19 @@
     "tiered_budgets": [
       64,
       128,
-      250
+      250,
+      512
     ],
-    "include_b512": false,
+    "include_b512": true,
     "stage2_bridge": "classic",
     "b0_max_new_tokens": 1024,
     "b1b_max_new_tokens": 2048
   },
   "timing_sec": {
-    "calibration": 0.13,
-    "eval_matrix": 0.33,
+    "calibration": 0.12,
+    "eval_matrix": 0.44,
     "section6_diagnostics": 0.13,
-    "total_wall": 20.85
+    "total_wall": 28.58
   },
   "calibrated_params": {
     "coef": [
@@ -482,6 +483,41 @@
         "p_exact": 0.332305908203125,
         "p_midp": 0.237884521484375
       }
+    },
+    "M2_B512": {
+      "slice_acc": {
+        "gsm8k_easy": 0.92,
+        "gsm8k_hard": 0.9066666666666666,
+        "csqa": 0.82,
+        "ifeval_planning": 0.8666666666666667,
+        "ifeval_precision": 0.8166666666666667,
+        "ifeval_conflict": 0.8333333333333334
+      },
+      "micro_acc": 0.8577777777777778,
+      "macro_acc": 0.8605555555555555,
+      "oaa_250": 0.6555555555555556,
+      "auc_oaa_2048": 0.8069650607638889,
+      "u_005": 0.7687488888888889,
+      "mean_t_tot": 445.14444444444445,
+      "mean_calls": 1.0377777777777777,
+      "loop_rate": 0.044444444444444446,
+      "exhaust_rate": 0.0,
+      "spillover_rate": 0.0022222222222222222,
+      "bsr": {
+        "64": 0.022222222222222223,
+        "128": 0.06888888888888889,
+        "256": 0.32666666666666666,
+        "512": 0.6,
+        "1024": 0.8044444444444444,
+        "2048": 0.8577777777777778
+      },
+      "mcnemar_vs_b1b": {
+        "base_wins": 3,
+        "method_wins": 230,
+        "discordant_n": 233,
+        "p_exact": 3.0549050835234655e-64,
+        "p_midp": 1.5472026156054906e-64
+      }
     }
   },
   "oracle_and_4regime": {
@@ -492,19 +528,19 @@
     "tie_fail_rate": 0.14666666666666667,
     "oracle_summary": {
       "slice_acc": {
-        "gsm8k_easy": 0.96,
+        "gsm8k_easy": 0.9733333333333334,
         "gsm8k_hard": 0.9866666666666667,
-        "csqa": 0.9066666666666666,
-        "ifeval_planning": 0.9166666666666666,
-        "ifeval_precision": 0.9166666666666666,
-        "ifeval_conflict": 0.8666666666666667
+        "csqa": 0.9266666666666666,
+        "ifeval_planning": 0.9333333333333333,
+        "ifeval_precision": 0.9333333333333333,
+        "ifeval_conflict": 0.9
       },
-      "micro_acc": 0.9288888888888889,
-      "macro_acc": 0.9255555555555555,
-      "oaa_250": 0.9288888888888889,
-      "auc_oaa_2048": 0.9125716145833334,
-      "u_005": 0.8704013333333334,
-      "mean_t_tot": 292.4377777777778,
+      "micro_acc": 0.9444444444444444,
+      "macro_acc": 0.9422222222222224,
+      "oaa_250": 0.9222222222222223,
+      "auc_oaa_2048": 0.92318359375,
+      "u_005": 0.8844466666666666,
+      "mean_t_tot": 299.9888888888889,
       "mean_calls": 1.0,
       "loop_rate": 0.017777777777777778,
       "exhaust_rate": 0.0,
@@ -514,8 +550,8 @@
         "128": 0.13555555555555557,
         "256": 0.5111111111111111,
         "512": 0.84,
-        "1024": 0.9177777777777778,
-        "2048": 0.9288888888888889
+        "1024": 0.9311111111111111,
+        "2048": 0.9444444444444444
       }
     }
   },

@@ -334,13 +334,13 @@
     "device": "cuda",
     "dtype": "torch.bfloat16"
   },
-  "code_version": "0.5.14",
-  "git_rev": "cdfd4a9-dirty",
-  "run_id": "20261117T174419Z",
+  "code_version": "0.5.19",
+  "git_rev": "d0c0963-dirty",
+  "run_id": "20261118T215019Z",
   "training_params": {
-    "code_version": "0.5.14",
-    "git_rev": "cdfd4a9-dirty",
-    "run_id": "20261117T174419Z",
+    "code_version": "0.5.19",
+    "git_rev": "d0c0963-dirty",
+    "run_id": "20261118T215019Z",
     "model": "Qwen/Qwen3.5-4B",
     "diag_pool": "diag491",
     "device": "cuda",
@@ -363,9 +363,10 @@
     "tiered_budgets": [
       64,
       128,
-      250
+      250,
+      512
     ],
-    "include_b512": false,
+    "include_b512": true,
     "stage2_bridge": "classic",
     "b0_max_new_tokens": 1024,
     "b1b_max_new_tokens": 2048

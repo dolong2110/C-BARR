@@ -1,0 +1,78 @@
+{
+  "model": "Qwen/Qwen3.5-4B",
+  "n_ehurt": 336,
+  "blend_conv_state": true,
+  "evict_think_kv": true,
+  "alphas": {
+    "0.00": {
+      "alpha": 0.0,
+      "n_ehurt": 336,
+      "n_blended_layers": 24,
+      "n_blended_conv": 24,
+      "n_evicted_kv": 8,
+      "overall_recovery_pct": 85.71428571428571,
+      "overall_wilson_ci95": [
+        81.56836218515228,
+        89.05280358809961
+      ],
+      "inhibition_recovery_pct": 96.26865671641791,
+      "structural_recovery_pct": 90.32258064516128
+    },
+    "0.25": {
+      "alpha": 0.25,
+      "n_ehurt": 336,
+      "n_blended_layers": 24,
+      "n_blended_conv": 24,
+      "n_evicted_kv": 8,
+      "overall_recovery_pct": 88.09523809523809,
+      "overall_wilson_ci95": [
+        84.19472318603611,
+        91.13452030543256
+      ],
+      "inhibition_recovery_pct": 96.26865671641791,
+      "structural_recovery_pct": 92.25806451612904
+    },
+    "0.50": {
+      "alpha": 0.5,
+      "n_ehurt": 336,
+      "n_blended_layers": 24,
+      "n_blended_conv": 24,
+      "n_evicted_kv": 8,
+      "overall_recovery_pct": 89.88095238095238,
+      "overall_wilson_ci95": [
+        86.19224614639992,
+        92.66805563373136
+      ],
+      "inhibition_recovery_pct": 95.52238805970148,
+      "structural_recovery_pct": 93.54838709677419
+    },
+    "0.75": {
+      "alpha": 0.75,
+      "n_ehurt": 336,
+      "n_blended_layers": 24,
+      "n_blended_conv": 24,
+      "n_evicted_kv": 8,
+      "overall_recovery_pct": 91.66666666666666,
+      "overall_wilson_ci95": [
+        88.21967880242111,
+        94.17168126637277
+      ],
+      "inhibition_recovery_pct": 95.52238805970148,
+      "structural_recovery_pct": 93.54838709677419
+    },
+    "1.00": {
+      "alpha": 1.0,
+      "n_ehurt": 336,
+      "n_blended_layers": 24,
+      "n_blended_conv": 24,
+      "n_evicted_kv": 8,
+      "overall_recovery_pct": 95.83333333333334,
+      "overall_wilson_ci95": [
+        93.12846175061176,
+        97.50203432506152
+      ],
+      "inhibition_recovery_pct": 98.50746268656717,
+      "structural_recovery_pct": 98.70967741935483
+    }
+  }
+}

@@ -602,8 +602,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T214055Z -->
 
 <!-- CBARR_RUN_START:20261118T215019Z -->
-### Run `20261118T215019Z` — **RUNNING (after W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B))** (Updated 2026-11-18 22:38:40 UTC)
-- **Code Version**: `v0.5.19` | **Git Commit**: `d0c0963` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B)` | **Wall Time**: `48m 07.0s` (2887.0s)
+### Run `20261118T215019Z` — **RUNNING (after W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached))** (Updated 2026-11-18 22:39:09 UTC)
+- **Code Version**: `v0.5.19` | **Git Commit**: `715eb44` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached)` | **Wall Time**: `48m 43.0s` (2923.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261118T215019Z.log`
@@ -623,7 +623,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "d0c0963",
+  "git_rev": "715eb44",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -671,6 +671,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached) | PASS | 37.0s (37.0s) |
 | W7: DeltaNet Blend (Qwen/Qwen3.5-4B) (cached) | PASS | 5.0s (5.0s) |
 | W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B) | PASS | 26m 02.0s (1562.0s) |
+| W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached) | PASS | 12.0s (12.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
