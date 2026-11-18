@@ -240,8 +240,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-0.8B (strict341))** (Updated 2026-11-18 01:39:50 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `29f9f19` | **Results Release**: `v0.5.14-res.2` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-0.8B (strict341)` | **Wall Time**: `17.9s` (17.9s)
+### Run `20261117T174419Z` — **RUNNING (Section 6 & Matrix Complete: Qwen/Qwen3.5-0.8B (strict341))** (Updated 2026-11-18 01:40:01 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `b5935f4` | **Results Release**: `v0.5.14-res.2` | **Last Loop**: `Section 6 & Matrix Complete: Qwen/Qwen3.5-0.8B (strict341)` | **Wall Time**: `28.4s` (28.4s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "29f9f19",
+  "git_rev": "b5935f4",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -340,9 +340,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   - **Section 6 Causal (`|E_hurt|=80`)**: rho_rec=62.5%, rho_int=37.5% | A1_strip=100.0%, B2a_post=62.5%, B1_pre=58.8%, B2b_raw=33.8%, A2_swap=60.0%, B3_cut=62.5%
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
-- **`Qwen/Qwen3.5-0.8B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`003493a`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`17.9s` (calib=0.1s, eval=0.4s, diag=0.0s) | tau=0.525, esc=31.7%
+- **`Qwen/Qwen3.5-0.8B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`003493a`) | dtype=`torch.bfloat16` | wall=`28.4s` (calib=0.1s, eval=0.4s, diag=0.1s) | tau=0.525, esc=31.7%
   - **4-Regime**: Helped=0.4%, Hurt=52.7%, Flip=53.1%, TiePass=3.6%, TieFail=43.3%
-  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+  - **Section 6 Causal (`|E_hurt|=176`)**: rho_rec=76.1%, rho_int=23.9% | A1_strip=100.0%, B2a_post=76.1%, B1_pre=75.6%, B2b_raw=47.2%, A2_swap=40.9%, B3_cut=66.5%
 
 | Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
