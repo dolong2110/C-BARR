@@ -240,10 +240,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261117T142919Z -->
 
 <!-- CBARR_RUN_START:20261117T174419Z -->
-### Run `20261117T174419Z` — **RUNNING (after Phase 6 / W6: Qwen3.5-0.8B (strict341) (merge))** (Updated 2026-11-18 01:40:13 UTC)
-- **Code Version**: `v0.5.14` | **Git Commit**: `8c34a7b` | **Results Release**: `v0.5.14-res.2` | **Last Loop**: `Phase 6 / W6: Qwen3.5-0.8B (strict341) (merge)` | **Wall Time**: `7h 55m 47s` (28547.0s)
+### Run `20261117T174419Z` — **RUNNING (Calibration: Qwen/Qwen3.5-2B)** (Updated 2026-11-18 05:48:19 UTC)
+- **Code Version**: `v0.5.14` | **Git Commit**: `464c22d` | **Results Release**: `v0.5.14-res.3` | **Last Loop**: `Calibration: Qwen/Qwen3.5-2B` | **Wall Time**: `3.1s` (3.1s)
 - **Hardware**: 4x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --commit --push --hf-home <HOME>/maplecg_nfs/hf_cache --gpu 3,4,6,7`
+- **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261117T174419Z.log`
 
 #### 1. Training & Experiment Parameters
@@ -260,7 +260,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "8c34a7b",
+  "git_rev": "464c22d",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -304,18 +304,14 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (merge) | PASS | 49.0s (49.0s) |
 | Phase 6 / W6: Qwen3.5-0.8B (strict341) | PASS | 4h 17m 00s (15420.0s) |
 | Phase 6 / W6: Qwen3.5-0.8B (strict341) (merge) | PASS | 50.0s (50.0s) |
-
-#### 3. Gate-3 Live 12-Item Smoke Check
-| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
-| :--- | :--- | :--- | :--- | :--- |
-| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
-| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
+| Phase 6 / W6: Qwen3.5-2B (strict341) | PASS | 4h 07m 23s (14843.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `HuggingFaceTB/SmolLM3-3B` | `v0.5.14` (`3214526-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
 | `Qwen/Qwen3.5-0.8B` | `v0.5.14` (`003493a`) | 0.525 | 3.719 | 31.7% (OK) | 16.7% | -0.79 | [-0.06, 0.14, 0.15, -0.21, 0.70] | 57/26/73/38/0.651 | 70/19/38/25/0.618 | 40/0.750 (n=40) | 4.0%->61.0% (2000->467t) | 0.1s |
+| `Qwen/Qwen3.5-2B` | `v0.5.14` (`464c22d`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.14` (`cdfd4a9-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
