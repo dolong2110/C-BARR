@@ -602,8 +602,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T214055Z -->
 
 <!-- CBARR_RUN_START:20261118T215019Z -->
-### Run `20261118T215019Z` — **RUNNING (after Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge))** (Updated 2026-11-18 22:11:03 UTC)
-- **Code Version**: `v0.5.19` | **Git Commit**: `c115a73` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge)` | **Wall Time**: `20m 37.0s` (1237.0s)
+### Run `20261118T215019Z` — **RUNNING (after W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B))** (Updated 2026-11-18 22:38:40 UTC)
+- **Code Version**: `v0.5.19` | **Git Commit**: `d0c0963` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B)` | **Wall Time**: `48m 07.0s` (2887.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261118T215019Z.log`
@@ -623,7 +623,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "c115a73",
+  "git_rev": "d0c0963",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -668,6 +668,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached) | PASS | 35.0s (35.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) | PASS | 17m 15.0s (1035.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge) | PASS | 51.0s (51.0s) |
+| Phase 4 / W4: Qwen/Qwen3.5-4B (diag491) (cached) | PASS | 37.0s (37.0s) |
+| W7: DeltaNet Blend (Qwen/Qwen3.5-4B) (cached) | PASS | 5.0s (5.0s) |
+| W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B) | PASS | 26m 02.0s (1562.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -681,7 +684,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `HuggingFaceTB/SmolLM3-3B` | `v0.5.14` (`3214526-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
 | `Qwen/Qwen3.5-0.8B` | `v0.5.14` (`003493a`) | 0.525 | 3.719 | 31.7% (OK) | 16.7% | -0.79 | [-0.06, 0.14, 0.15, -0.21, 0.70] | 57/26/73/38/0.651 | 70/19/38/25/0.618 | 40/0.750 (n=40) | 4.0%->61.0% (2000->467t) | 0.1s |
 | `Qwen/Qwen3.5-2B` | `v0.5.14` (`464c22d`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
-| `Qwen/Qwen3.5-4B` | `v0.5.19` (`ba01e3b-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
+| `Qwen/Qwen3.5-4B` | `v0.5.19` (`d0c0963-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
@@ -779,28 +782,11 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | M2_B512 | 86.1% | 92.0% | 90.7% | 82.0% | 86.7% | 81.7% | 83.3% | 65.6% | 80.7% | 76.9% | 445 | 1.04 | 3.05e-64 (raw) |
 | **Oracle_UB** | 94.2% | 97.3% | 98.7% | 92.7% | 93.3% | 93.3% | 90.0% | 92.2% | 92.3% | 88.4% | 300 | 1.00 | - |
 
-- **`Qwen/Qwen3.5-4B` (`diag491`**, n_diag=491) — ver=`v0.5.14` (`cdfd4a9-dirty`) | dtype=`torch.bfloat16` | wall=`21.6s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.650, esc=20.0%
+- **`Qwen/Qwen3.5-4B` (`diag491`**, n_diag=491) — ver=`v0.5.19` (`d0c0963-dirty`) | dtype=`torch.bfloat16` | wall=`22.4s` (calib=0.1s, eval=0.4s, diag=0.1s) | tau=0.650, esc=20.0%
   - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
   - **Section 6 Causal (`|E_hurt|=336`)**: rho_rec=96.1%, rho_int=3.9% | A1_strip=100.0%, B2a_post=96.1%, B1_pre=95.5%, B2b_raw=49.4%, A2_swap=70.2%, B3_cut=86.3%
-
-| Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| B0 | 84.1% | 92.0% | 90.7% | 82.0% | 80.0% | 83.3% | 76.7% | 84.7% | 84.7% | 78.4% | 312 | 1.00 | 7.33e-62 |
-| B1a | 80.4% | 93.3% | 92.0% | 84.0% | 66.7% | 76.7% | 70.0% | 36.7% | 71.7% | 74.8% | 395 | 1.00 | 2.08e-59 |
-| **B1b** | 30.2% | 56.0% | 44.0% | 41.3% | 11.7% | 21.7% | 6.7% | 0.2% | 18.1% | 0.6% | 1735 | 1.00 | - |
-| B2a | 82.4% | 97.3% | 94.7% | 80.7% | 80.0% | 75.0% | 66.7% | 51.6% | 75.3% | 77.8% | 310 | 1.00 | 4.45e-62 |
-| B2b | 72.5% | 85.3% | 84.0% | 70.7% | 71.7% | 70.0% | 53.3% | 66.2% | 70.4% | 61.4% | 639 | 1.23 | 1.26e-49 |
-| M1a | 51.9% | 66.7% | 49.3% | 82.0% | 16.7% | 76.7% | 20.0% | 43.8% | 52.2% | 40.9% | 979 | 1.00 | 1.93e-34 |
-| M1b | 77.8% | 92.0% | 90.7% | 79.3% | 66.7% | 78.3% | 60.0% | 77.1% | 78.7% | 71.6% | 429 | 1.08 | 2.92e-56 |
-| M1c | 62.1% | 92.0% | 88.0% | 79.3% | 15.0% | 78.3% | 20.0% | 65.6% | 67.8% | 56.6% | 680 | 1.04 | 2.47e-43 |
-| M2_B64 | 84.3% | 92.0% | 90.7% | 81.3% | 80.0% | 81.7% | 80.0% | 84.4% | 83.8% | 77.8% | 335 | 1.04 | 1.27e-61 |
-| M2_B128 | 84.6% | 92.0% | 90.7% | 81.3% | 83.3% | 83.3% | 76.7% | 84.9% | 83.6% | 77.8% | 355 | 1.04 | 5.1e-62 |
-| M2_B256 | 84.6% | 92.0% | 90.7% | 81.3% | 85.0% | 81.7% | 76.7% | 84.9% | 82.5% | 77.3% | 380 | 1.04 | 5.1e-62 |
-| M2_Pre | 82.9% | 92.0% | 89.3% | 81.3% | 83.3% | 81.7% | 70.0% | 84.0% | 82.6% | 76.7% | 364 | 1.04 | 6.1e-60 |
-| **M2** | 84.6% | 92.0% | 90.7% | 81.3% | 83.3% | 83.3% | 76.7% | 84.9% | 83.4% | 77.7% | 360 | 1.04 | 5.1e-62 |
-| M2_Prec (Aux.) | 85.4% | 92.0% | 90.7% | 81.3% | 83.3% | 91.7% | 73.3% | 85.8% | 83.6% | 78.1% | 384 | 1.04 | 3.05e-64 (raw) |
-| **Oracle_UB** | 92.6% | 96.0% | 98.7% | 90.7% | 91.7% | 91.7% | 86.7% | 92.9% | 91.3% | 87.0% | 292 | 1.00 | - |
+  - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
 #### 6. Optional W7 Extensions
-- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%)
+- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%)
 <!-- CBARR_RUN_END:20261118T215019Z -->
