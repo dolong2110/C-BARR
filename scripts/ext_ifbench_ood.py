@@ -25,7 +25,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.gpu_pool import _estimate_model_billions, select_worker_gpu_slots
+from scripts.gpu_pool import (
+    _estimate_model_billions,
+    prewarm_hf_model_weights,
+    select_worker_gpu_slots,
+)
 from scripts.run_matrix import (
     _build_engine,
     _is_native_engine,
@@ -740,6 +744,11 @@ def _run_multi_shard(
         f"[ext_ifbench] Multi-shard launch: {num_shards} shards across slots {worker_map[:num_shards]}",
         flush=True,
     )
+    prewarmed = (
+        False
+        if args.mock
+        else prewarm_hf_model_weights(args.model, offline=bool(args.local_files_only))
+    )
     shard_dir = out_dir / "shards" / "ifbench"
     shard_dir.mkdir(parents=True, exist_ok=True)
     max_retries = max(0, int(args.max_retries))
@@ -801,6 +810,8 @@ def _run_multi_shard(
 
             env = dict(os.environ)
             env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+            if prewarmed:
+                env["HF_HUB_OFFLINE"] = "1"
             if not args.mock and gpu_id != "cpu":
                 env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             if idx > 0 and stagger_sec > 0.0:

@@ -24,7 +24,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.gpu_pool import _estimate_model_billions, select_worker_gpu_slots
+from scripts.gpu_pool import (
+    _estimate_model_billions,
+    prewarm_hf_model_weights,
+    select_worker_gpu_slots,
+)
 from scripts.run_matrix import resolve_device_and_dtype
 from src.engine import ensure_qwen35_device_safe_kernels
 from src.graders import grade_item
@@ -685,16 +689,7 @@ def main() -> None:
         has_cuda = bool(torch.cuda.is_available())
         req_multi = args.shards != "auto" and int(args.shards) > 1
         if has_cuda or req_multi:
-            try:
-                from huggingface_hub import snapshot_download
-
-                snapshot_download(
-                    repo_id=args.model,
-                    local_files_only=os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"),
-                )
-                prewarmed = True
-            except Exception:
-                prewarmed = False
+            prewarmed = False if args.mock else prewarm_hf_model_weights(args.model)
 
             max_attempts = max(0, int(args.max_retries)) + 1
             merged = canon_cache

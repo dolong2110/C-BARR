@@ -439,29 +439,14 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
 
 
 def _prewarm_hf_snapshot(model_id: str, cmd_base: list[str]) -> bool:
-    """Downloads or verifies a single shared HF snapshot before spawning parallel shards."""
+    """Downloads or verifies a single complete HF weight snapshot before spawning parallel shards."""
     if "--mock" in cmd_base or "--offline" in cmd_base:
         return False
     if not any("run_matrix.py" in str(tok) for tok in cmd_base):
         return False
-    if os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
-        return True
-    try:
-        from huggingface_hub import snapshot_download
-    except Exception:
-        return False
-    try:
-        snapshot_download(repo_id=model_id, local_files_only=True)
-        return True
-    except Exception:
-        pass
-    try:
-        print(f"[{_utc_iso()}] [sharded] Pre-warming HF cache once for {model_id}...", flush=True)
-        snapshot_download(repo_id=model_id)
-        return True
-    except Exception as exc:
-        print(f"[{_utc_iso()}] [sharded] HF pre-warm skipped ({exc}); shards will resolve directly.", flush=True)
-        return False
+    from scripts.gpu_pool import prewarm_hf_model_weights
+
+    return prewarm_hf_model_weights(model_id)
 
 
 def _sanitize_shard_jsonl_tails(shard_dirs: list[pathlib.Path]) -> None:

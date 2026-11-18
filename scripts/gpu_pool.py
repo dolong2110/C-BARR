@@ -8,6 +8,7 @@ saturation, live SM utilization, and host CPU/RAM bounds, and polls if GPUs are 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -416,6 +417,97 @@ def select_worker_gpu_slots(
             flush=True,
         )
         time.sleep(max(1, int(poll_sec)))
+
+
+def _has_complete_hf_weights(snap_dir: pathlib.Path) -> bool:
+    """Verifies a local HF snapshot directory contains config, tokenizer, and ALL weight shards (not tokenizer-only)."""
+    if not snap_dir.is_dir() or not (snap_dir / "config.json").is_file():
+        return False
+    has_tok = any(
+        (snap_dir / fn).is_file()
+        for fn in ("tokenizer.json", "tokenizer_config.json", "vocab.json", "tokenizer.model")
+    )
+    if not has_tok:
+        return False
+    for idx_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        idx_p = snap_dir / idx_name
+        if idx_p.is_file():
+            try:
+                wmap = json.loads(idx_p.read_text(encoding="utf-8")).get("weight_map", {})
+                shard_files = {str(v) for v in wmap.values() if v}
+                if shard_files and all(
+                    (snap_dir / sf).is_file() and (snap_dir / sf).stat().st_size > 0
+                    for sf in shard_files
+                ):
+                    return True
+            except Exception:
+                pass
+            return False
+    return any(
+        (snap_dir / fn).is_file() and (snap_dir / fn).stat().st_size > 0
+        for fn in ("model.safetensors", "pytorch_model.bin")
+    )
+
+
+def prewarm_hf_model_weights(
+    model_id: str,
+    *,
+    offline: bool = False,
+    max_retries: int = 3,
+    snapshot_fn: Any = None,
+) -> bool:
+    """Downloads/verifies complete model weights in 1 process; returns True iff safe to set HF_HUB_OFFLINE=1."""
+    local_p = pathlib.Path(model_id)
+    if local_p.exists():
+        return _has_complete_hf_weights(local_p)
+    if offline or os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
+        return True
+    if snapshot_fn is None:
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_fn = snapshot_download
+        except Exception:
+            return False
+
+    try:
+        cached_dir = pathlib.Path(str(snapshot_fn(repo_id=model_id, local_files_only=True)))
+        if _has_complete_hf_weights(cached_dir):
+            return True
+        print(
+            f"[hf_prewarm] Partial local cache for {model_id} (missing weight shards); downloading full checkpoint...",
+            flush=True,
+        )
+    except Exception:
+        print(f"[hf_prewarm] Pre-warming HF checkpoint once for {model_id}...", flush=True)
+
+    base_ignore = ["*.gguf", "*.onnx*", "*.msgpack", "*.h5", "*.ot", "original/*", "consolidated*"]
+    attempts = max(1, int(max_retries))
+    for attempt in range(1, attempts + 1):
+        try:
+            dl_dir = pathlib.Path(
+                str(snapshot_fn(repo_id=model_id, ignore_patterns=[*base_ignore, "*.bin"]))
+            )
+            if _has_complete_hf_weights(dl_dir):
+                return True
+            # Fallback for legacy repos that publish only pytorch_model.bin without .safetensors
+            dl_dir_bin = pathlib.Path(str(snapshot_fn(repo_id=model_id, ignore_patterns=base_ignore)))
+            if _has_complete_hf_weights(dl_dir_bin):
+                return True
+        except Exception as exc:
+            if attempt >= attempts:
+                print(
+                    f"[hf_prewarm] HF pre-warm failed after {attempts} attempt(s) ({exc}); workers will resolve online.",
+                    flush=True,
+                )
+                return False
+            wait_s = 5 * (2 ** (attempt - 1))
+            print(
+                f"[hf_prewarm] Attempt {attempt}/{attempts} for {model_id} hit transient error ({exc}); retrying in {wait_s}s...",
+                flush=True,
+            )
+            time.sleep(wait_s)
+    return False
 
 
 def main() -> None:

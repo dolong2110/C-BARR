@@ -636,12 +636,14 @@ if torch.cuda.is_available():
 
 prune_hf_cache_if_low_disk() {
   local thresh_gb="${1:-$PRUNE_HF_BELOW_GB}"
+  shift || true
   if [ "$IS_MOCK" -ne 0 ] || [ "$OFFLINE_MODE" -eq 1 ]; then
     return 0
   fi
   "$PY_BIN" -c "
 import os, pathlib, shutil, sys
 thresh = float(sys.argv[1])
+keep_dirs = {'models--' + m.strip().replace('/', '--') for m in sys.argv[2:] if m.strip()}
 if thresh <= 0:
     sys.exit(0)
 hf_hub = pathlib.Path(os.environ.get('HF_HOME') or (pathlib.Path.home() / '.cache' / 'huggingface')) / 'hub'
@@ -649,11 +651,13 @@ if not hf_hub.is_dir():
     sys.exit(0)
 free_gb = shutil.disk_usage(str(hf_hub)).free / (1024**3)
 if free_gb < thresh:
-    print(f'[Disk Guard] Free disk {free_gb:.1f} GB < {thresh:.1f} GB; pruning cached HF weights under {hf_hub}...', flush=True)
+    print(f'[Disk Guard] Free disk {free_gb:.1f} GB < {thresh:.1f} GB; pruning unused HF weights under {hf_hub} (keep={sorted(keep_dirs)})...', flush=True)
     for item in hf_hub.iterdir():
         if item.is_dir() and item.name.startswith('models--'):
+            if item.name in keep_dirs and free_gb >= 10.0:
+                continue
             shutil.rmtree(item, ignore_errors=True)
-" "$thresh_gb" 2>&1 | tee -a "$RUN_LOG" || true
+" "$thresh_gb" "$@" 2>&1 | tee -a "$RUN_LOG" || true
 }
 
 check_workspace_disk_space() {
@@ -952,7 +956,7 @@ lines = log_p.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
 cleaned = [re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", ln).strip() for ln in lines]
 cleaned = [ln for ln in cleaned if ln and not ln.startswith("[git-push]") and not ln.startswith("[log_experiment]")]
 err_pat = re.compile(
-    r"OutOfMemoryError|CUDA out of memory|Traceback\s*\(|RuntimeError:|ValueError:|"
+    r"OutOfMemoryError|CUDA out of memory|Traceback\s*\(|RuntimeError:|ValueError:|OSError:|"
     r"FileNotFoundError:|AssertionError:|CalledProcessError:|command not found|\bFAILED\b|\[ERROR\]|ERROR:",
     re.IGNORECASE,
 )
@@ -1685,7 +1689,7 @@ case "$PART_MODE" in
       for _idx in "${!MODELS_ARG[@]}"; do
         _m="${MODELS_ARG[$_idx]}"
         if [ "$_idx" -gt 0 ]; then
-          prune_hf_cache_if_low_disk
+          prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "$_m"
         fi
         if [ "$CALIBRATE_ONLY" -eq 1 ]; then
           run_matrix_sharded "Calibrate: ${_m}" "$_m" --calibrate-only
@@ -1719,17 +1723,17 @@ case "$PART_MODE" in
     run_model_eval_pair "Phase 4 / W4" Qwen/Qwen3.5-4B
     run_w7_stage Qwen/Qwen3.5-4B
     sync_model_checkpoint Qwen/Qwen3.5-4B
-    prune_hf_cache_if_low_disk
+    prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" HuggingFaceTB/SmolLM3-3B Qwen/Qwen3.5-4B
     run_model_eval_pair "Phase 5 / W5" HuggingFaceTB/SmolLM3-3B
     run_w7_stage HuggingFaceTB/SmolLM3-3B
     sync_model_checkpoint HuggingFaceTB/SmolLM3-3B
-    prune_hf_cache_if_low_disk
+    prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-0.8B (strict341)" Qwen/Qwen3.5-0.8B --strict-diag
     sync_model_checkpoint Qwen/Qwen3.5-0.8B
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-2B (strict341)" Qwen/Qwen3.5-2B --strict-diag
     sync_model_checkpoint Qwen/Qwen3.5-2B
     if [ "$WITH_9B" -eq 1 ]; then
-      prune_hf_cache_if_low_disk 28
+      prune_hf_cache_if_low_disk 28 Qwen/Qwen3.5-9B Qwen/Qwen3.5-4B
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
       sync_model_checkpoint Qwen/Qwen3.5-9B
     fi

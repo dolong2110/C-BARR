@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -4449,6 +4450,60 @@ class TestPhases4To7(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True,
             )
             self.assertEqual(bl.returncode, 0, bl.stdout + bl.stderr)
+
+    def test_v0520_tokenizer_only_snapshot_does_not_poison_prewarm(self) -> None:
+        """Regression test: tokenizer-only HF snapshots must download weights before enabling HF_HUB_OFFLINE=1."""
+        from scripts.gpu_pool import _has_complete_hf_weights, prewarm_hf_model_weights
+
+        with tempfile.TemporaryDirectory() as td:
+            snap = pathlib.Path(td) / "snap"
+            snap.mkdir(parents=True, exist_ok=True)
+            # 1. Tokenizer-only snapshot (created by _TokenizerOnlyEngine) is NOT complete
+            (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+            (snap / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+            self.assertFalse(_has_complete_hf_weights(snap))
+
+            # 2. Config + incomplete sharded index (missing shard 2 of 2) is NOT complete
+            (snap / "config.json").write_text("{}", encoding="utf-8")
+            (snap / "model.safetensors.index.json").write_text(
+                json.dumps({"weight_map": {"w1": "model-00001-of-00002.safetensors", "w2": "model-00002-of-00002.safetensors"}}),
+                encoding="utf-8",
+            )
+            (snap / "model-00001-of-00002.safetensors").write_bytes(b"weights1")
+            self.assertFalse(_has_complete_hf_weights(snap))
+
+            # 3. If local_files_only=True returns partial snap and online download fails, prewarm returns False (never sets HF_HUB_OFFLINE=1)
+            calls: list[dict] = []
+
+            def _fake_fail_online(**kwargs):
+                calls.append(kwargs)
+                if kwargs.get("local_files_only"):
+                    return str(snap)
+                raise RuntimeError("simulated Hub 429")
+
+            old_off = os.environ.pop("HF_HUB_OFFLINE", None)
+            try:
+                ok_fail = prewarm_hf_model_weights(
+                    "HuggingFaceTB/SmolLM3-3B", max_retries=1, snapshot_fn=_fake_fail_online
+                )
+                self.assertFalse(ok_fail)
+                self.assertEqual(len(calls), 2)
+
+                # 4. Once online snapshot_download populates the missing shard, prewarm returns True
+                def _fake_populate_online(**kwargs):
+                    calls.append(kwargs)
+                    if not kwargs.get("local_files_only"):
+                        (snap / "model-00002-of-00002.safetensors").write_bytes(b"weights2")
+                    return str(snap)
+
+                ok_done = prewarm_hf_model_weights(
+                    "HuggingFaceTB/SmolLM3-3B", max_retries=1, snapshot_fn=_fake_populate_online
+                )
+                self.assertTrue(ok_done)
+                self.assertTrue(_has_complete_hf_weights(snap))
+            finally:
+                if old_off is not None:
+                    os.environ["HF_HUB_OFFLINE"] = old_off
 
 
 if __name__ == "__main__":
