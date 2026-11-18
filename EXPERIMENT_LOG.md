@@ -602,11 +602,12 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T214055Z -->
 
 <!-- CBARR_RUN_START:20261118T215019Z -->
-### Run `20261118T215019Z` — **RUNNING (after W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached))** (Updated 2026-11-18 22:39:09 UTC)
-- **Code Version**: `v0.5.19` | **Git Commit**: `715eb44` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached)` | **Wall Time**: `48m 43.0s` (2923.0s)
+### Run `20261118T215019Z` — **FAILED (exit=1 at Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512))** (Updated 2026-11-18 22:42:59 UTC)
+- **Code Version**: `v0.5.19` | **Git Commit**: `0aa291e` | **Results Release**: `v0.5.19-res.5` | **Last Loop**: `Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512)` | **Wall Time**: `52m 31.0s` (3151.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261118T215019Z.log`
+- **Notes**: [GPU7!] OSError: HuggingFaceTB/SmolLM3-3B does not appear to have a file named pytorch_model.bin or model.safetensors. | --- End failed shard log --- | [2026-11-18T22:42:50Z] === [Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512)] FAILED in parallel GPU shard (attempt 3/3, 28s; inspect outputs/logs/cbarr_20
 
 #### 1. Training & Experiment Parameters
 ```json
@@ -623,7 +624,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "715eb44",
+  "git_rev": "0aa291e",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -672,6 +673,11 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | W7: DeltaNet Blend (Qwen/Qwen3.5-4B) (cached) | PASS | 5.0s (5.0s) |
 | W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B) | PASS | 26m 02.0s (1562.0s) |
 | W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached) | PASS | 12.0s (12.0s) |
+| W7: Stage-2 SolveFirst Replay (Qwen/Qwen3.5-4B) (cached) | PASS | 0.0s (0.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (strict341) (cached) | PASS | 40.0s (40.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512) | FAIL(shard_error) | 52.0s (52.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512) | FAIL(shard_error) | 28.0s (28.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512) | FAIL(shard_error) | 28.0s (28.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -682,14 +688,14 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `HuggingFaceTB/SmolLM3-3B` | `v0.5.14` (`3214526-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
+| `HuggingFaceTB/SmolLM3-3B` | `v0.5.19` (`0aa291e`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.2s |
 | `Qwen/Qwen3.5-0.8B` | `v0.5.14` (`003493a`) | 0.525 | 3.719 | 31.7% (OK) | 16.7% | -0.79 | [-0.06, 0.14, 0.15, -0.21, 0.70] | 57/26/73/38/0.651 | 70/19/38/25/0.618 | 40/0.750 (n=40) | 4.0%->61.0% (2000->467t) | 0.1s |
 | `Qwen/Qwen3.5-2B` | `v0.5.14` (`464c22d`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.19` (`d0c0963-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
-- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.14` (`421cf4a`) | dtype=`torch.bfloat16` | wall=`29.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
+- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.19` (`0aa291e`) | dtype=`torch.bfloat16` | wall=`26.5s` (calib=0.2s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
   - **4-Regime**: Helped=13.6%, Hurt=9.6%, Flip=23.1%, TiePass=60.0%, TieFail=16.9%
   - **Section 6 Causal (`|E_hurt|=58`)**: rho_rec=63.8%, rho_int=36.2% | A1_strip=100.0%, B2a_post=63.8%, B1_pre=62.1%, B2b_raw=34.5%, A2_swap=55.2%, B3_cut=60.3%
 
