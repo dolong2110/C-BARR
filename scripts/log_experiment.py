@@ -317,9 +317,21 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
         if not sub.is_dir():
             continue
         blend = _load_json_safe(sub / "ext_deltanet_blend.json")
+        blend_conv_kv = _load_json_safe(sub / "ext_deltanet_blend_conv_kv.json")
+        blend_evict_kv = _load_json_safe(sub / "ext_deltanet_blend_evict_kv.json")
         mlp = _load_json_safe(sub / "prefill_mlp_summary.json")
-        if isinstance(blend, dict) or isinstance(mlp, dict):
-            items.append({"dir": sub.name, "blend": blend, "mlp": mlp})
+        m2v2 = _load_json_safe(sub / "eval_450_m2v2_comparison.json")
+        if any(isinstance(x, dict) for x in (blend, blend_conv_kv, blend_evict_kv, mlp, m2v2)):
+            items.append(
+                {
+                    "dir": sub.name,
+                    "blend": blend,
+                    "blend_conv_kv": blend_conv_kv,
+                    "blend_evict_kv": blend_evict_kv,
+                    "mlp": mlp,
+                    "m2v2": m2v2,
+                }
+            )
     return items
 
 
@@ -643,18 +655,26 @@ def _render_run_markdown(
 
     if w7_items:
         lines.append("\n#### 6. Optional W7 Extensions")
+
+        def _fmt_blend(tag: str, bl: dict[str, Any]) -> str:
+            if bl.get("mode") == "mock":
+                return f"{tag}(mock keys={list(bl.get('sweep', {}).keys())})"
+            a_str = ", ".join(
+                f"a={k}:{v.get('overall_recovery_pct', 0):.1f}%"
+                for k, v in bl.get("alphas", {}).items()
+            )
+            return f"{tag}(n={bl.get('n_ehurt', 0)}: {a_str})"
+
         for w7 in w7_items:
             parts: list[str] = []
-            bl = w7.get("blend")
-            if isinstance(bl, dict):
-                if bl.get("mode") == "mock":
-                    parts.append(f"DeltaNetBlend(mock keys={list(bl.get('sweep', {}).keys())})")
-                elif "alphas" in bl:
-                    a_str = ", ".join(
-                        f"a={k}:{v.get('overall_recovery_pct', 0):.1f}%"
-                        for k, v in bl["alphas"].items()
-                    )
-                    parts.append(f"DeltaNetBlend(n={bl.get('n_ehurt', 0)}: {a_str})")
+            for key_b, lbl_b in (
+                ("blend", "DeltaNetBlend"),
+                ("blend_conv_kv", "DeltaNetConvKV"),
+                ("blend_evict_kv", "DenseKVEvict"),
+            ):
+                bl = w7.get(key_b)
+                if isinstance(bl, dict) and (bl.get("mode") == "mock" or "alphas" in bl):
+                    parts.append(_fmt_blend(lbl_b, bl))
             ml = w7.get("mlp")
             if isinstance(ml, dict):
                 et = ml.get("eval_table", {})
@@ -662,6 +682,16 @@ def _render_run_markdown(
                     f"PrefillMLP({ml.get('mode')}, tau={ml.get('best_tau', 0):.3f}, "
                     f"Macro={_fmt_pct(et.get('macro_acc'))}, OAA250={_fmt_pct(et.get('oaa_250'))}, "
                     f"U0.05={_fmt_pct(et.get('u_005'))}, Tok={et.get('mean_t_tot', 0):.0f})"
+                )
+            m2v2 = w7.get("m2v2")
+            if isinstance(m2v2, dict) and isinstance(m2v2.get("systems"), dict):
+                sy = m2v2["systems"]
+                c_s = sy.get("M2_classic", {})
+                s_s = sy.get("M2_solve_first", {})
+                parts.append(
+                    f"Stage2SolveFirst(replayed={m2v2.get('stage2_items_replayed', 0)}, "
+                    f"Macro={_fmt_pct(c_s.get('macro_acc'))}->{_fmt_pct(s_s.get('macro_acc'))}, "
+                    f"OAA250={_fmt_pct(c_s.get('oaa_250'))}->{_fmt_pct(s_s.get('oaa_250'))})"
                 )
             if parts:
                 lines.append(f"- **`{w7['dir']}`**: " + " | ".join(parts))

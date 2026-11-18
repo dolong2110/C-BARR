@@ -294,8 +294,9 @@ if IS_KAGGLE:
 elif IS_COLAB:
     os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
 
-# Avoid matplotlib font-cache permission warnings on ephemeral containers
+# Avoid matplotlib font-cache permission warnings on ephemeral containers & PyTorch CUDA fragmentation
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 pathlib.Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import torch
@@ -1237,19 +1238,42 @@ def _build_scale_w7_cell() -> dict:
     run_models_batch(MODELS_SCALE, "Phase 6", strict_diag=True, include_b512=INCLUDE_B512)
 
 if RUN_W7_EXTENSIONS:
-    w7_model = MODELS_PRIMARY[0] if MODELS_PRIMARY else (ALL_ACTIVE_MODELS[0] if ALL_ACTIVE_MODELS else "Qwen/Qwen3.5-4B")
-    print(f"\\n=== [Optional W7] Running DeltaNet Blend & Prefill MLP on {w7_model} ===")
-    run_logged_loop(
-        f"W7: DeltaNet Blend ({w7_model})",
-        run_and_tee,
-        [sys.executable, "scripts/ext_deltanet_blend.py", "--model", w7_model, "--out-dir", str(OUT_DIR)],
-    )
-    run_logged_loop(
-        f"W7: Prefill MLP Probe ({w7_model})",
-        run_and_tee,
-        [sys.executable, "scripts/ext_prefill_mlp.py", "--model", w7_model, "--out-dir", str(OUT_DIR)],
-    )
-    sync_results_to_github(label="w7-extensions", models=[w7_model], include_phase7=False)'''
+    w7_targets = []
+    for cand_m in ([*MODELS_PRIMARY, *ALL_ACTIVE_MODELS] or ["Qwen/Qwen3.5-4B"]):
+        if cand_m not in w7_targets and ("4B" in cand_m or "SmolLM3" in cand_m or len(w7_targets) == 0):
+            if (OUT_DIR / cand_m.replace("/", "__") / "eval_450_cache.jsonl").is_file():
+                w7_targets.append(cand_m)
+    for w7_model in (w7_targets or ["Qwen/Qwen3.5-4B"]):
+        w7_slug = w7_model.replace("/", "__")
+        print(f"\\n=== [Optional W7] Running Full Extension Suite on {w7_model} ===")
+        if "smollm" in w7_model.lower():
+            run_logged_loop(
+                f"W7: Dense KV Eviction ({w7_model})",
+                run_and_tee,
+                [sys.executable, "scripts/ext_deltanet_blend.py", "--model", w7_model, "--out-dir", str(OUT_DIR), "--evict-think-kv", "--alphas", "0.0", "--out-json", str(OUT_DIR / w7_slug / "ext_deltanet_blend_evict_kv.json")],
+            )
+        else:
+            run_logged_loop(
+                f"W7: DeltaNet Blend ({w7_model})",
+                run_and_tee,
+                [sys.executable, "scripts/ext_deltanet_blend.py", "--model", w7_model, "--out-dir", str(OUT_DIR)],
+            )
+            run_logged_loop(
+                f"W7: DeltaNet Conv+KV Blend ({w7_model})",
+                run_and_tee,
+                [sys.executable, "scripts/ext_deltanet_blend.py", "--model", w7_model, "--out-dir", str(OUT_DIR), "--blend-conv-state", "--evict-think-kv", "--out-json", str(OUT_DIR / w7_slug / "ext_deltanet_blend_conv_kv.json")],
+            )
+        run_logged_loop(
+            f"W7: Prefill MLP Probe ({w7_model})",
+            run_and_tee,
+            [sys.executable, "scripts/ext_prefill_mlp.py", "--model", w7_model, "--out-dir", str(OUT_DIR)],
+        )
+        run_logged_loop(
+            f"W7: Stage-2 SolveFirst Replay ({w7_model})",
+            run_and_tee,
+            [sys.executable, "scripts/compare_m2_v2.py", "--model", w7_model, "--out-dir", str(OUT_DIR), "--device", "auto", "--dtype", DTYPE],
+        )
+        sync_results_to_github(label="w7-extensions", models=[w7_model], include_phase7=False)'''
     return _code_cell("cbarr-scale-w7", code)
 
 

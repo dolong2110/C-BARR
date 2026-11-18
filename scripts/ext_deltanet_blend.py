@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import codecs
 from datetime import datetime, timezone
+import inspect
 import json
 import os
 import pathlib
@@ -23,7 +24,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.gpu_pool import select_worker_gpu_slots
+from scripts.gpu_pool import _estimate_model_billions, select_worker_gpu_slots
 from scripts.run_matrix import resolve_device_and_dtype
 from src.engine import ensure_qwen35_device_safe_kernels
 from src.graders import grade_item
@@ -104,6 +105,14 @@ def blend_deltanet_states(
     return cache_think, stats["n_blended_layers"]
 
 
+def _supports_logits_to_keep(model: Any) -> bool:
+    """Returns True when model.forward accepts logits_to_keep to skip full-vocab prefill logits."""
+    try:
+        return "logits_to_keep" in inspect.signature(model.forward).parameters
+    except Exception:
+        return False
+
+
 def generate_with_blended_deltanet(
     model: Any,
     tok: Any,
@@ -149,11 +158,12 @@ def generate_with_blended_deltanet(
     inp_f_prefix = torch.tensor([ids_f[:-1]], dtype=torch.long, device=device)
 
     with torch.no_grad():
+        fwd_extra: dict[str, Any] = {"logits_to_keep": 1} if _supports_logits_to_keep(model) else {}
         cache_p = DynamicCache(config=model.config)
-        _ = model(input_ids=inp_p, past_key_values=cache_p, use_cache=True)
+        _ = model(input_ids=inp_p, past_key_values=cache_p, use_cache=True, **fwd_extra)
 
         cache_t = DynamicCache(config=model.config)
-        _ = model(input_ids=inp_f_prefix, past_key_values=cache_t, use_cache=True)
+        _ = model(input_ids=inp_f_prefix, past_key_values=cache_t, use_cache=True, **fwd_extra)
 
         mem_stats = restore_memory_states(
             cache_t,
@@ -163,6 +173,8 @@ def generate_with_blended_deltanet(
             evict_think_kv=evict_think_kv,
         )
         n_blended = mem_stats["n_blended_layers"]
+        # Release clean prompt cache immediately before 1024-tok decoding so both DynamicCaches never coexist in decode.
+        del cache_p, inp_p, inp_f_prefix
 
         # When full-attention KV caches were evicted back to the clean prompt cache (length inp_p),
         # resume cache_position at evict_start_pos with evict_last_id; otherwise use ids_f[-1].
@@ -202,6 +214,7 @@ def generate_with_blended_deltanet(
             past = out.past_key_values
             cur_pos += 1
             next_tok_id = int(torch.argmax(out.logits[:, -1, :], dim=-1).item())
+        del cache_t, past, out
 
     text = tok.decode(generated, skip_special_tokens=True).strip()
     return {
@@ -459,19 +472,22 @@ def _harvest_partial_blend_shards(
     return merged
 
 
-def _detect_auto_slots(model_id: str, n_items: int) -> list[str]:
+def _detect_auto_slots(model_id: str, n_items: int, attempt: int = 1) -> list[str]:
     if not torch.cuda.is_available() or n_items <= 0:
         return []
     raw_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     cands = [x.strip() for x in raw_vis.split(",") if x.strip()] if raw_vis else None
     wait_sec = int(os.environ.get("CBARR_WAIT_GPU_SEC", "3600"))
+    wpg = "1" if attempt >= 2 else os.environ.get("CBARR_WORKERS_PER_GPU", "auto")
+    s_mult = 1.0 + 0.25 * max(0, int(attempt) - 1)
     slots = select_worker_gpu_slots(
         model_id,
         candidate_ids=cands,
-        workers_per_gpu=os.environ.get("CBARR_WORKERS_PER_GPU", "auto"),
+        workers_per_gpu=wpg,
         max_gpus=8,
         wait_timeout_sec=wait_sec,
         stage="blend",
+        safety_mult=s_mult,
     )
     return slots[:n_items]
 
@@ -567,6 +583,17 @@ def main() -> None:
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--max-retries", type=int, default=2, help="Auto-retry partial GPU OOM failures.")
     parser.add_argument("--retry-wait-sec", type=int, default=15)
+    parser.add_argument(
+        "--out-json",
+        type=str,
+        default="",
+        help="Optional summary JSON output path (defaults to <out-dir>/<model>/ext_deltanet_blend.json).",
+    )
+    parser.add_argument(
+        "--check-cached",
+        action="store_true",
+        help="Exit 0 immediately if all requested (uid, alpha, blend_conv, evict_kv) entries and summary exist.",
+    )
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--mock", action="store_true", help="Run CPU DynamicCache unit sweep only")
     args = parser.parse_args()
@@ -574,8 +601,29 @@ def main() -> None:
     tag = args.model.replace("/", "__")
     model_dir = pathlib.Path(args.out_dir) / tag
     model_dir.mkdir(parents=True, exist_ok=True)
-    out_path = model_dir / "ext_deltanet_blend.json"
+    out_path = pathlib.Path(args.out_json) if str(args.out_json).strip() else (model_dir / "ext_deltanet_blend.json")
     blend_cache_path = model_dir / "ext_deltanet_blend_cache.jsonl"
+
+    if args.check_cached:
+        cache_path = model_dir / "diag_ehurt_cache.jsonl"
+        if not cache_path.is_file():
+            sys.exit(1)
+        rows = _load_jsonl(cache_path)
+        e_hurt = [
+            r for r in rows if int(r["b0"]["z"]) == 1 and int(r["b1b"]["z"]) == 0 and r["b1b"]["t_think"]
+        ]
+        if args.max_items > 0:
+            e_hurt = e_hurt[: args.max_items]
+        peek_cache = _load_blend_cache(blend_cache_path)
+        s_dir = model_dir / "shards"
+        if s_dir.is_dir():
+            for sp in sorted(s_dir.glob("deltanet_blend_shard_*.jsonl")):
+                if sp.is_file():
+                    peek_cache.update(_load_blend_cache(sp))
+        unc = _filter_uncached_ehurt(
+            e_hurt, peek_cache, args.alphas, args.blend_conv_state, args.evict_think_kv
+        )
+        sys.exit(0 if (not unc and (out_path.is_file() or peek_cache or not e_hurt)) else 1)
 
     if args.mock:
         res = run_mock_blend_check(
@@ -650,10 +698,10 @@ def main() -> None:
                 if not uncached_items:
                     break
                 if args.shards == "auto":
-                    slot_gpus = _detect_auto_slots(args.model, len(uncached_items))
+                    slot_gpus = _detect_auto_slots(args.model, len(uncached_items), attempt=attempt)
                 else:
                     req_n = max(1, min(len(uncached_items), int(args.shards)))
-                    auto_s = _detect_auto_slots(args.model, req_n)
+                    auto_s = _detect_auto_slots(args.model, req_n, attempt=attempt)
                     slot_gpus = (
                         (auto_s * ((req_n // max(1, len(auto_s))) + 1))[:req_n]
                         if auto_s
@@ -682,11 +730,20 @@ def main() -> None:
                 event_q: queue.Queue[tuple[int, str]] = queue.Queue()
                 failed_rc = 0
                 try:
+                    raw_stag = os.environ.get("CBARR_SPAWN_STAGGER_SEC", "").strip()
+                    if raw_stag:
+                        stagger_s = max(0.0, min(15.0, float(raw_stag)))
+                    else:
+                        pb = _estimate_model_billions(args.model)
+                        stagger_s = 8.0 if pb >= 7.0 else (3.0 if pb >= 2.8 else 1.5)
                     for s_idx in range(eff_shards):
+                        if s_idx > 0 and slot_gpus[s_idx] != "cpu" and stagger_s > 0.0:
+                            time.sleep(stagger_s)
                         env = os.environ.copy()
                         if slot_gpus[s_idx] != "cpu":
                             env["CUDA_VISIBLE_DEVICES"] = slot_gpus[s_idx]
                         env["PYTHONUNBUFFERED"] = "1"
+                        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
                         for tvar in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
                             env.setdefault(tvar, "4")
                         env.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -911,6 +968,9 @@ def main() -> None:
             args.evict_think_kv,
             known,
         )
+    del model, tok
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

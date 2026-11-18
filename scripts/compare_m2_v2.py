@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import pathlib
 import sys
@@ -234,6 +235,16 @@ def run_comparison(
     out_path = model_dir / "eval_450_m2v2_comparison.json"
     out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+    del solve_engine
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
     print(banner(f"M2 v2 HEAD-TO-HEAD COMPARISON: {model_id} (n={len(eval_rows)}, replayed={n_replayed})", "cyan"), flush=True)
     for k in (
         "B0",
@@ -278,6 +289,11 @@ def main() -> None:
     parser.add_argument("--norm-tokens", type=float, default=250.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--reg-c", type=float, default=1.0)
+    parser.add_argument(
+        "--check-cached",
+        action="store_true",
+        help="Exit 0 immediately if eval_450_m2v2_comparison.json exists and is valid JSON.",
+    )
     args = parser.parse_args()
 
     model_dir = (
@@ -285,6 +301,15 @@ def main() -> None:
         if args.cache_dir
         else pathlib.Path(args.out_dir) / args.model.replace("/", "__")
     )
+    if args.check_cached:
+        out_p = model_dir / "eval_450_m2v2_comparison.json"
+        if not out_p.is_file():
+            sys.exit(1)
+        try:
+            data = json.loads(out_p.read_text(encoding="utf-8"))
+            sys.exit(0 if isinstance(data, dict) and "systems" in data else 1)
+        except Exception:
+            sys.exit(1)
     run_comparison(
         args.model,
         model_dir,

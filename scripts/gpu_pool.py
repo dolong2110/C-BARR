@@ -1,14 +1,15 @@
-"""Live free-VRAM, SM-utilization, and CPU-aware GPU slot allocator for shared CUDA servers.
+"""Live free-VRAM, SM-utilization, and CPU/RAM-aware GPU slot allocator for shared CUDA servers.
 
 Queries physical GPU free memory and compute utilization via `nvidia-smi` (independent of parent
-CUDA_VISIBLE_DEVICES) right before each pipeline stage, skips occupied GPUs, sizes concurrent
-workers per GPU across 4 bounds (safe VRAM headroom, model HBM-bandwidth saturation, live external
-GPU utilization, and host CPU budget), and optionally waits/polls if all GPUs are temporarily busy.
+CUDA_VISIBLE_DEVICES) plus available host CPU RAM before each pipeline stage, skips occupied GPUs,
+sizes concurrent workers per GPU across stage-specific VRAM/context headroom, model HBM-bandwidth
+saturation, live SM utilization, and host CPU/RAM bounds, and polls if GPUs are temporarily busy.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -16,6 +17,16 @@ import time
 from typing import Any
 
 _PARAM_BILLIONS_RE = re.compile(r"(?:^|[^0-9.])(\d+(?:\.\d+)?)\s*[bB](?:$|[^a-zA-Z0-9])")
+STAGE_CHOICES: tuple[str, ...] = (
+    "matrix",
+    "calibrate",
+    "diag",
+    "b512",
+    "blend",
+    "mlp",
+    "smoke",
+    "replay",
+)
 
 
 def _estimate_model_billions(model_id: str) -> float:
@@ -32,38 +43,118 @@ def _estimate_model_billions(model_id: str) -> float:
     return 4.0
 
 
-def model_vram_per_worker_gb(model_id: str, stage: str = "matrix") -> float:
-    """Conservative peak free-VRAM budget (GiB) required per concurrent worker."""
+def model_vram_per_worker_gb(
+    model_id: str, stage: str = "matrix", safety_mult: float = 1.0
+) -> float:
+    """Conservative peak free-VRAM budget (GiB) required per concurrent worker by stage."""
     params_b = _estimate_model_billions(model_id)
     if params_b >= 11.0:
         base = round(2.3 * params_b + 3.0, 1)
     elif params_b >= 7.0:
-        base = 23.0
-    elif params_b >= 2.8:
+        base = 24.0
+    elif params_b >= 3.5:
         base = 12.5
+    elif params_b >= 2.8:
+        base = 11.5
     elif params_b >= 1.5:
         base = 8.5
     else:
         base = 5.5
-    if stage == "blend":
-        # W7 DeltaNet blend retains both prompt and thinking DynamicCache states transiently.
-        return round(base + max(1.5, min(5.0, 0.5 * params_b)), 1)
-    return base
+
+    st = str(stage or "matrix").lower()
+    if st == "blend":
+        # W7 DeltaNet blend retains both prompt and thinking DynamicCache states + float32 interp transiently.
+        req = round(base + max(2.0, min(5.5, 0.6 * params_b)), 1)
+    elif st == "mlp":
+        # Single-layer forward hook, use_cache=False, logits_to_keep=1, prompt-only (<512 tokens).
+        req = round(max(2.5, 0.78 * base), 1)
+    elif st == "replay":
+        # Stage-2 solve_first continuation only (<=1024 out tokens, no 2048-tok B1b or probe entropies).
+        req = round(max(3.5, 0.88 * base), 1)
+    elif st == "b512":
+        # Contingency R3 M2_B512 backfill (<=512 think + 1024 answer, no 2048-tok B1b or Section 6).
+        req = round(max(3.5, 0.90 * base), 1)
+    elif st == "calibrate":
+        # Phase 4 seed_60 + dev_60 calibration only (<=2048 tokens, no Section 6 ~2500-tok prefills).
+        req = round(max(3.5, 0.95 * base), 1)
+    elif st == "smoke":
+        # Sequential multi-model Gate-3 smoke test in a single process requires extra allocator headroom.
+        req = round(base + 1.0, 1)
+    else:
+        # matrix & diag execute full <=2048-tok B1b plus ~2500-tok Section 6 counterfactual prefills.
+        req = base
+
+    mult = max(1.0, float(safety_mult))
+    return round(req * mult, 1)
+
+
+def host_ram_per_worker_gb(model_id: str, stage: str = "matrix") -> float:
+    """Conservative host CPU RAM budget (GiB) per concurrent worker including BF16 safetensors staging."""
+    params_b = _estimate_model_billions(model_id)
+    st = str(stage or "matrix").lower()
+    weight_mult = 1.5 if st == "mlp" else 2.2
+    return round(max(3.0, weight_mult * params_b + 2.5), 1)
+
+
+def _extra_worker_vram_gb(params_b: float, stage: str) -> float:
+    """Additional VRAM headroom per extra worker on the same GPU for separate CUDA/Triton contexts."""
+    if str(stage or "").lower() == "blend":
+        return 1.0
+    return 0.5 if params_b < 1.5 else 0.75
 
 
 def _model_bandwidth_cap(params_b: float, total_gb: float, stage: str = "matrix") -> int:
     """Caps workers/GPU where batch_size=1 decoding saturates HBM bandwidth & SM warps."""
+    st = str(stage or "matrix").lower()
     if params_b >= 7.0:
-        w = 2 if (total_gb >= 64.0 and stage != "blend") else 1
+        w = 2 if (total_gb >= 64.0 and st != "blend") else 1
     elif params_b >= 2.8:
         w = 3 if total_gb >= 64.0 else (2 if total_gb >= 32.0 else 1)
     elif params_b >= 1.5:
         w = 4 if total_gb >= 64.0 else (3 if total_gb >= 32.0 else (2 if total_gb >= 16.0 else 1))
     else:
         w = 4 if total_gb >= 32.0 else (2 if total_gb >= 14.0 else 1)
-    if stage == "blend":
+    if st == "blend":
         return min(w, 1 if params_b >= 7.0 else 2)
     return w
+
+
+def query_host_avail_ram_gb() -> float | None:
+    """Returns currently available host CPU RAM in GiB (Linux /proc/meminfo or macOS vm_stat)."""
+    meminfo = pathlib.Path("/proc/meminfo")
+    if meminfo.is_file():
+        try:
+            avail_kb = None
+            free_kb = 0
+            cached_kb = 0
+            for raw in meminfo.read_text(encoding="utf-8", errors="replace").splitlines():
+                if raw.startswith("MemAvailable:"):
+                    avail_kb = int(raw.split()[1])
+                    break
+                if raw.startswith("MemFree:"):
+                    free_kb = int(raw.split()[1])
+                elif raw.startswith("Cached:"):
+                    cached_kb = int(raw.split()[1])
+            kb = avail_kb if avail_kb is not None else (free_kb + cached_kb)
+            if kb > 0:
+                return round(kb / (1024.0 * 1024.0), 2)
+        except Exception:
+            pass
+    try:
+        proc = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=4)
+        if proc.returncode == 0 and proc.stdout.strip():
+            ps_match = re.search(r"page size of\s+(\d+)\s+bytes", proc.stdout)
+            page_sz = int(ps_match.group(1)) if ps_match else 4096
+            pages = 0
+            for key in ("Pages free", "Pages inactive", "Pages speculative"):
+                m = re.search(rf"{key}:\s+(\d+)", proc.stdout)
+                if m:
+                    pages += int(m.group(1))
+            if pages > 0:
+                return round((pages * page_sz) / (1024.0**3), 2)
+    except Exception:
+        pass
+    return None
 
 
 def query_physical_gpus(candidate_ids: list[str] | None = None) -> list[dict[str, Any]]:
@@ -134,6 +225,25 @@ def query_physical_gpus(candidate_ids: list[str] | None = None) -> list[dict[str
     return gpus
 
 
+def _effective_gpu_reserve_gb(total_gb: float, reserve_gb: float) -> float:
+    return float(reserve_gb) if float(total_gb) >= 16.0 else min(float(reserve_gb), 0.5)
+
+
+def _max_workers_fitting_vram(
+    free_gb: float,
+    req_gb: float,
+    extra_worker_gb: float,
+    eff_reserve_gb: float,
+) -> int:
+    usable = float(free_gb) - float(eff_reserve_gb)
+    if usable < req_gb:
+        return 0
+    k = 1
+    while (k + 1) * req_gb + k * extra_worker_gb <= usable + 1e-6:
+        k += 1
+    return k
+
+
 def compute_slots_from_free_mem(
     gpus: list[dict[str, Any]],
     model_id: str,
@@ -144,15 +254,23 @@ def compute_slots_from_free_mem(
     cpu_count: int | None = None,
     cpus_per_worker: int = 2,
     reserve_gb: float = 2.0,
+    host_avail_gb: float | None = None,
+    host_reserve_gb: float = 4.0,
+    safety_mult: float = 1.0,
 ) -> list[str]:
-    """Assigns per-worker GPU IDs across VRAM, bandwidth, utilization, and CPU bounds."""
+    """Assigns per-worker GPU IDs across VRAM+headroom, bandwidth, utilization, CPU, and host-RAM bounds."""
     if not gpus:
         return []
-    req_gb = model_vram_per_worker_gb(model_id, stage=stage)
+    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=safety_mult)
     params_b = _estimate_model_billions(model_id)
+    extra_worker_gb = _extra_worker_vram_gb(params_b, stage=stage)
 
-    # Prefer GPUs with the most free VRAM and lowest external utilization first.
-    eligible = [g for g in gpus if float(g["free_gb"]) >= req_gb]
+    # Enforce mandatory VRAM reserve directly inside eligibility so nearly-full GPUs never sneak through.
+    eligible = [
+        g
+        for g in gpus
+        if float(g["free_gb"]) >= req_gb + _effective_gpu_reserve_gb(float(g["total_gb"]), reserve_gb)
+    ]
     eligible.sort(
         key=lambda g: (
             -float(g["free_gb"]),
@@ -168,8 +286,8 @@ def compute_slots_from_free_mem(
     for g in eligible:
         free_gb = float(g["free_gb"])
         total_gb = float(g["total_gb"])
-        eff_reserve = reserve_gb if (total_gb >= 16.0 and free_gb >= req_gb + reserve_gb) else 0.0
-        max_fit = max(1, int((free_gb - eff_reserve) // req_gb))
+        eff_reserve = _effective_gpu_reserve_gb(total_gb, reserve_gb)
+        max_fit = max(1, _max_workers_fitting_vram(free_gb, req_gb, extra_worker_gb, eff_reserve))
         if workers_per_gpu != "auto":
             target_w = max(1, int(workers_per_gpu))
             w_cnt = min(max_fit, target_w)
@@ -190,7 +308,6 @@ def compute_slots_from_free_mem(
     if workers_per_gpu == "auto" and cpu_count is not None and cpu_count > 0:
         max_total_cpu = max(len(per_gpu_counts), int(cpu_count) // max(1, int(cpus_per_worker)))
         while sum(item[1] for item in per_gpu_counts) > max_total_cpu:
-            # Trim from the highest-worker card (and higher GPU ID on ties) down to min 1/GPU.
             idx_trim = max(
                 range(len(per_gpu_counts)),
                 key=lambda i: (per_gpu_counts[i][1], i),
@@ -198,6 +315,23 @@ def compute_slots_from_free_mem(
             if per_gpu_counts[idx_trim][1] <= 1:
                 break
             per_gpu_counts[idx_trim][1] -= 1
+
+    # Clamp total workers to available host CPU RAM so parallel weight loads do not trigger SIGKILL (137).
+    if workers_per_gpu == "auto" and host_avail_gb is not None and host_avail_gb > 0:
+        req_host = host_ram_per_worker_gb(model_id, stage=stage)
+        usable_host = max(req_host, float(host_avail_gb) - float(host_reserve_gb))
+        max_total_host = max(1, int(usable_host // req_host))
+        while sum(item[1] for item in per_gpu_counts) > max_total_host:
+            idx_trim = max(
+                range(len(per_gpu_counts)),
+                key=lambda i: (per_gpu_counts[i][1], i),
+            )
+            if per_gpu_counts[idx_trim][1] > 1:
+                per_gpu_counts[idx_trim][1] -= 1
+            elif len(per_gpu_counts) > 1:
+                per_gpu_counts.pop()
+            else:
+                break
 
     # Interleave across distinct GPUs (e.g. ['3', '4', '3', '4']) so shard 0..K spread across cards first.
     slots: list[str] = []
@@ -226,15 +360,22 @@ def select_worker_gpu_slots(
     wait_timeout_sec: int = 0,
     poll_sec: int = 30,
     stage: str = "matrix",
+    safety_mult: float | None = None,
 ) -> list[str]:
-    """Queries live free VRAM/util/CPUs and returns worker GPU IDs, optionally waiting if busy."""
+    """Queries live free VRAM/util/CPUs/host RAM and returns worker GPU IDs, optionally waiting if busy."""
     deadline = time.monotonic() + max(0, int(wait_timeout_sec))
-    req_gb = model_vram_per_worker_gb(model_id, stage=stage)
+    eff_mult = (
+        float(safety_mult)
+        if safety_mult is not None
+        else float(os.environ.get("CBARR_VRAM_SAFETY_MULT", "1.0") or "1.0")
+    )
+    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=eff_mult)
     cpus = os.cpu_count()
     while True:
         gpus = query_physical_gpus(candidate_ids=candidate_ids)
         if not gpus:
             return []
+        host_avail = query_host_avail_ram_gb()
         slots = compute_slots_from_free_mem(
             gpus,
             model_id=model_id,
@@ -242,12 +383,16 @@ def select_worker_gpu_slots(
             max_gpus=max_gpus,
             stage=stage,
             cpu_count=cpus,
+            host_avail_gb=host_avail,
+            safety_mult=eff_mult,
         )
         if slots:
             summary = _format_gpu_live_summary(gpus)
+            ram_s = f"{host_avail:.1f}G" if host_avail is not None else "?"
             print(
                 f"[gpu_pool] Selected {len(slots)} worker slot(s) {slots} for {model_id} "
-                f"(stage={stage}, mode={workers_per_gpu}, need>={req_gb:.1f}G/worker, cpus={cpus or '?'} | live: {summary})",
+                f"(stage={stage}, mult={eff_mult:.2f}, mode={workers_per_gpu}, need>={req_gb:.1f}G+res/worker, cpus={cpus or '?'}, "
+                f"host_avail={ram_s} | live: {summary})",
                 file=sys.stderr,
                 flush=True,
             )
@@ -256,7 +401,8 @@ def select_worker_gpu_slots(
         if now >= deadline:
             summary = _format_gpu_live_summary(gpus)
             print(
-                f"[gpu_pool] ERROR: 0 GPUs have >= {req_gb:.1f} GB free for {model_id} ({summary})",
+                f"[gpu_pool] ERROR: 0 GPUs have >= {req_gb:.1f} GB + headroom free for {model_id} "
+                f"(stage={stage} | {summary})",
                 file=sys.stderr,
                 flush=True,
             )
@@ -264,8 +410,8 @@ def select_worker_gpu_slots(
         max_free = max(float(g["free_gb"]) for g in gpus)
         rem_m = int(max(1.0, (deadline - now) / 60.0))
         print(
-            f"[gpu_pool] All candidate GPUs busy (max free={max_free:.1f}G < {req_gb:.1f}G for {model_id}); "
-            f"waiting {poll_sec}s for free VRAM (up to {rem_m}m remaining)...",
+            f"[gpu_pool] All candidate GPUs busy (max free={max_free:.1f}G, stage={stage} needs >= {req_gb:.1f}G+res "
+            f"for {model_id}); waiting {poll_sec}s for free VRAM (up to {rem_m}m remaining)...",
             file=sys.stderr,
             flush=True,
         )
@@ -273,7 +419,7 @@ def select_worker_gpu_slots(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Select live free-VRAM/utilization CUDA GPU slots.")
+    parser = argparse.ArgumentParser(description="Select live free-VRAM/utilization/RAM CUDA GPU slots.")
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--candidates", type=str, default="", help="Optional comma-separated GPU IDs")
     parser.add_argument("--workers-per-gpu", type=str, default="auto")
@@ -284,8 +430,14 @@ def main() -> None:
         "--stage",
         type=str,
         default="matrix",
-        choices=("matrix", "blend", "mlp", "smoke"),
-        help="Workload memory profile (matrix, blend, mlp, smoke).",
+        choices=STAGE_CHOICES,
+        help="Workload memory profile (matrix, calibrate, diag, b512, blend, mlp, smoke, replay).",
+    )
+    parser.add_argument(
+        "--safety-mult",
+        type=float,
+        default=float(os.environ.get("CBARR_VRAM_SAFETY_MULT", "1.0") or "1.0"),
+        help="VRAM requirement multiplier (automatically >1.0 on retry after mid-stage OOM).",
     )
     parser.add_argument("--single", action="store_true", help="Output only the single freest GPU ID")
     args = parser.parse_args()
@@ -304,6 +456,7 @@ def main() -> None:
         wait_timeout_sec=args.wait_sec,
         poll_sec=args.poll_sec,
         stage=args.stage,
+        safety_mult=args.safety_mult,
     )
     if not slots:
         sys.exit(1)

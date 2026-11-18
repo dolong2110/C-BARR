@@ -421,6 +421,13 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
         choices=["auto", "all", "milestones", "off"],
     )
     parser.add_argument("--threads-per-worker", type=int, default=4)
+    raw_stagger = os.environ.get("CBARR_SPAWN_STAGGER_SEC", "").strip()
+    parser.add_argument(
+        "--stagger-sec",
+        type=float,
+        default=float(raw_stagger) if raw_stagger else -1.0,
+        help="Delay (seconds) between spawning concurrent CUDA workers (<0 auto-sizes by model billions).",
+    )
     args, remainder = parser.parse_known_args(argv)
     if remainder and remainder[0] == "--":
         remainder = remainder[1:]
@@ -572,7 +579,19 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     prev_term = signal.signal(signal.SIGTERM, _on_signal)
 
     try:
+        is_mock = "--mock" in cmd_base
+        if is_mock or n_shards <= 1:
+            stagger_sec = 0.0
+        elif float(args.stagger_sec) >= 0.0:
+            stagger_sec = min(15.0, float(args.stagger_sec))
+        else:
+            from scripts.gpu_pool import _estimate_model_billions
+
+            pb = _estimate_model_billions(args.model)
+            stagger_sec = 8.0 if pb >= 7.0 else (3.0 if pb >= 2.8 else 1.5)
         for s_idx in range(n_shards):
+            if s_idx > 0 and stagger_sec > 0.0:
+                time.sleep(stagger_sec)
             cuda_dev = _cuda_for(s_idx)
             s_log = log_dir / f"cbarr_{args.run_id}_gpu{s_idx}_{slug}.log"
             shard_dir = model_dir / "shards" / f"shard_{s_idx}_of_{n_shards}"
@@ -593,6 +612,7 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
             env = dict(os.environ)
             env["CUDA_VISIBLE_DEVICES"] = cuda_dev
             env["PYTHONUNBUFFERED"] = "1"
+            env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
             # Bound per-process OpenMP/BLAS/tokenizer threads so N parallel shards do not oversubscribe host CPUs.
             env.setdefault("OMP_NUM_THREADS", threads_cap)
             env.setdefault("MKL_NUM_THREADS", threads_cap)

@@ -45,11 +45,13 @@ set -euo pipefail
 #   --strict-version-match  Fail Phase 7 analysis if combined model versions differ
 #   --checkpoint-every <N>  Mid-eval_450 checkpoint cadence in new items (default: 150 live, 0 mock)
 #   --with-9b / --auto-9b / --no-9b  Enable Qwen3.5-9B always, automatically on >=22 GB GPUs, or disable
-#   --with-w7 / --no-w7     Enable/disable optional W7 DeltaNet blend & prefill MLP probe extensions
-#   --include-b512          Include Contingency R3 B=512 sweep
+#   --with-w7 / --no-w7     Enable/disable optional W7 extensions (DeltaNet conv+KV, Dense KV evict, Prefill MLP, Stage-2 solve_first)
+#   --with-r6 / --auto-r6 / --no-r6  Run Contingency R6 sampled validation (T=0.6, top_p=0.95, pp=1.5)
+#   --r6-models "<list>"    Override R6 model list (default: "Qwen/Qwen3.5-4B Qwen/Qwen3.5-0.8B")
+#   --include-b512 / --auto-b512 / --no-b512  Contingency R3 B=512 sweep (always / auto on trigger / off)
 #   --skip-smoke            Skip Step 0a hardware probe & 12-item smoke gate
 #   --skip-preflight        Skip Gate 0 offline unittest discovery
-#   --full-preflight        Run full 30-test E2E suite in Gate 0 instead of fast preflight (~1s)
+#   --full-preflight        Run full E2E suite in Gate 0 instead of fast preflight (~1s)
 #   --data-dir / --run-id / --out-dir / --fig-dir / --table-dir / --log-dir / --exp-log / --no-exp-log
 #   --seed / --lam-utility / --norm-tokens / --reg-c / --tau-min / --tau-max / --tau-steps
 #   --mock                  Run full offline CPU orchestration dry-run without overwriting repo ledger
@@ -57,6 +59,7 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 export CBARR_COLOR="${CBARR_COLOR:-0}"
 export TRITON_DEFAULT_FP_FUSION="${TRITON_DEFAULT_FP_FUSION:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 PART_MODE="all"
 SETUP_MODE="off"
@@ -69,6 +72,10 @@ WAIT_GPU_MIN="${CBARR_WAIT_GPU_MIN:-60}"
 STAGE_RETRIES="${CBARR_STAGE_RETRIES:-2}"
 WITH_9B="0"
 WITH_W7=0
+WITH_R6="auto"
+R6_MODELS_ARG=("Qwen/Qwen3.5-4B" "Qwen/Qwen3.5-0.8B")
+AUTO_B512="auto"
+INCLUDE_B512=0
 IS_MOCK=0
 SKIP_SMOKE=0
 SKIP_PREFLIGHT=0
@@ -171,6 +178,14 @@ while [ "$#" -gt 0 ]; do
     --no-9b) WITH_9B="0" ;;
     --with-w7) WITH_W7=1 ;;
     --no-w7) WITH_W7=0 ;;
+    --with-r6) WITH_R6="1" ;;
+    --auto-r6) WITH_R6="auto" ;;
+    --no-r6) WITH_R6="0" ;;
+    --r6-models)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      read -r -a R6_MODELS_ARG <<< "$1"
+      ;;
     --skip-smoke) SKIP_SMOKE=1 ;;
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
     --full-preflight) FULL_PREFLIGHT=1 ;;
@@ -209,7 +224,9 @@ while [ "$#" -gt 0 ]; do
       shift
       GIT_USER_EMAIL="$1"
       ;;
-    --include-b512) EXTRA_FLAGS+=("$1") ;;
+    --include-b512) INCLUDE_B512=1; AUTO_B512="1"; EXTRA_FLAGS+=("$1") ;;
+    --auto-b512) AUTO_B512="auto" ;;
+    --no-b512) AUTO_B512="0" ;;
     --mock) IS_MOCK=1; EXTRA_FLAGS+=("$1") ;;
     --data-dir)
       if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
@@ -681,6 +698,7 @@ fi
 
 effective_workers_per_gpu() {
   local model_id="$1"
+  local stage_kind="${2:-matrix}"
   if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
     echo "$WORKERS_PER_GPU_ARG"
     return
@@ -689,20 +707,28 @@ effective_workers_per_gpu() {
     echo 1
     return
   fi
+  if [ "$stage_kind" = "mlp" ] || [ "$stage_kind" = "replay" ] || [ "$stage_kind" = "smoke" ]; then
+    echo 1
+    return
+  fi
   case "$model_id" in
     *9[Bb]*)
-      # 9B uses ~19-22 GB VRAM per worker; keep 1 worker/GPU so 46 GB GPUs stay well clear of OOM
+      # 9B uses ~21-24 GB VRAM per worker; keep 1 worker/GPU so 46 GB GPUs stay clear of OOM
       echo 1
       ;;
     *0.8[Bb]*|*08[Bb]*|*1[Bb]*)
-      if [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
+      if [ "$stage_kind" = "blend" ]; then
+        echo 2
+      elif [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
         echo 4
       else
         echo 2
       fi
       ;;
     *2[Bb]*)
-      if [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
+      if [ "$stage_kind" = "blend" ]; then
+        echo 2
+      elif [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
         echo 4
       elif [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
         echo 3
@@ -711,7 +737,13 @@ effective_workers_per_gpu() {
       fi
       ;;
     *)
-      if [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
+      if [ "$stage_kind" = "blend" ]; then
+        if [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
+          echo 2
+        else
+          echo 1
+        fi
+      elif [ "$GPU_MIN_VRAM_GB" -ge 64 ]; then
         echo 3
       elif [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then
         echo 2
@@ -727,6 +759,14 @@ if [ "$WITH_9B" = "auto" ]; then
     WITH_9B=0
   else
     WITH_9B="$("$PY_BIN" -c "import torch; ok = torch.cuda.is_available() and (torch.cuda.get_device_properties(0).total_memory / (1024**3) >= 22.0); print(1 if ok else 0)" 2>/dev/null || echo 0)"
+  fi
+fi
+
+if [ "$WITH_R6" = "auto" ]; then
+  if [ "$IS_MOCK" -ne 0 ] || [ "$PART_MODE" != "all" ] || [ "$STRICT_ONLY" -ne 0 ] || [ "$CALIBRATE_ONLY" -ne 0 ] || [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+    WITH_R6=0
+  else
+    WITH_R6=1
   fi
 fi
 
@@ -783,9 +823,11 @@ payload = {
     'auto_push': bool(int(sys.argv[13])),
     'git_branch': sys.argv[14],
     'setup_mode': sys.argv[15],
+    'with_r6': bool(int(sys.argv[17])),
+    'auto_b512': sys.argv[18],
 }
 pathlib.Path(sys.argv[16]).write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE"
+" "$DTYPE" "$SEED" "$LAM_UTILITY" "$NORM_TOKENS" "$REG_C" "$TAU_MIN" "$TAU_MAX" "$TAU_STEPS" "$WITH_9B" "$WITH_W7" "$IS_MOCK" "$AUTO_COMMIT" "$AUTO_PUSH" "$GIT_BRANCH" "$SETUP_MODE" "$PARAMS_FILE" "$WITH_R6" "$AUTO_B512"
 
 checkpoint_exp_log() {
   local loop_label="$1"
@@ -934,14 +976,36 @@ run_matrix_sharded() {
     eff_shards=1
     eff_wpg=""
     stage_vis_csv="$SHARD_VIS_GPUS_CSV"
-    local picked_single_gpu=""
+    local picked_single_gpu="" pool_stage="matrix" retry_mult="1.0" retry_wpg="$WORKERS_PER_GPU_ARG"
+    for _fl in "$@"; do
+      if [ "$_fl" = "--calibrate-only" ]; then
+        pool_stage="calibrate"
+        break
+      fi
+    done
+    if [ "$pool_stage" = "matrix" ]; then
+      if [[ "$stage_name" == *"(Contingency R3 B=512)"* ]]; then
+        pool_stage="b512"
+      elif [[ "$stage_name" == *"(diag491)"* ]]; then
+        pool_stage="diag"
+      fi
+    fi
+    if [ "$attempt" -eq 2 ]; then
+      retry_mult="1.25"
+      retry_wpg="1"
+    elif [ "$attempt" -ge 3 ]; then
+      retry_mult="1.50"
+      retry_wpg="1"
+    fi
     if [ "$IS_MOCK" -eq 0 ] && [ "$SHARDS_ARG" = "auto" ]; then
       local live_slots=""
       if ! live_slots="$(select_gpu_pool_slots \
         --model "$model_id" \
         --candidates "$PINNED_GPU_CSV" \
-        --workers-per-gpu "$WORKERS_PER_GPU_ARG" \
+        --workers-per-gpu "$retry_wpg" \
         --max-gpus "$MAX_SHARDS_ARG" \
+        --stage "$pool_stage" \
+        --safety-mult "$retry_mult" \
         --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
         record_stage_timing "$stage_name" "FAIL(no_free_gpu)" 0
         log_banner "=== [$stage_name] FAILED: no GPU with sufficient free VRAM became available ==="
@@ -956,11 +1020,19 @@ run_matrix_sharded() {
           picked_single_gpu="${slot_arr[0]}"
         fi
       else
-        eff_wpg="$(effective_workers_per_gpu "$model_id")"
+        if [ "$attempt" -ge 2 ]; then
+          eff_wpg=1
+        else
+          eff_wpg="$(effective_workers_per_gpu "$model_id" "$pool_stage")"
+        fi
         eff_shards=$((N_SHARDS * eff_wpg))
       fi
     else
-      eff_wpg="$(effective_workers_per_gpu "$model_id")"
+      if [ "$attempt" -ge 2 ]; then
+        eff_wpg=1
+      else
+        eff_wpg="$(effective_workers_per_gpu "$model_id" "$pool_stage")"
+      fi
       eff_shards=$((N_SHARDS * eff_wpg))
     fi
 
@@ -1105,12 +1177,83 @@ run_gate0_preflight() {
   fi
 }
 
+_r3_b512_triggered() {
+  local model_id="$1" slug="${model_id//\//__}"
+  local summary_p="${OUT_DIR}/${slug}/matrix_summary_strict341.json"
+  if [ ! -f "$summary_p" ]; then
+    summary_p="${OUT_DIR}/${slug}/matrix_summary.json"
+  fi
+  if [ ! -f "$summary_p" ]; then
+    return 1
+  fi
+  "$PY_BIN" - "$summary_p" <<'PY' 2>/dev/null
+import json, pathlib, sys
+d = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if "M2_B512" in (d.get("auxiliary_systems") or {}):
+    sys.exit(1)
+sys_d = d.get("systems") or {}
+b1b = sys_d.get("B1b") or {}
+m2 = sys_d.get("M2") or {}
+b1_hard = float((b1b.get("slice_acc") or {}).get("gsm8k_hard", 1.0))
+m2_hard = float((m2.get("slice_acc") or {}).get("gsm8k_hard", 1.0))
+b1_plan = float((b1b.get("slice_acc") or {}).get("ifeval_planning", 1.0))
+triggered = ((b1_hard - m2_hard) > 0.03) or (b1_hard < 0.70) or (b1_plan < 0.70)
+sys.exit(0 if triggered else 1)
+PY
+}
+
 run_model_eval_pair() {
   local prefix="$1"
   local model_id="$2"
+  local diag_extra=()
   run_matrix_sharded "${prefix}: ${model_id} (strict341)" "$model_id" --strict-diag
+  if [ "$INCLUDE_B512" -eq 0 ] && [ "$AUTO_B512" != "0" ] && [ "$IS_MOCK" -eq 0 ] && [ "$STRICT_ONLY" -eq 0 ]; then
+    if _r3_b512_triggered "$model_id"; then
+      log_banner "=== [Contingency R3] ${model_id} triggered B=512 sweep — backfilling M2_B512 onto eval_450 ==="
+      run_matrix_sharded "${prefix}: ${model_id} (Contingency R3 B=512)" "$model_id" --strict-diag --include-b512
+      diag_extra=(--include-b512)
+    fi
+  fi
   if [ "$STRICT_ONLY" -eq 0 ]; then
-    run_matrix_sharded "${prefix}: ${model_id} (diag491)" "$model_id"
+    run_matrix_sharded "${prefix}: ${model_id} (diag491)" "$model_id" ${diag_extra[@]+"${diag_extra[@]}"}
+  fi
+}
+
+_run_single_gpu_ext() {
+  local stage_label="$1"
+  local ext_model="$2"
+  local pool_stage="$3"
+  shift 3
+  local ext_gpu="NO_CUDA"
+  if [ "$IS_MOCK" -eq 0 ]; then
+    if ! ext_gpu="$(select_gpu_pool_slots --model "$ext_model" --candidates "$PINNED_GPU_CSV" --stage "$pool_stage" --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
+      record_stage_timing "$stage_label" "FAIL(no_free_gpu)" 0
+      log_banner "=== [${stage_label}] FAILED: no GPU with sufficient free VRAM became available ==="
+      return 1
+    fi
+  fi
+  if [ -n "$ext_gpu" ] && [ "$ext_gpu" != "NO_CUDA" ]; then
+    CUDA_VISIBLE_DEVICES="$ext_gpu" run_stage "$stage_label" "$@"
+  else
+    run_stage "$stage_label" "$@"
+  fi
+}
+
+_run_blend_ext() {
+  local stage_label="$1"
+  local ext_model="$2"
+  shift 2
+  if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/ext_deltanet_blend.py --model "$ext_model" --out-dir "$OUT_DIR" --check-cached "$@" >/dev/null 2>&1; then
+    log_banner "=== [${stage_label}] All pairs already cached — computing summary on CPU ==="
+    run_stage "${stage_label} (cached)" "$PY_BIN" scripts/ext_deltanet_blend.py --model "$ext_model" --out-dir "$OUT_DIR" "$@"
+    return $?
+  fi
+  if [ -n "$PINNED_GPU_CSV" ]; then
+    CUDA_VISIBLE_DEVICES="$PINNED_GPU_CSV" run_stage "$stage_label" \
+      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$ext_model" --out-dir "$OUT_DIR" "$@"
+  else
+    run_stage "$stage_label" \
+      env -u CUDA_VISIBLE_DEVICES "$PY_BIN" scripts/ext_deltanet_blend.py --model "$ext_model" --out-dir "$OUT_DIR" "$@"
   fi
 }
 
@@ -1120,43 +1263,62 @@ run_w7_stage() {
     return 0
   fi
   check_workspace_disk_space "W7 (${w7_model})" || return 1
-  local w7_flags=() mlp_gpu="NO_CUDA"
+  local w7_slug="${w7_model//\//__}"
+  local w7_flags=() blend_flags=() offline_flags=()
   if [ "$IS_MOCK" -eq 1 ]; then
     w7_flags+=(--mock)
-  fi
-  local blend_flags=()
-  if [ "$IS_MOCK" -eq 0 ]; then
+  else
     blend_flags=(--max-retries "$STAGE_RETRIES")
   fi
-  if [ -n "$PINNED_GPU_CSV" ]; then
-    CUDA_VISIBLE_DEVICES="$PINNED_GPU_CSV" run_stage "W7: DeltaNet Blend (${w7_model})" \
-      "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
-  else
-    run_stage "W7: DeltaNet Blend (${w7_model})" \
-      env -u CUDA_VISIBLE_DEVICES "$PY_BIN" scripts/ext_deltanet_blend.py --model "$w7_model" --out-dir "$OUT_DIR" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
+  if [ "$OFFLINE_MODE" -eq 1 ]; then
+    offline_flags+=(--offline)
   fi
+
+  case "$w7_model" in
+    *[Ss]mol[Ll][Mm]*)
+      if [ "$IS_MOCK" -eq 1 ]; then
+        _run_blend_ext "W7: Dense KV Eviction (${w7_model})" "$w7_model" --evict-think-kv --out-json "${OUT_DIR}/${w7_slug}/ext_deltanet_blend_evict_kv.json" "${w7_flags[@]}"
+      else
+        _run_blend_ext "W7: Dense KV Eviction (${w7_model})" "$w7_model" --evict-think-kv --alphas 0.0 --out-json "${OUT_DIR}/${w7_slug}/ext_deltanet_blend_evict_kv.json" ${blend_flags[@]+"${blend_flags[@]}"}
+      fi
+      ;;
+    *)
+      _run_blend_ext "W7: DeltaNet Blend (${w7_model})" "$w7_model" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
+      if [ "$IS_MOCK" -eq 0 ] || [ "$PART_MODE" = "all" ]; then
+        _run_blend_ext "W7: DeltaNet Conv+KV Blend (${w7_model})" "$w7_model" --blend-conv-state --evict-think-kv --out-json "${OUT_DIR}/${w7_slug}/ext_deltanet_blend_conv_kv.json" ${blend_flags[@]+"${blend_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
+      fi
+      ;;
+  esac
 
   if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" --check-cached >/dev/null 2>&1; then
     log_banner "=== [W7: Prefill MLP Probe (${w7_model})] Using cached .npz features — skipping GPU launch ==="
     run_stage "W7: Prefill MLP Probe (${w7_model}) (cached)" \
       "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR"
-    return $?
+  else
+    _run_single_gpu_ext "W7: Prefill MLP Probe (${w7_model})" "$w7_model" mlp \
+      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
   fi
 
-  if [ "$IS_MOCK" -eq 0 ]; then
-    if ! mlp_gpu="$(select_gpu_pool_slots --model "$w7_model" --candidates "$PINNED_GPU_CSV" --stage mlp --single --wait-sec "$CBARR_WAIT_GPU_SEC")"; then
-      record_stage_timing "W7: Prefill MLP Probe (${w7_model})" "FAIL(no_free_gpu)" 0
-      log_banner "=== [W7: Prefill MLP Probe (${w7_model})] FAILED: no GPU with sufficient free VRAM became available ==="
-      return 1
-    fi
-  fi
-  if [ -n "$mlp_gpu" ] && [ "$mlp_gpu" != "NO_CUDA" ]; then
-    CUDA_VISIBLE_DEVICES="$mlp_gpu" run_stage "W7: Prefill MLP Probe (${w7_model})" \
-      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+  if [ "$IS_MOCK" -eq 0 ] && "$PY_BIN" scripts/compare_m2_v2.py --model "$w7_model" --out-dir "$OUT_DIR" --check-cached >/dev/null 2>&1; then
+    log_banner "=== [W7: Stage-2 SolveFirst Replay (${w7_model})] Already cached — skipping GPU launch ==="
+    record_stage_timing "W7: Stage-2 SolveFirst Replay (${w7_model}) (cached)" "PASS" 0
   else
-    run_stage "W7: Prefill MLP Probe (${w7_model})" \
-      "$PY_BIN" scripts/ext_prefill_mlp.py --model "$w7_model" --out-dir "$OUT_DIR" ${w7_flags[@]+"${w7_flags[@]}"}
+    _run_single_gpu_ext "W7: Stage-2 SolveFirst Replay (${w7_model})" "$w7_model" replay \
+      "$PY_BIN" scripts/compare_m2_v2.py --model "$w7_model" --out-dir "$OUT_DIR" --device "$DEVICE_ARG" --dtype "$DTYPE" ${offline_flags[@]+"${offline_flags[@]}"} ${w7_flags[@]+"${w7_flags[@]}"}
   fi
+}
+
+run_r6_sampled_stage() {
+  if [ "$WITH_R6" != "1" ] || [ "$STRICT_ONLY" -ne 0 ] || [ "$CALIBRATE_ONLY" -ne 0 ]; then
+    return 0
+  fi
+  local _r6m _r6_slug
+  for _r6m in "${R6_MODELS_ARG[@]}"; do
+    run_matrix_sharded "Contingency R6 Sampled (T=0.6): ${_r6m}" "$_r6m" \
+      --strict-diag --temperature 0.6 --top-p 0.95 --presence-penalty 1.5
+    _r6_slug="${_r6m//\//__}__T0.6_tp0.95_pp1.5_s${SEED}"
+    sync_model_checkpoint "$_r6_slug"
+  done
 }
 
 run_phase7_stage() {
@@ -1169,6 +1331,22 @@ run_phase7_stage() {
   fi
   run_stage "Phase 7 / W8: Analysis, Tables & Figures" \
     "$PY_BIN" scripts/analyze_and_plot.py "${p7_flags[@]}"
+  if [ "$IS_MOCK" -eq 0 ] && [ "$OUT_DIR" = "outputs" ] && [ -f "paper/main.tex" ] && command -v pdflatex >/dev/null 2>&1; then
+    log_banner "=== [Phase 8: Compiling LaTeX Manuscript PDF (paper/main.pdf)] ==="
+    if (
+      cd paper &&
+      pdflatex -interaction=nonstopmode -halt-on-error main.tex &&
+      { bibtex main || true; } &&
+      pdflatex -interaction=nonstopmode -halt-on-error main.tex &&
+      pdflatex -interaction=nonstopmode -halt-on-error main.tex
+    ) >>"$RUN_LOG" 2>&1; then
+      record_stage_timing "Phase 8: Paper LaTeX Build" "PASS" 0
+      log_banner "=== [Phase 8: Compiled paper/main.pdf cleanly] ==="
+    else
+      record_stage_timing "Phase 8: Paper LaTeX Build" "WARN(pdflatex_failed)" 0
+      log_banner "=== [Phase 8: WARN — pdflatex compilation reported an issue; inspect ${RUN_LOG}] ==="
+    fi
+  fi
 }
 
 sync_model_checkpoint() {
@@ -1338,6 +1516,9 @@ case "$PART_MODE" in
     fi
     run_gate0_preflight
     run_w7_stage Qwen/Qwen3.5-4B
+    if [ -d "${OUT_DIR}/HuggingFaceTB__SmolLM3-3B" ]; then
+      run_w7_stage HuggingFaceTB/SmolLM3-3B
+    fi
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     sync_part_results "script-part5-combined" 1
@@ -1366,6 +1547,7 @@ case "$PART_MODE" in
         fi
       done
       if [ "$CALIBRATE_ONLY" -eq 0 ]; then
+        run_r6_sampled_stage
         run_phase7_stage
       fi
       run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
@@ -1387,6 +1569,7 @@ case "$PART_MODE" in
     sync_model_checkpoint Qwen/Qwen3.5-4B
     prune_hf_cache_if_low_disk
     run_model_eval_pair "Phase 5 / W5" HuggingFaceTB/SmolLM3-3B
+    run_w7_stage HuggingFaceTB/SmolLM3-3B
     sync_model_checkpoint HuggingFaceTB/SmolLM3-3B
     prune_hf_cache_if_low_disk
     run_matrix_sharded "Phase 6 / W6: Qwen3.5-0.8B (strict341)" Qwen/Qwen3.5-0.8B --strict-diag
@@ -1398,6 +1581,7 @@ case "$PART_MODE" in
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
       sync_model_checkpoint Qwen/Qwen3.5-9B
     fi
+    run_r6_sampled_stage
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
     sync_part_results "script-all-in-one" 1

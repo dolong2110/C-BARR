@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
+import inspect
 import json
 import os
 import pathlib
@@ -213,6 +215,11 @@ def _extract_hf_prefill_features(
         if prompt_override is not None
         else [r["item"]["prompt"] for r in rows]
     )
+    try:
+        has_logits_keep = "logits_to_keep" in inspect.signature(model.forward).parameters
+    except Exception:
+        has_logits_keep = False
+    fwd_extra: dict[str, Any] = {"logits_to_keep": 1} if has_logits_keep else {}
     t0 = time.perf_counter()
     n_tot = len(prompts)
     with torch.no_grad():
@@ -230,20 +237,26 @@ def _extract_hf_prefill_features(
 
                 handle = layers[target_layer - 1].register_forward_hook(_hook)
                 try:
-                    _ = model(**inp, output_hidden_states=False, use_cache=False)
+                    _ = model(**inp, output_hidden_states=False, use_cache=False, **fwd_extra)
                 finally:
                     handle.remove()
                 h_tensor = captured["h"]
             else:
-                out = model(**inp, output_hidden_states=True, use_cache=False)
+                out = model(**inp, output_hidden_states=True, use_cache=False, **fwd_extra)
                 h_tensor = out.hidden_states[target_layer]
+                del out
             h_vec = h_tensor[0, -1, :].float().cpu().numpy()
             vecs.append(h_vec)
+            del inp, h_tensor
             if idx % 250 == 0 or idx == n_tot:
                 print(
                     f"[prefill_mlp] extracted {idx}/{n_tot} prefill hidden states ({time.perf_counter() - t0:.1f}s)",
                     flush=True,
                 )
+    del model, tok
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return np.vstack(vecs).astype(np.float32)
 
 

@@ -22,6 +22,8 @@ exec bash "${SCRIPT_DIR}/run_gpu_phases_4_to_6.sh" \
   --shards auto \
   --auto-9b \
   --with-w7 \
+  --auto-b512 \
+  --auto-r6 \
   --commit \
   --push \
   "$@"

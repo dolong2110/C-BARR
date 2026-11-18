@@ -54,7 +54,10 @@ MODEL_SUMMARY_FILES: tuple[str, ...] = (
     "tables_rows_strict341.tex",
     "tables_rows_diag491.tex",
     "ext_deltanet_blend.json",
+    "ext_deltanet_blend_conv_kv.json",
+    "ext_deltanet_blend_evict_kv.json",
     "prefill_mlp_summary.json",
+    "eval_450_m2v2_comparison.json",
     "run_manifest.json",
 )
 

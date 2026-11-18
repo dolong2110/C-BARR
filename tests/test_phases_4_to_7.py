@@ -3831,6 +3831,276 @@ class TestPhases4To7(unittest.TestCase):
         self.assertEqual(parsed[0]["util_pct"], 12.0)
         self.assertIsNone(parsed[1]["util_pct"])
 
+    def test_v0516_stage_oom_hardening_and_all_left_phases(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+        import os
+
+        from scripts.ext_deltanet_blend import _detect_auto_slots, _supports_logits_to_keep
+        from scripts.gpu_pool import (
+            compute_slots_from_free_mem,
+            host_ram_per_worker_gb,
+            model_vram_per_worker_gb,
+            query_host_avail_ram_gb,
+        )
+
+        # 1. Stage-aware VRAM differentiation: mlp < replay < b512 < calibrate < matrix == diag < smoke < blend
+        v_mlp = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="mlp")
+        v_rep = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="replay")
+        v_b512 = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="b512")
+        v_cal = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="calibrate")
+        v_mat = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="matrix")
+        v_diag = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="diag")
+        v_smk = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="smoke")
+        v_bld = model_vram_per_worker_gb("Qwen/Qwen3.5-4B", stage="blend")
+        self.assertLess(v_mlp, v_rep)
+        self.assertLess(v_rep, v_b512)
+        self.assertLess(v_b512, v_cal)
+        self.assertLess(v_cal, v_mat)
+        self.assertEqual(v_mat, v_diag)
+        self.assertGreater(v_smk, v_mat)
+        self.assertGreater(v_bld, v_smk)
+
+        # 2. Mandatory reserve blocks near-full GPUs (9B requires 24 + 2 = 26G; 24.5G rejected)
+        tight_9b = [{"id": "3", "free_gb": 24.5, "total_gb": 44.4, "util_pct": 0.0}]
+        self.assertEqual(compute_slots_from_free_mem(tight_9b, "Qwen/Qwen3.5-9B", stage="matrix"), [])
+        self.assertEqual(compute_slots_from_free_mem(tight_9b, "Qwen/Qwen3.5-9B", stage="mlp"), ["3"])
+
+        # Per-extra-worker CUDA context cushion prevents packing 2 workers when headroom is marginal
+        marginal_4b = [{"id": "3", "free_gb": 27.2, "total_gb": 44.4, "util_pct": 0.0}]
+        self.assertEqual(compute_slots_from_free_mem(marginal_4b, "Qwen/Qwen3.5-4B", stage="matrix"), ["3"])
+
+        # Retry safety_mult backoff shrinks workers/GPU on subsequent attempts
+        loose_4b = [{"id": "3", "free_gb": 29.0, "total_gb": 44.4, "util_pct": 0.0}]
+        self.assertEqual(compute_slots_from_free_mem(loose_4b, "Qwen/Qwen3.5-4B", safety_mult=1.0), ["3", "3"])
+        self.assertEqual(compute_slots_from_free_mem(loose_4b, "Qwen/Qwen3.5-4B", safety_mult=1.25), ["3"])
+
+        with mock.patch("torch.cuda.is_available", return_value=True):
+            with mock.patch("scripts.ext_deltanet_blend.select_worker_gpu_slots", return_value=["3"]) as sw:
+                _detect_auto_slots("Qwen/Qwen3.5-4B", 50, attempt=2)
+                self.assertEqual(sw.call_args.kwargs["workers_per_gpu"], "1")
+                self.assertAlmostEqual(sw.call_args.kwargs["safety_mult"], 1.25)
+
+        class _WithLogitsKeep:
+            def forward(self, input_ids, logits_to_keep=0):
+                return input_ids
+
+        class _NoLogitsKeep:
+            def forward(self, input_ids):
+                return input_ids
+
+        self.assertTrue(_supports_logits_to_keep(_WithLogitsKeep()))
+        self.assertFalse(_supports_logits_to_keep(_NoLogitsKeep()))
+
+        # 3. Host CPU RAM clamp trims concurrent weight-loading workers before SIGKILL (137)
+        l40_quad = [
+            {"id": str(i), "free_gb": 44.4, "total_gb": 44.4, "util_pct": 0.0}
+            for i in (3, 4, 6, 7)
+        ]
+        host_req_4b = host_ram_per_worker_gb("Qwen/Qwen3.5-4B", stage="matrix")
+        host_req_9b = host_ram_per_worker_gb("Qwen/Qwen3.5-9B", stage="matrix")
+        self.assertGreaterEqual(host_req_4b, 10.0)
+        self.assertGreaterEqual(host_req_9b, 20.0)
+        tight_host = compute_slots_from_free_mem(
+            l40_quad,
+            "Qwen/Qwen3.5-4B",
+            stage="matrix",
+            cpu_count=64,
+            host_avail_gb=20.0,
+            host_reserve_gb=4.0,
+        )
+        self.assertEqual(len(tight_host), 1)
+        tight_host_9b = compute_slots_from_free_mem(
+            l40_quad,
+            "Qwen/Qwen3.5-9B",
+            stage="matrix",
+            cpu_count=64,
+            host_avail_gb=50.0,
+            host_reserve_gb=4.0,
+        )
+        self.assertEqual(len(tight_host_9b), 2)
+
+        fake_vm = SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+                "Pages free:                             1048576.\n"
+                "Pages inactive:                          524288.\n"
+                "Pages speculative:                            0.\n"
+            ),
+        )
+        with mock.patch("pathlib.Path.is_file", return_value=False):
+            with mock.patch("subprocess.run", return_value=fake_vm):
+                avail = query_host_avail_ram_gb()
+        self.assertIsNotNone(avail)
+        self.assertAlmostEqual(float(avail), 24.0, places=1)
+
+        # 4. End-to-end --part all --with-r6 --mock runs all left phases: W7 conv+kv, PrefillMLP,
+        # compare_m2_v2 replay, R6 sampled validation, Phase 7 stats, Tab 4, and Fig 1-4.
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_figs = root_tmp / "figs"
+            tmp_tables = root_tmp / "tables"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--mock",
+                    "--part",
+                    "all",
+                    "--no-setup",
+                    "--skip-preflight",
+                    "--skip-smoke",
+                    "--with-w7",
+                    "--with-r6",
+                    "--r6-models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--models",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--table-dir",
+                    str(tmp_tables),
+                    "--exp-log",
+                    str(tmp_out / "exp_log.md"),
+                    "--run-id",
+                    "all_left_mock",
+                ],
+                cwd=str(ROOT),
+                env={**os.environ, "PYTHON_BIN": sys.executable, "CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, f"Full all-phases mock failed:\n{proc.stdout}\n{proc.stderr}")
+
+            q08_dir = tmp_out / "Qwen__Qwen3.5-0.8B"
+            self.assertTrue((q08_dir / "ext_deltanet_blend.json").is_file())
+            self.assertTrue((q08_dir / "ext_deltanet_blend_conv_kv.json").is_file())
+            self.assertTrue((q08_dir / "prefill_mlp_summary.json").is_file())
+            self.assertTrue((q08_dir / "eval_450_m2v2_comparison.json").is_file())
+            self.assertTrue(
+                (tmp_out / "Qwen__Qwen3.5-0.8B__T0.6_tp0.95_pp1.5_s42" / "matrix_summary_strict341.json").is_file()
+            )
+            self.assertTrue((tmp_figs / "fig4_horizons_and_w7.pdf").read_bytes().startswith(b"%PDF-"))
+
+            stats = json.loads((tmp_out / "stats_summary.json").read_text(encoding="utf-8"))
+            self.assertIn("r6_sampled_validation", stats)
+            self.assertIn("w7_extensions", stats)
+            self.assertIn("m2v2_comparison", stats["w7_extensions"]["Qwen/Qwen3.5-0.8B"])
+            tab4 = (tmp_tables / "tab4_extensions_w7.tex").read_text(encoding="utf-8")
+            self.assertIn("DeltaNet Conv+KV", tab4)
+            self.assertIn("Stage-2 Bridge", tab4)
+            self.assertIn("R6 Sampled M2", tab4)
+
+            # 5. Also verify live alpha-format conv+kv / dense evict_kv + R3 M2_B512 rendering in analyze_and_plot
+            live_conv_kv = {
+                "model": "Qwen/Qwen3.5-0.8B",
+                "n_ehurt": 12,
+                "blend_conv_state": True,
+                "evict_think_kv": True,
+                "alphas": {
+                    "0.50": {
+                        "alpha": 0.5,
+                        "n_ehurt": 12,
+                        "overall_recovery_pct": 91.7,
+                        "inhibition_recovery_pct": 90.0,
+                        "structural_recovery_pct": 93.0,
+                    }
+                },
+            }
+            (q08_dir / "ext_deltanet_blend_conv_kv.json").write_text(
+                json.dumps(live_conv_kv, indent=2) + "\n", encoding="utf-8"
+            )
+            sm_dir = tmp_out / "HuggingFaceTB__SmolLM3-3B"
+            sm_dir.mkdir(parents=True, exist_ok=True)
+            sm_rep = json.loads((q08_dir / "matrix_summary_strict341.json").read_text(encoding="utf-8"))
+            sm_rep["model"] = "HuggingFaceTB/SmolLM3-3B"
+            sm_rep["auxiliary_systems"] = {
+                **sm_rep.get("auxiliary_systems", {}),
+                "M2_B512": {
+                    **sm_rep["systems"]["M2"],
+                    "macro_acc": min(1.0, float(sm_rep["systems"]["M2"]["macro_acc"]) + 0.05),
+                    "mean_t_tot": float(sm_rep["systems"]["M2"]["mean_t_tot"]) + 60.0,
+                },
+            }
+            (sm_dir / "matrix_summary_strict341.json").write_text(
+                json.dumps(sm_rep, indent=2) + "\n", encoding="utf-8"
+            )
+            (sm_dir / "ext_deltanet_blend_evict_kv.json").write_text(
+                json.dumps(
+                    {
+                        "model": "HuggingFaceTB/SmolLM3-3B",
+                        "n_ehurt": 8,
+                        "blend_conv_state": False,
+                        "evict_think_kv": True,
+                        "alphas": {
+                            "0.00": {
+                                "alpha": 0.0,
+                                "n_ehurt": 8,
+                                "overall_recovery_pct": 75.0,
+                                "inhibition_recovery_pct": 75.0,
+                                "structural_recovery_pct": 75.0,
+                            }
+                        },
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "analyze_and_plot.py"),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--fig-dir",
+                    str(tmp_figs),
+                    "--table-dir",
+                    str(tmp_tables),
+                    "--primary-model",
+                    "HuggingFaceTB/SmolLM3-3B",
+                    "--dense-model",
+                    "HuggingFaceTB/SmolLM3-3B",
+                    "--n-boot",
+                    "100",
+                ],
+                check=True,
+                cwd=str(ROOT),
+            )
+            tab4_live = (tmp_tables / "tab4_extensions_w7.tex").read_text(encoding="utf-8")
+            self.assertIn("DeltaNet Conv+KV", tab4_live)
+            self.assertIn("Dense KV Evict", tab4_live)
+            self.assertIn("M2-512: C-BARR Aux.", (tmp_tables / "tab1_main_results.tex").read_text(encoding="utf-8"))
+            self.assertIn(
+                "R3_m2_trails_b1b_gsm8k_hard_gt_3pp",
+                stats["models"]["Qwen/Qwen3.5-0.8B"]["gate_audit"]["contingencies"],
+            )
+            chk_v2 = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "compare_m2_v2.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-0.8B",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--check-cached",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(chk_v2.returncode, 0, chk_v2.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
