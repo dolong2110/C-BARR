@@ -602,10 +602,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T214055Z -->
 
 <!-- CBARR_RUN_START:20261118T215019Z -->
-### Run `20261118T215019Z` — **RUNNING (Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (strict341))** (Updated 2026-11-18 22:10:51 UTC)
-- **Code Version**: `v0.5.19` | **Git Commit**: `b91f475` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (strict341)` | **Wall Time**: `28.6s` (28.6s)
+### Run `20261118T215019Z` — **RUNNING (after Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge))** (Updated 2026-11-18 22:11:03 UTC)
+- **Code Version**: `v0.5.19` | **Git Commit**: `c115a73` | **Results Release**: `v0.5.19-res.4` | **Last Loop**: `Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge)` | **Wall Time**: `20m 37.0s` (1237.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_matrix.py`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261118T215019Z.log`
 
 #### 1. Training & Experiment Parameters
@@ -623,7 +623,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "b91f475",
+  "git_rev": "c115a73",
   "include_b512": false,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -667,6 +667,13 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Step 0a: Live GPU 12-Item Smoke (cached) | PASS | 5.0s (5.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (strict341) (cached) | PASS | 35.0s (35.0s) |
 | Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) | PASS | 17m 15.0s (1035.0s) |
+| Phase 4 / W4: Qwen/Qwen3.5-4B (Contingency R3 B=512) (merge) | PASS | 51.0s (51.0s) |
+
+#### 3. Gate-3 Live 12-Item Smoke Check
+| Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
+| :--- | :--- | :--- | :--- | :--- |
+| `Qwen/Qwen3.5-4B` | 12 | True | True | N/A |
+| `HuggingFaceTB/SmolLM3-3B` | 12 | True | True | True |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
