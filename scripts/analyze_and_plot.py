@@ -645,16 +645,32 @@ def _collect_diag_k_over_n(
         out["b2a_vs_b1b_all_fail"] = mc_vs_b1b
 
     ctrl_path = model_dir / "diag_controls_cache.jsonl"
+    ehurt_path = model_dir / "diag_ehurt_cache.jsonl"
     if ctrl_path.is_file() and n_expected > 0:
         eval_uids: set[str] = set()
         eval_p = model_dir / "eval_450_cache.jsonl"
         if strict_pool and eval_p.is_file():
             eval_uids = {str(r["item"]["uid"]) for r in _load_jsonl(eval_p)}
-        strict_file_uids: set[str] | None = None
-        if strict_pool:
-            sf = ROOT / "data" / "frozen_splits" / "ifeval_diag_341_strict.jsonl"
-            if sf.is_file():
-                strict_file_uids = {str(r["uid"]) for r in _load_jsonl(sf)}
+        pool_fname = "ifeval_diag_341_strict.jsonl" if strict_pool else "ifeval_diag_491.jsonl"
+        pool_file_uids: set[str] | None = None
+        for cand_sf in (ROOT / "data" / pool_fname, ROOT / "data" / "frozen_splits" / pool_fname):
+            if cand_sf.is_file():
+                pool_file_uids = {str(r["uid"]) for r in _load_jsonl(cand_sf)}
+                break
+
+        active_ehurt_uids: set[str] | None = None
+        if ehurt_path.is_file():
+            active_ehurt_uids = set()
+            for erow in _load_jsonl(ehurt_path):
+                e_uid = str((erow.get("item") or {}).get("uid") or erow.get("uid") or "")
+                if not e_uid:
+                    continue
+                if pool_file_uids is not None and e_uid not in pool_file_uids:
+                    continue
+                if strict_pool and pool_file_uids is None and e_uid in eval_uids:
+                    continue
+                if int((erow.get("b0") or {}).get("z", 0)) == 1 and int((erow.get("b1b") or {}).get("z", 1)) == 0:
+                    active_ehurt_uids.add(e_uid)
 
         by_mode_uid: dict[str, dict[str, int]] = {m: {} for m in modes}
         for row in _load_jsonl(ctrl_path):
@@ -662,10 +678,13 @@ def _collect_diag_k_over_n(
             uid = str(row.get("uid", ""))
             if m not in by_mode_uid:
                 continue
-            if strict_pool:
-                if strict_file_uids is not None and uid not in strict_file_uids:
+            if active_ehurt_uids is not None and len(active_ehurt_uids) == n_expected:
+                if uid not in active_ehurt_uids:
                     continue
-                if strict_file_uids is None and uid in eval_uids:
+            else:
+                if pool_file_uids is not None and uid not in pool_file_uids:
+                    continue
+                if strict_pool and pool_file_uids is None and uid in eval_uids:
                     continue
             by_mode_uid[m][uid] = int(row.get("grade", {}).get("z", 0))
 
@@ -678,6 +697,20 @@ def _collect_diag_k_over_n(
             out["paired_uids"] = common_uids
             out["paired_z"] = {"A1_strip": z_a1, "B2a_post_anchor": z_b2a}
             out["b2a_vs_a1_strip"] = exact_and_midp_mcnemar(z_a1, z_b2a)
+
+    # Exact mathematical fallback when A1_strip passes 100% (k_a1 == n_expected => z_a1 is identically all-1s)
+    if (
+        "b2a_vs_a1_strip" not in out
+        and n_expected > 0
+        and "A1_strip" in out["modes"]
+        and "B2a_post_anchor" in out["modes"]
+        and out["modes"]["A1_strip"]["k"] == n_expected
+    ):
+        k_b2a = int(out["modes"]["B2a_post_anchor"]["k"])
+        z_a1_det = [1] * n_expected
+        z_b2a_det = [1] * k_b2a + [0] * (n_expected - k_b2a)
+        out["paired_z"] = {"A1_strip": z_a1_det, "B2a_post_anchor": z_b2a_det}
+        out["b2a_vs_a1_strip"] = exact_and_midp_mcnemar(z_a1_det, z_b2a_det)
     return out
 
 
@@ -819,10 +852,14 @@ def analyze_model_bundle(bundle: dict[str, Any], n_boot: int, seed: int) -> dict
         conformal_audit["dev_calibration"] = bundle["calib_summary"]["conformal_risk_dev"]
     if items and len(runs["M2"]) == len(items):
         z_eval_b1b = [int(r["z"]) for r in runs["B1b"]]
+        z_eval_b0 = [int(r["z"]) for r in runs["B0"]]
         z_eval_m2 = [int(r["z"]) for r in runs["M2"]]
         eval_deg = compute_conformal_risk_bounds(z_eval_b1b, z_eval_m2, alpha_delta=0.05, n_grid=1)
+        eval_deg_b0 = compute_conformal_risk_bounds(z_eval_b0, z_eval_m2, alpha_delta=0.05, n_grid=1)
         conformal_audit["eval_observed_degradation_risk"] = eval_deg["empirical_degradation_risk"]
         conformal_audit["eval_degradation_events"] = eval_deg["degradation_events"]
+        conformal_audit["eval_vs_b0_degradation_risk"] = eval_deg_b0["empirical_degradation_risk"]
+        conformal_audit["eval_vs_b0_degradation_events"] = eval_deg_b0["degradation_events"]
         if "dev_calibration" in conformal_audit:
             dev_crc = conformal_audit["dev_calibration"]
             conformal_audit["within_hoeffding_ucb"] = bool(
@@ -1912,6 +1949,251 @@ def build_version_audit(bundles: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def generate_paper_writing_digest(
+    bundles: dict[str, dict[str, Any]],
+    stats_out: dict[str, Any],
+) -> str:
+    """Synthesizes a complete, self-contained Markdown reference digest of all paper numbers, CIs, and p-values."""
+    va = stats_out.get("version_audit", {})
+    lines: list[str] = [
+        "# C-BARR Final Paper-Writing Statistical & Mechanistic Digest",
+        "",
+        f"- **Analyzer Code Version**: `v{va.get('analyzer_code_version', 'unknown')}` (`{va.get('analyzer_git_rev', 'unknown')}`)",
+        f"- **Evaluated Backbones ({len(bundles)})**: " + ", ".join(f"`{m}`" for m in bundles),
+        f"- **Bootstrap Resamples**: `n_boot={stats_out.get('n_boot', 10000)}` (`seed={stats_out.get('seed', 42)}`)",
+        "",
+        "## 1. Cross-Backbone Headline Accuracy, Efficiency & Pathology (`N=450`)",
+        "",
+        "| Model | B0 Macro (Tok) | B1b Macro (Tok, Loop%, Exh%) | M2 Macro (Tok, Loop%, Spill%) | M2_Prec Macro (IF-Prec) | M2_B512 Macro | Oracle_UB Macro | Tok Sav.% | Delta Macro vs B1b [95% CI] | Clean-446 Max Delta | Gate 4 |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+    ]
+    ordered_m = [m for m, _, _ in DEFAULT_SCALE_ORDER if m in bundles] + [
+        m for m in bundles if m not in {x for x, _, _ in DEFAULT_SCALE_ORDER}
+    ]
+    for m in ordered_m:
+        rep = bundles[m]["report"]
+        ms = stats_out["models"][m]
+        sys_d = rep["systems"]
+        aux_d = rep.get("auxiliary_systems", {})
+        orc_d = rep["oracle_and_4regime"]["oracle_summary"]
+        b0, b1b, m2 = sys_d["B0"], sys_d["B1b"], sys_d["M2"]
+        g4 = ms["gate_audit"]["gate4_primary"]
+        b_ci = (ms.get("paired_bootstrap_95ci", {}).get("M2_minus_B1b") or {}).get("macro_acc") or {}
+        cl_d = ms.get("clean_446_sensitivity", {}).get("max_abs_macro_delta_pp", 0.0)
+        m2p = aux_d.get("M2_Prec")
+        m2p_s = f"{100*m2p['macro_acc']:.1f}% ({100*m2p['slice_acc']['ifeval_precision']:.1f}%)" if m2p else "--"
+        m512 = aux_d.get("M2_B512")
+        m512_s = f"{100*m512['macro_acc']:.1f}%" if m512 else "--"
+        ci_s = (
+            f"{100*b_ci.get('diff_b_minus_a', 0):+.1f} [{100*b_ci.get('ci95_lo', 0):+.1f}, {100*b_ci.get('ci95_hi', 0):+.1f}] pp"
+            if b_ci
+            else "--"
+        )
+        g4_ok = "PASS" if (g4["m2_macro_ge_b1b"] and g4["token_reduction_pct"] > 0) else "PARITY/CHECK"
+        lines.append(
+            f"| `{m}` | {100*b0['macro_acc']:.1f}% ({b0['mean_t_tot']:.0f}t) | "
+            f"{100*b1b['macro_acc']:.1f}% ({b1b['mean_t_tot']:.0f}t, {100*b1b.get('loop_rate',0):.1f}%, {100*b1b.get('exhaust_rate',0):.1f}%) | "
+            f"**{100*m2['macro_acc']:.1f}%** ({m2['mean_t_tot']:.0f}t, {100*m2.get('loop_rate',0):.1f}%, {100*m2.get('spillover_rate',0):.2f}%) | "
+            f"{m2p_s} | {m512_s} | {100*orc_d['macro_acc']:.1f}% | {g4['token_reduction_pct']:.1f}% | "
+            f"{ci_s} | {cl_d:.2f} pp | {g4_ok} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 2. Pre-Registered 4-Pair Confirmatory Holm-Bonferroni (`M2` vs. `B1b, B0, B2a, M1c`)",
+            "",
+            "| Model | Comparison | Wins (`M2` / Base) | Delta Macro [95% CI] | Delta U_0.05 [95% CI] | Tok Sav.% | `p_exact` | `p_holm_4` (exact / mid-p) |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for m in ordered_m:
+        pairs = (stats_out["models"][m].get("confirmatory_holm_family") or {}).get("pairs") or {}
+        for pk, pv in pairs.items():
+            pb_m = (pv.get("paired_bootstrap") or {}).get("macro_acc") or {}
+            pb_u = (pv.get("paired_bootstrap") or {}).get("u_005") or {}
+            lines.append(
+                f"| `{m}` | `{pk}` | {pv.get('method_wins',0)} / {pv.get('base_wins',0)} | "
+                f"{100*pb_m.get('diff_b_minus_a',0):+.1f} [{100*pb_m.get('ci95_lo',0):+.1f}, {100*pb_m.get('ci95_hi',0):+.1f}] pp | "
+                f"{100*pb_u.get('diff_b_minus_a',0):+.1f} [{100*pb_u.get('ci95_lo',0):+.1f}, {100*pb_u.get('ci95_hi',0):+.1f}] pp | "
+                f"{pv.get('tok_savings_vs_base_pct',0):+.1f}% | {pv.get('p_exact',1.0):.3g} | "
+                f"{pv.get('p_holm_exact',1.0):.3g} / {pv.get('p_holm_midp',1.0):.3g} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## 3. Proposition 1 Conformal Degradation Risk & Hindsight `Oracle_UB` Retention",
+            "",
+            "| Model | Dev Deg. vs B1b | CRC Bound | Hoeffding UCB (`M=29`) | Eval Deg. vs B1b (`k/450`) | Eval Deg. vs B0 (`k/450`) | Within Bounds | Oracle Macro Ret.% | Oracle U_0.05 Ret.% |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for m in ordered_m:
+        ms = stats_out["models"][m]
+        ca = ms.get("conformal_risk_audit") or {}
+        dc = ca.get("dev_calibration") or {}
+        oe = (ms.get("oracle_efficiency_audit") or {}).get("M2") or {}
+        dev_r = f"{100*dc['empirical_degradation_risk']:.1f}%" if "empirical_degradation_risk" in dc else "--"
+        crc_b = f"{100*dc['crc_expectation_bound']:.1f}%" if "crc_expectation_bound" in dc else "--"
+        hoef_b = f"{100*dc['hoeffding_ucb']:.1f}%" if "hoeffding_ucb" in dc else "--"
+        ev_b1 = f"{100*ca.get('eval_observed_degradation_risk',0):.2f}% ({ca.get('eval_degradation_events',0)}/450)"
+        ev_b0 = f"{100*ca.get('eval_vs_b0_degradation_risk',0):.2f}% ({ca.get('eval_vs_b0_degradation_events',0)}/450)"
+        wb = f"CRC={ca.get('within_crc_expectation_bound', 'n/a')}, Hoef={ca.get('within_hoeffding_ucb', 'n/a')}"
+        lines.append(
+            f"| `{m}` | {dev_r} | {crc_b} | {hoef_b} | {ev_b1} | {ev_b0} | {wb} | "
+            f"{100*oe.get('macro_acc_retention_ratio',0):.1f}% | {100*oe.get('u_005_retention_ratio',0):.1f}% |"
+        )
+
+    lines.extend(["", "## 4. Section 6 Counterfactual Controls & Pooled Exact `k/n` Audit", ""])
+    pooled = stats_out.get("confirmatory_pooled_diag") or {}
+    for pk_key, pk_title in (("strict341_pooled", "Strict Disjoint Pool (`diag_341_strict`)"), ("diag_491_pooled", "Full Calibration-Disjoint Pool (`diag_491`)")):
+        pb = pooled.get(pk_key) or {}
+        if not pb:
+            continue
+        lines.append(f"### {pk_title}")
+        lines.append("| Stratum | Models | `A1_strip` (`k/n`) | `B2a_post` (`k/n`, 95% CI) | `B1_pre` (`k/n`) | `B2b_raw` (`k/n`) | `A2_swap` (`k/n`) | `B3_cut` (`k/n`) | `p_midp(B2a vs B1b)` | `p_midp(B2a vs A1)` |")
+        lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+        for g_key in ("deltanet_models", "dense_models", "all_models"):
+            gd = pb.get(g_key)
+            if not isinstance(gd, dict) or "A1_strip" not in gd:
+                continue
+            a1, b2a, b1, b2b, a2, b3 = (
+                gd["A1_strip"],
+                gd["B2a_post_anchor"],
+                gd["B1_pre_anchor"],
+                gd["B2b_post_raw"],
+                gd["A2_math_swap"],
+                gd["B3_early_cut_no_anchor"],
+            )
+            ci_b2a = b2a.get("wilson_ci95_pct", [0.0, 0.0])
+            p_b1b = (gd.get("b2a_vs_b1b_all_fail") or {}).get("p_midp")
+            p_a1 = (gd.get("b2a_vs_a1_strip") or {}).get("p_midp")
+            lines.append(
+                f"| `{g_key}` | {len(gd.get('models', []))} | {a1['pct']:.1f}% ({a1['k']}/{a1['n']}) | "
+                f"**{b2a['pct']:.1f}%** ({b2a['k']}/{b2a['n']}, [{ci_b2a[0]:.1f}, {ci_b2a[1]:.1f}]) | "
+                f"{b1['pct']:.1f}% ({b1['k']}/{b1['n']}) | {b2b['pct']:.1f}% ({b2b['k']}/{b2b['n']}) | "
+                f"{a2['pct']:.1f}% ({a2['k']}/{a2['n']}) | {b3['pct']:.1f}% ({b3['k']}/{b3['n']}) | "
+                f"{f'{p_b1b:.3g}' if p_b1b is not None else '--'} | {f'{p_a1:.3g}' if p_a1 is not None else '--'} |"
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "## 5. Gate-2 Probe Horizon Ablation (`K in {1, 4, 8, 16, 32}`)",
+            "",
+            "| Model | `K=1` Macro / U_0.05 (Tok) | `K=4` Macro / U_0.05 (Tok) | `K=8` Macro / U_0.05 (Tok) | `K=16` Macro / U_0.05 (Tok) | `K=32` Macro / U_0.05 (Tok) |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for m in ordered_m:
+        ph = stats_out["models"][m].get("probe_horizon_ablation") or {}
+        if not ph:
+            continue
+        cells = []
+        for k_v in (1, 4, 8, 16, 32):
+            kd = ph.get(f"K_{k_v}")
+            cells.append(
+                f"{100*kd['macro_acc']:.1f}% / {100*kd['u_005']:.1f}% ({kd['mean_t_tot']:.0f}t)" if kd else "--"
+            )
+        lines.append(f"| `{m}` | " + " | ".join(cells) + " |")
+
+    w7_ext = stats_out.get("w7_extensions") or {}
+    if w7_ext:
+        lines.extend(["", "## 6. Workstream W7 Mechanistic Extensions & Paraphrase Probe", ""])
+        for m, wd in w7_ext.items():
+            lines.append(f"### `{m}`")
+            for b_key, b_lbl in (
+                ("ext_deltanet_blend", "DeltaNet Recurrent State Blend (`conv=False, evict_kv=False`)"),
+                ("ext_deltanet_blend_conv_kv", "DeltaNet Joint Recurrent + 1D Conv + `<think>` KV Eviction"),
+                ("ext_deltanet_blend_evict_kv", "Dense Softmax `<think>` KV Cache Eviction (`alpha=0`)"),
+            ):
+                bd = wd.get(b_key)
+                if isinstance(bd, dict) and "alphas" in bd:
+                    a_parts = [
+                        f"`alpha={ak}`: **{av['overall_recovery_pct']:.1f}%** (Inhib={av.get('inhibition_recovery_pct',0):.1f}%, Struct={av.get('structural_recovery_pct',0):.1f}%)"
+                        for ak, av in bd["alphas"].items()
+                    ]
+                    lines.append(f"- **{b_lbl}** (`n={bd.get('n_ehurt', 0)}`): " + "; ".join(a_parts))
+            mlp = wd.get("prefill_mlp")
+            if isinstance(mlp, dict) and "eval_table" in mlp:
+                et = mlp["eval_table"]
+                g1p = mlp.get("gate1_semantic_probe") or {}
+                para = mlp.get("ifevalpp_paraphrase_stress") or {}
+                ro = (g1p.get("regex_orig") or {}).get("prec") or {}
+                mo = (g1p.get("mlp_orig") or {}).get("prec") or {}
+                rp = (para.get("regex_para") or {}).get("prec") or {}
+                mp = (para.get("mlp_para") or {}).get("prec") or {}
+                lines.append(
+                    f"- **Prefill MLP Probe (`{mlp.get('mode')}`, `tau={mlp.get('best_tau',0):.3f}`)**: "
+                    f"Eval Macro={100*et['macro_acc']:.1f}%, OAA_250={100*et['oaa_250']:.1f}%, U_0.05={100*et['u_005']:.1f}%, Tok={et['mean_t_tot']:.0f} | "
+                    f"Canonical Prec F1: Regex={ro.get('f1',0):.1f}% vs MLP={mo.get('f1',0):.1f}% | "
+                    f"`IFEval++` Paraphrase Prec F1 (Rec): Regex={rp.get('f1',0):.1f}% ({rp.get('recall',0):.1f}%) vs **MLP={mp.get('f1',0):.1f}% ({mp.get('recall',0):.1f}%)**"
+                )
+            m2v2 = wd.get("m2v2_comparison")
+            if isinstance(m2v2, dict) and isinstance(m2v2.get("systems"), dict):
+                cs = m2v2["systems"].get("M2_classic", {})
+                ss = m2v2["systems"].get("M2_solve_first", {})
+                lines.append(
+                    f"- **Stage-2 Completion Bridge Replay (`replayed={m2v2.get('stage2_items_replayed',0)}`)**: "
+                    f"Classic Macro={100*cs.get('macro_acc',0):.1f}% (OAA_250={100*cs.get('oaa_250',0):.1f}%) vs "
+                    f"SolveFirst Macro={100*ss.get('macro_acc',0):.1f}% (OAA_250={100*ss.get('oaa_250',0):.1f}%)"
+                )
+            lines.append("")
+
+    lines.extend(["", "## 7. Appendix B: OOD `IFBench_test`, 3-Seed `R6`, and Cross-Model L2 Sensitivity", ""])
+    ifb_map = stats_out.get("ifbench_ood") or {}
+    if ifb_map:
+        for m, ib in ifb_map.items():
+            sy = ib.get("systems", {})
+            b0i, b1i, m2i = sy.get("B0", {}), sy.get("B1b", {}), sy.get("M2", {})
+            mc_b1 = (ib.get("mcnemar") or {}).get("M2_vs_B1b") or {}
+            lines.append(
+                f"- **IFBench_test OOD (`{m}`, `N={ib.get('n_prompts',0)}`)**: "
+                f"B0={b0i.get('prompt_strict_pct',0):.1f}% ({b0i.get('mean_t_tot',0):.0f}t) | "
+                f"B1b={b1i.get('prompt_strict_pct',0):.1f}% ({b1i.get('mean_t_tot',0):.0f}t) | "
+                f"**M2={m2i.get('prompt_strict_pct',0):.1f}%** (OAA_250={m2i.get('oaa_250_pct',0):.1f}%, {m2i.get('mean_t_tot',0):.0f}t, `p_exact={mc_b1.get('p_exact',1.0):.3g}`)"
+            )
+    else:
+        lines.append("- **IFBench_test OOD**: *Pending execution (`ext_ifbench_ood.py`).*")
+
+    r6_sum = stats_out.get("r6_sampled_summary") or []
+    if r6_sum:
+        for rs in r6_sum:
+            lines.append(
+                f"- **3-Seed Sampled R6 (`{rs['model']}`, seeds `{rs['seeds']}`, `T={rs['temperature']:g}`)**: "
+                f"B0={100*rs['b0_macro_mean']:.1f}+/-{100*rs['b0_macro_std']:.1f}% | "
+                f"B1b={100*rs['b1b_macro_mean']:.1f}+/-{100*rs['b1b_macro_std']:.1f}% | "
+                f"**M2={100*rs['m2_macro_mean']:.1f}+/-{100*rs['m2_macro_std']:.1f}%** "
+                f"(OAA_250={100*rs['m2_oaa250_mean']:.1f}+/-{100*rs['m2_oaa250_std']:.1f}%, Tok={rs['m2_tok_mean']:.0f}+/-{rs['m2_tok_std']:.0f}, TokSav={rs['delta_tok_savings_pct']:.1f}%)"
+            )
+    else:
+        lines.append("- **3-Seed Sampled R6**: *Pending execution (`--part r6`).*")
+
+    lines.extend(
+        [
+            "",
+            "### Gate-2 L2 Regularization Sensitivity (`C in {0.1, 0.25 (prod), 0.5, 1.0}`)",
+            "| Model | `C=0.10` Macro (Esc, Tok) | `C=0.25 (prod)` Macro (Esc, Tok) | `C=0.50` Macro (Esc, Tok) | `C=1.00` Macro (Esc, Tok) |",
+            "| :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for m in ordered_m:
+        l2_rows = stats_out["models"][m].get("l2_regularization_sensitivity") or []
+        if not l2_rows:
+            continue
+        by_c = {round(float(r["reg_c"]), 2): r for r in l2_rows}
+        c_cells = []
+        for cv in (0.10, 0.25, 0.50, 1.00):
+            rc = by_c.get(cv)
+            c_cells.append(
+                f"{100*rc['eval_m2_macro']:.1f}% ({100*rc['dev_esc_rate']:.1f}%, {rc['eval_m2_tok']:.0f}t)" if rc else "--"
+            )
+        lines.append(f"| `{m}` | " + " | ".join(c_cells) + " |")
+
+    return "\n".join(lines) + "\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Analyze C-BARR outputs and generate tables/figures.")
     parser.add_argument("--out-dir", type=str, default="outputs")
@@ -2043,6 +2325,9 @@ def main() -> None:
 
     (out_dir / "stats_summary.json").write_text(
         json.dumps(stats_out, indent=2) + "\n", encoding="utf-8"
+    )
+    (out_dir / "PAPER_WRITING_DIGEST.md").write_text(
+        generate_paper_writing_digest(bundles, stats_out), encoding="utf-8"
     )
     table_parts = generate_latex_table_parts(
         bundles,

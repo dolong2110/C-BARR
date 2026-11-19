@@ -4714,6 +4714,65 @@ class TestPhases4To7(unittest.TestCase):
             else:
                 os.environ["HF_HUB_DISABLE_XET"] = prev_xet
 
+    def test_v0524_paper_writing_digest_and_diag491_paired_mcnemar(self) -> None:
+        """Verifies PAPER_WRITING_DIGEST.md synthesis, extended EXPERIMENT_LOG.md fields, and exact diag491 b2a_vs_a1_strip."""
+        from scripts.analyze_and_plot import _collect_diag_k_over_n
+        from scripts.sync_results import PHASE7_FILES
+
+        self.assertIn("PAPER_WRITING_DIGEST.md", PHASE7_FILES)
+
+        with tempfile.TemporaryDirectory() as td:
+            td_p = pathlib.Path(td)
+            # 1. Verify exact k_a1 == n_expected deterministic fallback populates b2a_vs_a1_strip even without cache mismatch
+            fake_diag = {
+                "A1_strip": {"n_ehurt": 10, "overall_pass_count": 10, "overall_recovery_pct": 100.0},
+                "B2a_post_anchor": {"n_ehurt": 10, "overall_pass_count": 7, "overall_recovery_pct": 70.0},
+            }
+            kn = _collect_diag_k_over_n(td_p, fake_diag, strict_pool=False)
+            self.assertIn("b2a_vs_a1_strip", kn)
+            self.assertEqual(kn["b2a_vs_a1_strip"]["base_wins"], 3)
+            self.assertEqual(kn["b2a_vs_a1_strip"]["method_wins"], 0)
+
+            # 2. Verify analyze_and_plot.py emits PAPER_WRITING_DIGEST.md and log_experiment.py emits Conformal/Horizons/L2
+            data_dir = td_p / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = td_p / "outputs"
+            fig_dir = td_p / "figs"
+            table_dir = td_p / "tables"
+            exp_md = td_p / "EXP.md"
+            _build_mini_frozen_dir(data_dir)
+            r1 = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "run_matrix.py"), "--data-dir", str(data_dir), "--out-dir", str(out_dir), "--model", "Qwen/Qwen3.5-0.8B", "--mock", "--strict-diag"],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+            r2 = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "analyze_and_plot.py"), "--out-dir", str(out_dir), "--fig-dir", str(fig_dir), "--table-dir", str(table_dir), "--n-boot", "100"],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+            digest_p = out_dir / "PAPER_WRITING_DIGEST.md"
+            self.assertTrue(digest_p.is_file())
+            digest_txt = digest_p.read_text(encoding="utf-8")
+            self.assertIn("Proposition 1 Conformal Degradation Risk", digest_txt)
+            self.assertIn("Gate-2 Probe Horizon Ablation", digest_txt)
+            self.assertIn("Gate-2 L2 Regularization Sensitivity", digest_txt)
+
+            r3 = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts" / "log_experiment.py"),
+                    "--md-log", str(exp_md), "--out-dir", str(out_dir),
+                    "--run-id", "test-v0524", "--loop-name", "Phase 7",
+                    "--status", "PASS", "--command", "unittest_v0524", "--upsert",
+                ],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r3.returncode, 0, r3.stdout + r3.stderr)
+            md_txt = exp_md.read_text(encoding="utf-8")
+            self.assertIn("Conformal & Oracle Audit", md_txt)
+            self.assertIn("Probe Horizons", md_txt)
+            self.assertIn("Gate-2 L2 Sensitivity", md_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

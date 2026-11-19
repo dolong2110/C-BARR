@@ -66,6 +66,7 @@ MODEL_SUMMARY_FILES: tuple[str, ...] = (
 PHASE7_FILES: tuple[str, ...] = (
     "stats_summary.json",
     "paper_tables.tex",
+    "PAPER_WRITING_DIGEST.md",
 )
 
 

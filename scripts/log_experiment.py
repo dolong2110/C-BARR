@@ -681,10 +681,21 @@ def _render_run_markdown(
             ml = w7.get("mlp")
             if isinstance(ml, dict):
                 et = ml.get("eval_table", {})
+                g1p = ml.get("gate1_semantic_probe") or {}
+                para = ml.get("ifevalpp_paraphrase_stress") or {}
+                rp_f1 = ((para.get("regex_para") or {}).get("prec") or {}).get("f1")
+                mp_f1 = ((para.get("mlp_para") or {}).get("prec") or {}).get("f1")
+                ro_f1 = ((g1p.get("regex_orig") or {}).get("prec") or {}).get("f1")
+                mo_f1 = ((g1p.get("mlp_orig") or {}).get("prec") or {}).get("f1")
+                para_sfx = (
+                    f", OrigPrecF1={ro_f1:.1f}%->{mo_f1:.1f}%, ParaPrecF1={rp_f1:.1f}%->{mp_f1:.1f}%"
+                    if (rp_f1 is not None and mp_f1 is not None and ro_f1 is not None and mo_f1 is not None)
+                    else ""
+                )
                 parts.append(
                     f"PrefillMLP({ml.get('mode')}, tau={ml.get('best_tau', 0):.3f}, "
                     f"Macro={_fmt_pct(et.get('macro_acc'))}, OAA250={_fmt_pct(et.get('oaa_250'))}, "
-                    f"U0.05={_fmt_pct(et.get('u_005'))}, Tok={et.get('mean_t_tot', 0):.0f})"
+                    f"U0.05={_fmt_pct(et.get('u_005'))}, Tok={et.get('mean_t_tot', 0):.0f}{para_sfx})"
                 )
             m2v2 = w7.get("m2v2")
             if isinstance(m2v2, dict) and isinstance(m2v2.get("systems"), dict):
@@ -761,6 +772,36 @@ def _render_run_markdown(
                     for pk, pv in pairs.items()
                 )
                 conf_lines.append(f"- **`{m_id}` (Confirmatory 4-pair Holm)**: {p_str}")
+            ca = m_d.get("conformal_risk_audit") or {}
+            oe = (m_d.get("oracle_efficiency_audit") or {}).get("M2") or {}
+            if ca or oe:
+                dc = ca.get("dev_calibration") or {}
+                crc_s = (
+                    f"DevDeg={100*dc['empirical_degradation_risk']:.1f}%, CRC<={100*dc['crc_expectation_bound']:.1f}%, Hoef<={100*dc['hoeffding_ucb']:.1f}%, "
+                    if "crc_expectation_bound" in dc
+                    else ""
+                )
+                conf_lines.append(
+                    f"- **`{m_id}` (Conformal & Oracle Audit)**: {crc_s}"
+                    f"EvalDeg(vs B1b)={100*ca.get('eval_observed_degradation_risk', 0):.2f}% ({ca.get('eval_degradation_events', 0)}/450), "
+                    f"EvalDeg(vs B0)={100*ca.get('eval_vs_b0_degradation_risk', 0):.2f}% ({ca.get('eval_vs_b0_degradation_events', 0)}/450), "
+                    f"OracleRet(Macro/U0.05)={100*oe.get('macro_acc_retention_ratio', 0):.1f}%/{100*oe.get('u_005_retention_ratio', 0):.1f}%"
+                )
+            ph = m_d.get("probe_horizon_ablation") or {}
+            if ph:
+                ph_s = ", ".join(
+                    f"K={k}:{100*ph[f'K_{k}']['macro_acc']:.1f}%({ph[f'K_{k}']['mean_t_tot']:.0f}t)"
+                    for k in (1, 4, 8, 16, 32)
+                    if f"K_{k}" in ph
+                )
+                conf_lines.append(f"- **`{m_id}` (Probe Horizons)**: {ph_s}")
+            l2r = m_d.get("l2_regularization_sensitivity") or []
+            if l2r:
+                l2_s = ", ".join(
+                    f"C={r['reg_c']:g}:{100*r['eval_m2_macro']:.1f}%(esc={100*r['dev_esc_rate']:.0f}%)"
+                    for r in l2r
+                )
+                conf_lines.append(f"- **`{m_id}` (Gate-2 L2 Sensitivity)**: {l2_s}")
         pooled = stats_payload.get("confirmatory_pooled_diag") or {}
         for pk_lbl, pk_name in (("strict341_pooled", "diag_341_strict"), ("diag_491_pooled", "diag_491")):
             all_g = (pooled.get(pk_lbl) or {}).get("all_models")
