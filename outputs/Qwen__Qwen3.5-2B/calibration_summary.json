@@ -329,18 +329,18 @@
       }
     }
   },
-  "wall_time_sec": 0.11,
+  "wall_time_sec": 0.13,
   "runtime": {
     "device": "cuda",
     "dtype": "torch.bfloat16"
   },
-  "code_version": "0.5.21",
-  "git_rev": "4ff6f76",
-  "run_id": "20261119T000849Z",
+  "code_version": "0.5.26",
+  "git_rev": "e5636f6",
+  "run_id": "20261119T105923Z",
   "training_params": {
-    "code_version": "0.5.21",
-    "git_rev": "4ff6f76",
-    "run_id": "20261119T000849Z",
+    "code_version": "0.5.26",
+    "git_rev": "e5636f6",
+    "run_id": "20261119T105923Z",
     "model": "Qwen/Qwen3.5-2B",
     "diag_pool": "strict341",
     "device": "cuda",
