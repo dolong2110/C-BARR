@@ -1,12 +1,15 @@
 {
-  "results_seq": 21,
-  "results_version": "v0.5.27-res.21",
-  "code_version": "0.5.27",
-  "git_rev": "0ee4b31-dirty",
-  "sync_label": "checkpoint-Qwen3.5-4B:20261119T114300Z",
-  "updated_utc": "2026-11-19T12:39:09Z",
-  "consistent_code_versions": true,
-  "version_warnings": [],
+  "results_seq": 22,
+  "results_version": "v0.5.30-res.22",
+  "code_version": "0.5.30",
+  "git_rev": "af6a598-dirty",
+  "sync_label": "checkpoint-Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42:20261119T222033Z_pr6",
+  "updated_utc": "2026-11-19T22:22:17Z",
+  "consistent_code_versions": false,
+  "version_warnings": [
+    "Multiple code versions across model results: 0.5.27, 0.5.30",
+    "Repo VERSION is v0.5.30, while models have versions: ['0.5.27', '0.5.30']"
+  ],
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
       "model": "HuggingFaceTB/SmolLM3-3B",
@@ -191,6 +194,44 @@
         "ext_ifbench_ood_cache.jsonl.gz": "8d1c9ddb14fdbabb88f44a0855b7cad7cffe57819dd507cd03e531f82605622f"
       }
     },
+    "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42": {
+      "model": "Qwen/Qwen3.5-4B",
+      "code_version": "0.5.30",
+      "git_rev": "af6a598-dirty",
+      "run_id": "20261119T222033Z_pr6",
+      "sync_seq": 1,
+      "result_version": "v0.5.30+m1",
+      "diag_pools": {
+        "default": {
+          "code_version": "0.5.30",
+          "git_rev": "af6a598-dirty",
+          "run_id": "20261119T222033Z_pr6",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "strict341": {
+          "code_version": "0.5.30",
+          "git_rev": "af6a598-dirty",
+          "run_id": "20261119T222033Z_pr6",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        }
+      },
+      "artifact_sha256": {
+        "calibration_summary.json": "78d211f2bdd9a0d4731f94caaab051781946662ce8e680d6a3a341f04d66bc66",
+        "matrix_summary.json": "ed43fb16b89666f1f213e4693c28ca20604cefb342e7a3d9e431b3f2f98dff0e",
+        "matrix_summary_strict341.json": "ed43fb16b89666f1f213e4693c28ca20604cefb342e7a3d9e431b3f2f98dff0e",
+        "tables_rows.tex": "d8932021f1e76c99a8b29efb74fcb8d1bc7dfabd2e98ad310b3cb256e3b0df71",
+        "tables_rows_strict341.tex": "d8932021f1e76c99a8b29efb74fcb8d1bc7dfabd2e98ad310b3cb256e3b0df71",
+        "seed_60_cache.jsonl.gz": "d5af0792dbf405891d68eac208558f241eb073875db06e56d12b4b2fc5140610",
+        "dev_60_cache.jsonl.gz": "9563af3f720c0a9fe6d3e1e8b200aa433df9abee67c4cada337b89469c329b78",
+        "eval_450_cache.jsonl.gz": "653d1dd648e2ed41a34bd80d40d749512731c4884ba069df4545af6809220677",
+        "diag_ehurt_cache.jsonl.gz": "fd32792902859187aeeea6a54639e248b38e8deb3e6bb686285a19dd570702a9",
+        "diag_controls_cache.jsonl.gz": "581a1fef4a008b6c4034ba52e7fc174748fa54803515597402c1d169ca59ff42"
+      }
+    },
     "Qwen__Qwen3.5-9B": {
       "model": "Qwen/Qwen3.5-9B",
       "code_version": "0.5.27",
@@ -230,5 +271,20 @@
       }
     }
   },
-  "phase7_sha256": {}
+  "phase7_sha256": {
+    "stats_summary.json": "bc7b10075941726176d2ee541852861a4a1e9ceebac3afe2d0ac0589f1f6cfdc",
+    "paper_tables.tex": "8708d4e2dcbe56abd60500c98c29de9792bda45e06eb063c47fc73e9add795f3",
+    "PAPER_WRITING_DIGEST.md": "48081a719f4c4058c8f1ee2ce5d562451003a041598f0fdb334ab468e381196d",
+    "PAPER_QUALITATIVE_EXAMPLES.md": "27bff58172c082290fdf978e6bee76d4378d46a28880dffe9f436de29690bd7a",
+    "paper/figures/fig0_cbarr_overview.pdf": "405521b2998e904646d57f0878d4707aee46ae9b3f4422b38fa126988e3850d3",
+    "paper/figures/fig1_pareto_frontier.pdf": "2099d0f8c09206f4d244a522c8113a3f2a52004cb00ebb99c3a16275e17138fd",
+    "paper/figures/fig2_bsr_sla_curve.pdf": "f4f97987544dd37b1c07a87d36c48571777a2e43ca547ef7b193e90d753857f2",
+    "paper/figures/fig3_ehurt_causal_recovery.pdf": "ef916b2b2d130d58b49feed34b88b84a574571ab0a9c158a2ace0e93153a618d",
+    "paper/figures/fig4_horizons_and_w7.pdf": "03c01ecc7087ac81c84126a46af8b99b419c01578863db4e7595b45f81f21c37",
+    "paper/tables/tab1_main_results.tex": "fcad2dc97d65d348483176829cb23bdbd1e3024bae373c482fb36fd359f98051",
+    "paper/tables/tab2_scale_pathology.tex": "2633d4a1b07015084dbbceab9e8441b82c4e1711e0f41105d41958b332534b79",
+    "paper/tables/tab3_diagnostic_control.tex": "5e9a3203ca8287705836ae5a285df63b80be2a57326b4feb735a89528128a603",
+    "paper/tables/tab4_extensions_w7.tex": "acc44fd219e1a21b45f767263bad8406f4bba296c6bfcf2a8c1e710b05d0df61",
+    "paper/tables/tab5_appendix_ood_r6_l2.tex": "e275af270408fbafa4e60854a5f14c351eea2bb9a60dc0a4befefd5435a8ee9c"
+  }
 }
