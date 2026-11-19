@@ -1254,8 +1254,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T105923Z -->
 
 <!-- CBARR_RUN_START:20261119T114300Z -->
-### Run `20261119T114300Z` — **RUNNING (after Phase 6 / W6: Qwen3.5-9B (strict341) (cached))** (Updated 2026-11-19 11:55:38 UTC)
-- **Code Version**: `v0.5.27` | **Git Commit**: `bd2f8d2` | **Results Release**: `v0.5.27-res.19` | **Last Loop**: `Phase 6 / W6: Qwen3.5-9B (strict341) (cached)` | **Wall Time**: `12m 30.0s` (750.0s)
+### Run `20261119T114300Z` — **RUNNING (after Appendix B: IFBench OOD (Qwen/Qwen3.5-4B))** (Updated 2026-11-19 12:39:01 UTC)
+- **Code Version**: `v0.5.27` | **Git Commit**: `d9e47ba` | **Results Release**: `v0.5.27-res.20` | **Last Loop**: `Appendix B: IFBench OOD (Qwen/Qwen3.5-4B)` | **Wall Time**: `55m 44.0s` (3344.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --gpu-boost --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261119T114300Z.log`
@@ -1275,7 +1275,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "bd2f8d2",
+  "git_rev": "d9e47ba",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1334,6 +1334,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 6 / W6: Qwen3.5-0.8B (strict341) (cached) | PASS | 41.0s (41.0s) |
 | Phase 6 / W6: Qwen3.5-2B (strict341) (cached) | PASS | 41.0s (41.0s) |
 | Phase 6 / W6: Qwen3.5-9B (strict341) (cached) | PASS | 41.0s (41.0s) |
+| Appendix B: IFBench OOD (Qwen/Qwen3.5-4B) | PASS | 43m 01.0s (2581.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -1476,5 +1477,5 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 
 #### 6. Optional W7 Extensions
 - **`HuggingFaceTB__SmolLM3-3B`**: DenseKVEvict(n=80: a=0.00:86.2%) | PrefillMLP(layer_-1, tau=0.850, Macro=66.8%, OAA250=69.6%, U0.05=63.4%, Tok=308, OrigPrecF1=86.0%->81.1%, ParaPrecF1=78.9%->81.7%) | Stage2SolveFirst(replayed=139, Macro=68.5%->67.0%, OAA250=72.0%->69.6%)
-- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357, OrigPrecF1=86.0%->81.2%, ParaPrecF1=78.9%->82.6%) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%)
+- **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357, OrigPrecF1=86.0%->81.2%, ParaPrecF1=78.9%->82.6%) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%) | IFBenchOOD(N=300: B0=28.7%/B1b=2.0%/M2=31.3%, OAA250=31.3%, Tok=443, p_vs_B1b=1.73e-24)
 <!-- CBARR_RUN_END:20261119T114300Z -->
