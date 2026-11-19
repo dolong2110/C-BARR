@@ -1,13 +1,14 @@
 {
-  "results_seq": 10,
-  "results_version": "v0.5.22-res.10",
-  "code_version": "0.5.22",
-  "git_rev": "22cbf59-dirty",
-  "sync_label": "checkpoint-Qwen3.5-9B:20261119T000849Z",
-  "updated_utc": "2026-11-19T05:53:51Z",
-  "consistent_code_versions": true,
+  "results_seq": 11,
+  "results_version": "v0.5.26-res.11",
+  "code_version": "0.5.26",
+  "git_rev": "95f4d40-dirty",
+  "sync_label": "checkpoint-Qwen3.5-4B:20261119T105923Z",
+  "updated_utc": "2026-11-19T11:05:12Z",
+  "consistent_code_versions": false,
   "version_warnings": [
-    "Repo VERSION is v0.5.22, while models have versions: ['0.5.21']"
+    "Multiple code versions across model results: 0.5.21, 0.5.26",
+    "Repo VERSION is v0.5.26, while models have versions: ['0.5.21', '0.5.26']"
   ],
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
@@ -140,45 +141,45 @@
     },
     "Qwen__Qwen3.5-4B": {
       "model": "Qwen/Qwen3.5-4B",
-      "code_version": "0.5.21",
-      "git_rev": "73c7891-dirty",
-      "run_id": "20261119T000849Z",
-      "sync_seq": 3,
-      "result_version": "v0.5.21+m3",
+      "code_version": "0.5.26",
+      "git_rev": "95f4d40-dirty",
+      "run_id": "20261119T105923Z",
+      "sync_seq": 4,
+      "result_version": "v0.5.26+m4",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.21",
-          "git_rev": "73c7891-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "95f4d40-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.21",
-          "git_rev": "73c7891-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "95f4d40-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "diag491": {
-          "code_version": "0.5.21",
-          "git_rev": "73c7891-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "95f4d40-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "d74a5fb9ed8b3fc9db8498816f44fd481e0d6f71baa1ff01c9e5054bf3318028",
+        "calibration_summary.json": "063d6ef854f76112363dbab5a659c920f78aeb9b43f550e5c223d16fa445409d",
         "eval_450_m2v2_comparison.json": "3978f8972bcd132071a529794379f67fbb90fb3080b07036be2fc139bd2ef3cf",
         "ext_deltanet_blend.json": "860a52427057dd258bbb0b2392b2656d9504ab5b571fcef83faed083f7f78d2e",
         "ext_deltanet_blend_conv_kv.json": "d30d016b5b92c866a41dbd512715b73600eaee9e37f46201cf66348c5ccfe749",
-        "matrix_summary.json": "122a89338ebbfb83ed964573b7ad501210c1469cd7ce36b1f7ce13493cffbda4",
-        "matrix_summary_diag491.json": "122a89338ebbfb83ed964573b7ad501210c1469cd7ce36b1f7ce13493cffbda4",
-        "matrix_summary_strict341.json": "2c15e85e570b5ff1e6f0d980f020db632ff36e85945a05eed6ccf5afb395f0cb",
+        "matrix_summary.json": "7dd734ca6a098a70cda80cbd80c34c987c64512a61c88a0d09b35bbce7bd6ad9",
+        "matrix_summary_diag491.json": "7dd734ca6a098a70cda80cbd80c34c987c64512a61c88a0d09b35bbce7bd6ad9",
+        "matrix_summary_strict341.json": "2f3ebbcca703d7516f3d619b6b42c485f310aafa5f22056125b8d1fcb54e487b",
         "prefill_mlp_summary.json": "d46676e666bc770e14313482724660a7e49772217900bc15c5b87b632454bd04",
         "tables_rows.tex": "425c20004965c01965a42dff2ed44ef049f31f2c04396ab701554ba20227733b",
         "tables_rows_diag491.tex": "425c20004965c01965a42dff2ed44ef049f31f2c04396ab701554ba20227733b",
