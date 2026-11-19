@@ -1,10 +1,10 @@
 {
-  "results_seq": 12,
-  "results_version": "v0.5.26-res.12",
+  "results_seq": 13,
+  "results_version": "v0.5.26-res.13",
   "code_version": "0.5.26",
-  "git_rev": "2127e69-dirty",
-  "sync_label": "checkpoint-SmolLM3-3B:20261119T105923Z",
-  "updated_utc": "2026-11-19T11:08:58Z",
+  "git_rev": "98e0901-dirty",
+  "sync_label": "checkpoint-Qwen3.5-0.8B:20261119T105923Z",
+  "updated_utc": "2026-11-19T11:09:57Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.21, 0.5.26",
@@ -65,33 +65,33 @@
     },
     "Qwen__Qwen3.5-0.8B": {
       "model": "Qwen/Qwen3.5-0.8B",
-      "code_version": "0.5.21",
-      "git_rev": "a3d4fa6",
-      "run_id": "20261119T000849Z",
-      "sync_seq": 2,
-      "result_version": "v0.5.21+m2",
+      "code_version": "0.5.26",
+      "git_rev": "98e0901",
+      "run_id": "20261119T105923Z",
+      "sync_seq": 3,
+      "result_version": "v0.5.26+m3",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.21",
-          "git_rev": "a3d4fa6",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "98e0901",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.21",
-          "git_rev": "a3d4fa6",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "98e0901",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "9a01e45d2118d26238a79ce7d58f1c7ca055232d7dbc287ec62361eacc39967c",
-        "matrix_summary.json": "60b182e7ddc922a15442c638499696de7a9e999769f0e754029c2fb0f5138eca",
-        "matrix_summary_strict341.json": "60b182e7ddc922a15442c638499696de7a9e999769f0e754029c2fb0f5138eca",
+        "calibration_summary.json": "4215ce342df62583beb6dd6bc13c30dbe03801b5ac471d563bd5ebd861831a35",
+        "matrix_summary.json": "03cf000088c35a3b8d203b9cda86eb5d7854876c7bd4660d78f694e9e5d48ca0",
+        "matrix_summary_strict341.json": "03cf000088c35a3b8d203b9cda86eb5d7854876c7bd4660d78f694e9e5d48ca0",
         "tables_rows.tex": "e868b6a918e2d701765a405db120e9d0091dd327b2386f464a8f9be29d4c2847",
         "tables_rows_strict341.tex": "e868b6a918e2d701765a405db120e9d0091dd327b2386f464a8f9be29d4c2847",
         "seed_60_cache.jsonl.gz": "feb5409550e54d9464d01fad9967f8ad0e197b66c35cb2170a19fcfc1fb4eaf0",
