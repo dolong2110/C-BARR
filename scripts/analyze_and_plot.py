@@ -2191,6 +2191,182 @@ def generate_paper_writing_digest(
             )
         lines.append(f"| `{m}` | " + " | ".join(c_cells) + " |")
 
+    lines.extend(
+        [
+            "",
+            "## 8. End-to-End Wall-Clock Latency, Compute Footprint & Reproducibility Checklist",
+            "",
+            "| Model | Dtype | Seed | `B0` Mean / P95 | `B1b` Mean / P95 (`Sum min`) | `M2` Mean / P95 (`Sum min`) | Speedup (`B1b / M2`) |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        ]
+    )
+    for m in ordered_m:
+        rep = bundles[m]["report"]
+        runs_m = bundles[m].get("per_system_runs") or {}
+        rt_dtype = (rep.get("runtime") or {}).get("dtype", "n/a")
+        seed_v = (rep.get("training_params") or {}).get("seed", 42)
+
+        def _lat_cell(k: str, with_sum: bool = False) -> tuple[str, float]:
+            arr = [float(r.get("latency_ms", 0.0)) / 1000.0 for r in runs_m.get(k, []) if float(r.get("latency_ms", 0.0)) > 0]
+            if not arr:
+                return "--", 0.0
+            mu = float(np.mean(arr))
+            p95 = float(np.percentile(arr, 95))
+            tot_min = float(np.sum(arr)) / 60.0
+            base = f"{mu:.2f}s / {p95:.2f}s"
+            return (f"{base} ({tot_min:.1f}m)" if with_sum else base), mu
+
+        b0_l, _ = _lat_cell("B0", with_sum=False)
+        b1_l, b1_mu = _lat_cell("B1b", with_sum=True)
+        m2_l, m2_mu = _lat_cell("M2", with_sum=True)
+        spd = f"**{b1_mu / m2_mu:.2f}x**" if (b1_mu > 0 and m2_mu > 0) else "--"
+        lines.append(f"| `{m}` | `{rt_dtype}` | `{seed_v}` | {b0_l} | {b1_l} | {m2_l} | {spd} |")
+
+    return "\n".join(lines) + "\n"
+
+
+def generate_paper_qualitative_examples(bundles: dict[str, dict[str, Any]]) -> str:
+    """Mines verbatim, publication-ready qualitative case studies directly from cached model runs."""
+
+    def _cspan(txt: str, max_chars: int = 420) -> str:
+        s = " ".join(str(txt or "").strip().split()).replace("````", "'''")
+        if len(s) > max_chars:
+            s = s[: max_chars - 3] + "..."
+        return f"```` {s} ````" if s else "`(empty)`"
+
+    lines: list[str] = [
+        "# C-BARR Verbatim Qualitative Case Studies (Auto-Mined from Frozen Caches)",
+        "",
+        "Curated verbatim examples for Section 5/6 figures and Appendix qualitative analysis.",
+        "",
+    ]
+
+    # Case A & B from primary (or first available) model
+    prim_m = "Qwen/Qwen3.5-4B" if "Qwen/Qwen3.5-4B" in bundles else next(iter(bundles))
+    p_dir = bundles[prim_m]["dir"]
+    p_runs = bundles[prim_m].get("per_system_runs") or {}
+    p_items = bundles[prim_m].get("items") or []
+    eval_p = p_dir / "eval_450_cache.jsonl"
+    raw_by_uid = {str(r["item"]["uid"]): r for r in _load_jsonl(eval_p)} if eval_p.is_file() else {}
+
+    # Case A: Overthinking Hurt (B0=1, B1b=0, M2=1)
+    for idx, it in enumerate(p_items):
+        if idx >= len(p_runs.get("M2", [])):
+            break
+        b0r, b1r, m2r = p_runs["B0"][idx], p_runs["B1b"][idx], p_runs["M2"][idx]
+        if int(b0r["z"]) == 1 and int(b1r["z"]) == 0 and int(m2r["z"]) == 1 and str(it.get("slice", "")).startswith("ifeval"):
+            uid = str(it["uid"])
+            g1 = run_gate1_lexical(str(it["prompt"]))
+            lines.extend(
+                [
+                    f"## Case A: Overthinking Constraint Drift & C-BARR Recovery (`{prim_m}`, `{uid}`, slice=`{it.get('slice')}`)",
+                    f"- **Prompt**: {_cspan(it['prompt'], 360)}",
+                    f"- **Gate-1 Extracted Clause**: `phi_plan={g1.phi_plan}, phi_prec={g1.phi_prec}` | {_cspan(g1.anchor_clause, 260)}",
+                    f"- **B0 (`z=1`, `T={b0r.get('T_total',0)}`)**: {_cspan(b0r.get('a_final',''), 320)}",
+                    f"- **B1b (`z=0`, `T={b1r.get('T_total',0)}`, `loop={b1r.get('has_4gram_loop')}`, `exhausted={b1r.get('think_exhausted')}`)**:",
+                    f"  - `<think>` excerpt: {_cspan(b1r.get('t_think',''), 320)}",
+                    f"  - Final answer: {_cspan(b1r.get('a_final',''), 320)}",
+                    f"- **C-BARR M2 (`z=1`, `T={m2r.get('T_total',0)}`, `calls={m2r.get('calls',1)}`)**: {_cspan(m2r.get('a_final',''), 320)}",
+                    "",
+                ]
+            )
+            break
+
+    # Case B: Deliberation Helped (B0=0, M2=1)
+    for idx, it in enumerate(p_items):
+        if idx >= len(p_runs.get("M2", [])):
+            break
+        b0r, b1r, m2r = p_runs["B0"][idx], p_runs["B1b"][idx], p_runs["M2"][idx]
+        if int(b0r["z"]) == 0 and int(m2r["z"]) == 1:
+            uid = str(it["uid"])
+            raw_r = raw_by_uid.get(uid, {})
+            pr = raw_r.get("probe", {})
+            lines.extend(
+                [
+                    f"## Case B: Budgeted Deliberation Gain Over Non-Thinking (`{prim_m}`, `{uid}`, slice=`{it.get('slice')}`)",
+                    f"- **Prompt**: {_cspan(it['prompt'], 360)}",
+                    f"- **Gate-2 Fast Probe**: `H_first={pr.get('H_first',0):.2f}, H_mean={pr.get('H_mean',0):.2f}, H_max={pr.get('H_max',0):.2f}, I_inertia={pr.get('I_inertia',0)}`",
+                    f"- **B0 (`z=0`, `T={b0r.get('T_total',0)}`)**: {_cspan(b0r.get('a_final',''), 300)}",
+                    f"- **C-BARR M2 (`z=1`, `T={m2r.get('T_total',0)}` vs `B1b T={b1r.get('T_total',0)}`)**:",
+                    f"  - Capped `<think>`: {_cspan(m2r.get('t_think',''), 300)}",
+                    f"  - Final answer: {_cspan(m2r.get('a_final',''), 300)}",
+                    "",
+                ]
+            )
+            break
+
+    # Case C: Section 6 Raw Assistant Wrapper Corruption (B2b=0 vs B2a=1)
+    ctrl_p = p_dir / "diag_controls_cache.jsonl"
+    ehurt_p = p_dir / "diag_ehurt_cache.jsonl"
+    if ctrl_p.is_file() and ehurt_p.is_file():
+        eh_map = {str(r["item"]["uid"]): r for r in _load_jsonl(ehurt_p)}
+        by_u: dict[str, dict[str, Any]] = {}
+        for cr in _load_jsonl(ctrl_p):
+            by_u.setdefault(str(cr.get("uid", "")), {})[str(cr.get("mode", ""))] = cr
+        for uid, md in sorted(by_u.items()):
+            b2a_c = md.get("B2a_post_anchor")
+            b2b_c = md.get("B2b_post_raw")
+            if b2a_c and b2b_c and int(b2a_c["grade"]["z"]) == 1 and int(b2b_c["grade"]["z"]) == 0 and uid in eh_map:
+                prompt_c = eh_map[uid]["item"]["prompt"]
+                lines.extend(
+                    [
+                        f"## Case C: Section 6 Unstripped Echo Corruption (`B2b=0`) vs. Turn-Delimited Bridge (`B2a=1`) (`{prim_m}`, `{uid}`)",
+                        f"- **Prompt**: {_cspan(prompt_c, 340)}",
+                        f"- **Control B2b (Unstripped Assistant Prefill, `z=0`)**: {_cspan(b2b_c.get('a_final',''), 320)}",
+                        f"- **Control B2a (Turn-Delimited Post-Think Anchor, `z=1`)**: {_cspan(b2a_c.get('a_final',''), 320)}",
+                        "",
+                    ]
+                )
+                break
+
+    # Case D: W7 Dense KV Eviction Recovery on SmolLM3-3B (B2a=0 -> DenseKVEvict=1)
+    dense_m = "HuggingFaceTB/SmolLM3-3B"
+    if dense_m in bundles:
+        d_dir = bundles[dense_m]["dir"]
+        d_ctrl = d_dir / "diag_controls_cache.jsonl"
+        d_blend = d_dir / "ext_deltanet_blend_cache.jsonl"
+        d_eh = d_dir / "diag_ehurt_cache.jsonl"
+        if d_ctrl.is_file() and d_blend.is_file() and d_eh.is_file():
+            deh_map = {str(r["item"]["uid"]): r for r in _load_jsonl(d_eh)}
+            b2a_fail = {
+                str(r["uid"]): r
+                for r in _load_jsonl(d_ctrl)
+                if r.get("mode") == "B2a_post_anchor" and int(r["grade"]["z"]) == 0
+            }
+            for br in _load_jsonl(d_blend):
+                uid = str(br.get("uid", ""))
+                if br.get("evict_think_kv") and int(br.get("grade", {}).get("z", 0)) == 1 and uid in b2a_fail and uid in deh_map:
+                    lines.extend(
+                        [
+                            f"## Case D: Dense Softmax `<think>` KV Interference (`B2a=0`) vs. Zero-Token `<think>` KV Eviction (`z=1`) (`{dense_m}`, `{uid}`)",
+                            f"- **Prompt**: {_cspan(deh_map[uid]['item']['prompt'], 340)}",
+                            f"- **Text Re-Anchor Only (`B2a`, `z=0` due to `<think>` KV attention)**: {_cspan(b2a_fail[uid].get('a_final',''), 300)}",
+                            f"- **Zero-Token `<think>` KV Cache Eviction (`evict_kv=True`, `z=1`)**: {_cspan(br.get('a_final',''), 300)}",
+                            "",
+                        ]
+                    )
+                    break
+
+    # Case E: OOD Unseen Rule Recovery on IFBench_test (when present)
+    for m_id, bnd in bundles.items():
+        ifb_c = bnd["dir"] / "ext_ifbench_ood_cache.jsonl"
+        if ifb_c.is_file():
+            for ir in _load_jsonl(ifb_c):
+                if int((ir.get("b1b") or {}).get("z", 1)) == 0 and int((ir.get("m2") or {}).get("z", 0)) == 1:
+                    it_i = ir.get("item", {})
+                    lines.extend(
+                        [
+                            f"## Case E: Out-of-Distribution `IFBench_test` Unseen Constraint Recovery (`{m_id}`, `{it_i.get('uid')}`)",
+                            f"- **Instruction IDs**: `{it_i.get('instruction_id_list')}`",
+                            f"- **Prompt**: {_cspan(it_i.get('prompt',''), 340)}",
+                            f"- **B1b (`z=0`, `T={ir['b1b'].get('T_total',0)}`)**: {_cspan(ir['b1b'].get('a_final',''), 300)}",
+                            f"- **Frozen C-BARR M2 (`z=1`, `T={ir['m2'].get('T_total',0)}`)**: {_cspan(ir['m2'].get('a_final',''), 300)}",
+                            "",
+                        ]
+                    )
+                    break
+            break
+
     return "\n".join(lines) + "\n"
 
 
@@ -2328,6 +2504,9 @@ def main() -> None:
     )
     (out_dir / "PAPER_WRITING_DIGEST.md").write_text(
         generate_paper_writing_digest(bundles, stats_out), encoding="utf-8"
+    )
+    (out_dir / "PAPER_QUALITATIVE_EXAMPLES.md").write_text(
+        generate_paper_qualitative_examples(bundles), encoding="utf-8"
     )
     table_parts = generate_latex_table_parts(
         bundles,

@@ -4720,6 +4720,7 @@ class TestPhases4To7(unittest.TestCase):
         from scripts.sync_results import PHASE7_FILES
 
         self.assertIn("PAPER_WRITING_DIGEST.md", PHASE7_FILES)
+        self.assertIn("PAPER_QUALITATIVE_EXAMPLES.md", PHASE7_FILES)
 
         with tempfile.TemporaryDirectory() as td:
             td_p = pathlib.Path(td)
@@ -4733,7 +4734,7 @@ class TestPhases4To7(unittest.TestCase):
             self.assertEqual(kn["b2a_vs_a1_strip"]["base_wins"], 3)
             self.assertEqual(kn["b2a_vs_a1_strip"]["method_wins"], 0)
 
-            # 2. Verify analyze_and_plot.py emits PAPER_WRITING_DIGEST.md and log_experiment.py emits Conformal/Horizons/L2
+            # 2. Verify analyze_and_plot.py emits PAPER_WRITING_DIGEST.md + PAPER_QUALITATIVE_EXAMPLES.md and log_experiment.py emits Conformal/Horizons/L2
             data_dir = td_p / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             out_dir = td_p / "outputs"
@@ -4757,6 +4758,10 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("Proposition 1 Conformal Degradation Risk", digest_txt)
             self.assertIn("Gate-2 Probe Horizon Ablation", digest_txt)
             self.assertIn("Gate-2 L2 Regularization Sensitivity", digest_txt)
+            self.assertIn("End-to-End Wall-Clock Latency", digest_txt)
+            qual_p = out_dir / "PAPER_QUALITATIVE_EXAMPLES.md"
+            self.assertTrue(qual_p.is_file())
+            self.assertIn("Verbatim Qualitative Case Studies", qual_p.read_text(encoding="utf-8"))
 
             r3 = subprocess.run(
                 [

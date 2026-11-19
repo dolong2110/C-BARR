@@ -1757,7 +1757,7 @@ case "$PART_MODE" in
     run_ifbench_ood_stage
     run_phase7_stage
     run_stage "Submission Audit: Double-Blind Anonymity" bash scripts/check_anonymity.sh
-    sync_part_results "script-part-ifbench" 1 "${IFBENCH_MODELS_ARG[@]}"
+    sync_part_results "script-part-ifbench" 1
     ;;
 
   all)

@@ -67,6 +67,7 @@ PHASE7_FILES: tuple[str, ...] = (
     "stats_summary.json",
     "paper_tables.tex",
     "PAPER_WRITING_DIGEST.md",
+    "PAPER_QUALITATIVE_EXAMPLES.md",
 )
 
 
@@ -552,11 +553,13 @@ def pack_outputs_for_repo(
 
         fig_dir = repo_root / "paper" / "figures"
         pdfs = sorted(fig_dir.glob("*.pdf")) if fig_dir.is_dir() else []
+        main_pdf = repo_root / "paper" / "main.pdf"
+        extra_pdfs = [main_pdf] if main_pdf.is_file() else []
         table_dir = repo_root / "paper" / "tables"
         tex_tables = sorted(table_dir.glob("*.tex")) if table_dir.is_dir() else []
-        if pdfs or tex_tables:
+        if pdfs or extra_pdfs or tex_tables:
             _check_paper_anonymity(repo_root)
-            for asset in (*pdfs, *tex_tables):
+            for asset in (*pdfs, *extra_pdfs, *tex_tables):
                 if asset.stat().st_size > max_bytes:
                     raise ValueError(
                         f"{asset} exceeds max_file_mb ({max_file_mb:.2f} MB)."
