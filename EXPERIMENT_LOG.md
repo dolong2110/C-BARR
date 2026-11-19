@@ -799,11 +799,12 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T215019Z -->
 
 <!-- CBARR_RUN_START:20261119T000849Z -->
-### Run `20261119T000849Z` — **RUNNING (after Phase 6 / W6: Qwen3.5-9B (strict341) (merge))** (Updated 2026-11-19 05:53:45 UTC)
-- **Code Version**: `v0.5.22` | **Git Commit**: `62d0d70` | **Results Release**: `v0.5.22-res.9` | **Last Loop**: `Phase 6 / W6: Qwen3.5-9B (strict341) (merge)` | **Wall Time**: `5h 44m 49s` (20689.0s)
+### Run `20261119T000849Z` — **FAILED (exit=1 at Phase 6 / W6: Qwen3.5-9B (strict341) (merge))** (Updated 2026-11-19 05:54:04 UTC)
+- **Code Version**: `v0.5.22` | **Git Commit**: `5edaa78` | **Results Release**: `v0.5.22-res.10` | **Last Loop**: `Phase 6 / W6: Qwen3.5-9B (strict341) (merge)` | **Wall Time**: `5h 45m 06s` (20706.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --color --no-setup --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261119T000849Z.log`
+- **Notes**: [Disk Guard] ERROR: IFBench OOD (Qwen/Qwen3.5-4B) aborted — only 0.30 GB free on outputs (< 1.0 GB floor).
 
 #### 1. Training & Experiment Parameters
 ```json
@@ -820,7 +821,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "62d0d70",
+  "git_rev": "5edaa78",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
