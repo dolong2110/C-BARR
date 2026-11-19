@@ -1,10 +1,10 @@
 {
-  "results_seq": 20,
-  "results_version": "v0.5.27-res.20",
+  "results_seq": 21,
+  "results_version": "v0.5.27-res.21",
   "code_version": "0.5.27",
-  "git_rev": "bd2f8d2-dirty",
-  "sync_label": "checkpoint-Qwen3.5-9B:20261119T114300Z",
-  "updated_utc": "2026-11-19T11:55:41Z",
+  "git_rev": "0ee4b31-dirty",
+  "sync_label": "checkpoint-Qwen3.5-4B:20261119T114300Z",
+  "updated_utc": "2026-11-19T12:39:09Z",
   "consistent_code_versions": true,
   "version_warnings": [],
   "models": {
@@ -141,8 +141,8 @@
       "code_version": "0.5.27",
       "git_rev": "1f3f0e5-dirty",
       "run_id": "20261119T114300Z",
-      "sync_seq": 5,
-      "result_version": "v0.5.27+m5",
+      "sync_seq": 6,
+      "result_version": "v0.5.27+m6",
       "diag_pools": {
         "default": {
           "code_version": "0.5.27",
@@ -174,6 +174,7 @@
         "eval_450_m2v2_comparison.json": "3978f8972bcd132071a529794379f67fbb90fb3080b07036be2fc139bd2ef3cf",
         "ext_deltanet_blend.json": "860a52427057dd258bbb0b2392b2656d9504ab5b571fcef83faed083f7f78d2e",
         "ext_deltanet_blend_conv_kv.json": "d30d016b5b92c866a41dbd512715b73600eaee9e37f46201cf66348c5ccfe749",
+        "ext_ifbench_ood.json": "f45536655acd29c05ad6c03659d52bf9e630312d82966b335bdf7c8f0e65c8b2",
         "matrix_summary.json": "fc293d4571bfe56ee8041416dd05ffbd2b8c31ce50c4f7aeb80e3eff2afdc3b5",
         "matrix_summary_diag491.json": "fc293d4571bfe56ee8041416dd05ffbd2b8c31ce50c4f7aeb80e3eff2afdc3b5",
         "matrix_summary_strict341.json": "3f6c97e06a52cce1e32d5be68aa67a42a533ebc479505a665539733f716fe6e1",
@@ -186,7 +187,8 @@
         "eval_450_cache.jsonl.gz": "db22ade8c8dc2b801b4237d86d59c02b165143e04b2dc4760580add0aac48a56",
         "diag_ehurt_cache.jsonl.gz": "e37361fefe93a74588032893386c9c68279341dd13016cd3f0d14edcdb082ec7",
         "diag_controls_cache.jsonl.gz": "a6b07e825b755a0b7df8dff3c2316735399a219d08d461381bc9a48c49dbb0ac",
-        "ext_deltanet_blend_cache.jsonl.gz": "aa02f600a2e4fed47d5ad140085dd9ab83c5f1547e6b6fa267e20050d1494c86"
+        "ext_deltanet_blend_cache.jsonl.gz": "aa02f600a2e4fed47d5ad140085dd9ab83c5f1547e6b6fa267e20050d1494c86",
+        "ext_ifbench_ood_cache.jsonl.gz": "8d1c9ddb14fdbabb88f44a0855b7cad7cffe57819dd507cd03e531f82605622f"
       }
     },
     "Qwen__Qwen3.5-9B": {
