@@ -469,9 +469,40 @@ if [ -z "$LOG_DIR" ]; then
 fi
 mkdir -p "$OUT_DIR" "$LOG_DIR"
 
-# When --hf-home points to a roomy scratch/NFS mount while /tmp is nearly full, route compiler/pip caches there.
+PY_BIN="${PYTHON_BIN:-python3}"
+if [ -x ".venv/bin/python" ] && [ -z "${PYTHON_BIN:-}" ]; then
+  PY_BIN=".venv/bin/python"
+fi
+
+# Auto-relocate HF_HOME onto a roomy mount (e.g., ~/maplecg_nfs, conda mount, /scratch, /tmp) when ~/.cache/huggingface is cramped (<20 GB free).
+if [ "$IS_MOCK" -eq 0 ] && [ "$OFFLINE_MODE" -eq 0 ]; then
+  if [ -z "${HF_HOME:-}" ]; then
+    _auto_hf_home="$("$PY_BIN" -c "from scripts.gpu_pool import resolve_roomy_hf_home; r = resolve_roomy_hf_home(20.0); print(r or '')" 2>/dev/null || true)"
+    if [ -n "$_auto_hf_home" ]; then
+      export HF_HOME="$_auto_hf_home"
+      echo "[Disk Guard] Auto-relocated HF_HOME -> ${HF_HOME} (cramped default ~/.cache/huggingface bypassed & cleaned)"
+    fi
+  else
+    "$PY_BIN" -c "
+import os, pathlib, shutil
+from scripts.gpu_pool import _free_gb_at, _purge_incomplete_hf_blobs
+def_hf = pathlib.Path.home() / '.cache' / 'huggingface'
+cur_hf = pathlib.Path(os.environ['HF_HOME'])
+if def_hf.is_dir() and def_hf.resolve() != cur_hf.resolve() and _free_gb_at(def_hf) < 15.0:
+    _purge_incomplete_hf_blobs(def_hf)
+    hub = def_hf / 'hub'
+    if hub.is_dir():
+        for it in hub.iterdir():
+            if it.is_dir() and it.name.startswith('models--'):
+                shutil.rmtree(it, ignore_errors=True)
+" 2>/dev/null || true
+  fi
+fi
+
+# When HF_HOME points to a roomy scratch/NFS mount while $HOME or /tmp is nearly full, route hub/compiler/pip caches there.
 if [ -n "${HF_HOME:-}" ]; then
-  mkdir -p "${HF_HOME}/.tmp" "${HF_HOME}/.triton" "${HF_HOME}/.torchinductor" "${HF_HOME}/.pip_cache" 2>/dev/null || true
+  mkdir -p "${HF_HOME}/hub" "${HF_HOME}/.tmp" "${HF_HOME}/.triton" "${HF_HOME}/.torchinductor" "${HF_HOME}/.pip_cache" 2>/dev/null || true
+  export HF_HUB_CACHE="${HF_HOME}/hub"
   if [ -d "${HF_HOME}/.triton" ] && [ -z "${TRITON_CACHE_DIR:-}" ]; then
     export TRITON_CACHE_DIR="${HF_HOME}/.triton"
   fi
@@ -481,11 +512,6 @@ if [ -n "${HF_HOME:-}" ]; then
   if [ -d "${HF_HOME}/.pip_cache" ] && [ -z "${PIP_CACHE_DIR:-}" ]; then
     export PIP_CACHE_DIR="${HF_HOME}/.pip_cache"
   fi
-fi
-
-PY_BIN="${PYTHON_BIN:-python3}"
-if [ -x ".venv/bin/python" ] && [ -z "${PYTHON_BIN:-}" ]; then
-  PY_BIN=".venv/bin/python"
 fi
 
 if [ -n "$RUN_ID_ARG" ]; then

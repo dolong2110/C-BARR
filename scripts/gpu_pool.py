@@ -8,6 +8,8 @@ saturation, live SM utilization, and host CPU/RAM bounds, and polls if GPUs are 
 from __future__ import annotations
 
 import argparse
+import errno
+import getpass
 import json
 import os
 import pathlib
@@ -495,6 +497,165 @@ def _has_complete_hf_weights(snap_dir: pathlib.Path) -> bool:
     )
 
 
+def _existing_anchor(p: pathlib.Path) -> pathlib.Path:
+    for cand in (p, *p.parents):
+        try:
+            if cand.exists():
+                return cand
+        except OSError:
+            continue
+    return pathlib.Path(".")
+
+
+def _free_gb_at(p: pathlib.Path) -> float:
+    try:
+        return shutil.disk_usage(str(_existing_anchor(p))).free / (1024.0**3)
+    except OSError:
+        return 0.0
+
+
+def _purge_incomplete_hf_blobs(hf_root: pathlib.Path) -> None:
+    for sub in ("xet", "downloads"):
+        sp = hf_root / sub
+        if sp.is_dir():
+            shutil.rmtree(sp, ignore_errors=True)
+    hub = hf_root / "hub"
+    if hub.is_dir():
+        for inc in hub.rglob("*.incomplete"):
+            try:
+                inc.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _is_no_space_error(exc: BaseException) -> bool:
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.ENOSPC:
+        return True
+    msg = str(exc).lower()
+    return "no space left on device" in msg or "[errno 28]" in msg
+
+
+def resolve_roomy_hf_home(
+    min_free_gb: float = 20.0,
+    *,
+    home_dir: pathlib.Path | None = None,
+    extra_roots: list[pathlib.Path] | None = None,
+    reclaim_cramped_default: bool = True,
+) -> str | None:
+    """Auto-discovers a writable mount (e.g., ~/maplecg_nfs, conda mount, /scratch, /tmp) when default HF_HOME lacks space."""
+    hdir = home_dir or pathlib.Path.home()
+    default_hf = hdir / ".cache" / "huggingface"
+    cur_hf = pathlib.Path(os.environ.get("HF_HOME") or default_hf)
+
+    if _free_gb_at(cur_hf) < min_free_gb and cur_hf.is_dir():
+        _purge_incomplete_hf_blobs(cur_hf)
+    if _free_gb_at(cur_hf) >= min_free_gb:
+        return None
+
+    try:
+        home_dev = _existing_anchor(hdir).stat().st_dev
+    except OSError:
+        home_dev = -1
+
+    tier1: list[pathlib.Path] = []
+    if extra_roots:
+        tier1.extend(extra_roots)
+
+    # 1a. Mounted volumes or scratch/NFS dirs directly inside $HOME (e.g., ~/maplecg_nfs)
+    if hdir.is_dir():
+        mount_hints = ("nfs", "scratch", "storage", "work", "data", "mnt", "nvme", "ssd", "volume")
+        try:
+            for sub in sorted(hdir.iterdir()):
+                if sub.name.startswith(".") or not sub.is_dir():
+                    continue
+                try:
+                    diff_dev = home_dev != -1 and sub.stat().st_dev != home_dev
+                except OSError:
+                    diff_dev = False
+                if diff_dev or any(tok in sub.name.lower() for tok in mount_hints):
+                    tier1.append(sub)
+        except OSError:
+            pass
+
+    # 1b. Shallowest writable ancestors of CONDA_PREFIX / sys.executable on roomy mounts
+    skip_roots = {
+        pathlib.Path("/"),
+        pathlib.Path("/home"),
+        pathlib.Path("/Users"),
+        pathlib.Path("/usr"),
+        pathlib.Path("/bin"),
+        pathlib.Path("/opt"),
+        pathlib.Path("/var"),
+        hdir,
+    }
+    for env_path in (os.environ.get("CONDA_PREFIX", ""), os.path.abspath(sys.executable)):
+        if not env_path:
+            continue
+        ancs = [a for a in reversed(pathlib.Path(env_path).parents) if a not in skip_roots]
+        tier1.extend(ancs)
+
+    # 1c. Standard cluster scratch directories (only when probing real host, not isolated unit-test home_dir)
+    try:
+        uname = getpass.getuser()
+    except Exception:
+        uname = "user"
+    tier2: list[pathlib.Path] = []
+    if home_dir is None:
+        for base in ("/scratch", "/data", "/mnt/scratch"):
+            bp = pathlib.Path(base)
+            if bp.is_dir():
+                tier1.append(bp / uname)
+        tmp_p = pathlib.Path("/tmp")
+        if tmp_p.is_dir():
+            tier2.append(tmp_p / f"{uname}_cbarr_hf")
+
+    seen: set[str] = set()
+    chosen: pathlib.Path | None = None
+    for tier in (tier1, tier2):
+        best_cand: pathlib.Path | None = None
+        best_free = 0.0
+        for root in tier:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            free_gb = _free_gb_at(root)
+            if free_gb < min_free_gb or free_gb <= best_free:
+                continue
+            target = root if root.name.endswith("_cbarr_hf") else (root / ".cbarr_hf_cache")
+            probe_f = target / "hub" / f".probe_{os.getpid()}"
+            try:
+                probe_f.parent.mkdir(parents=True, exist_ok=True)
+                probe_f.write_bytes(b"ok")
+                probe_f.unlink(missing_ok=True)
+            except OSError:
+                continue
+            best_cand = target
+            best_free = free_gb
+        if best_cand is not None:
+            chosen = best_cand
+            break
+
+    if chosen is None:
+        return None
+
+    # Reclaim stranded partial/model blobs from cramped default ~/.cache/huggingface so $HOME stays free for git/outputs
+    if reclaim_cramped_default and default_hf.is_dir() and _free_gb_at(default_hf) < 15.0:
+        try:
+            same_target = chosen.resolve() == default_hf.resolve()
+        except OSError:
+            same_target = False
+        if not same_target:
+            _purge_incomplete_hf_blobs(default_hf)
+            def_hub = default_hf / "hub"
+            if def_hub.is_dir():
+                for item in def_hub.iterdir():
+                    if item.is_dir() and item.name.startswith("models--"):
+                        shutil.rmtree(item, ignore_errors=True)
+
+    return str(chosen)
+
+
 def prewarm_hf_model_weights(
     model_id: str,
     *,
@@ -509,11 +670,34 @@ def prewarm_hf_model_weights(
     if offline or os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
         return True
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    if snapshot_fn is None:
+    using_real_hf = snapshot_fn is None
+    if using_real_hf:
+        need_gb = max(10.0, round(2.3 * _estimate_model_billions(model_id) + 2.0, 1))
+        reloc = resolve_roomy_hf_home(min_free_gb=need_gb)
+        if reloc:
+            os.environ["HF_HOME"] = reloc
+            os.environ["HF_HUB_CACHE"] = str(pathlib.Path(reloc) / "hub")
+            print(
+                hl(
+                    f"[hf_prewarm] Relocated HF cache to roomy mount: {reloc} ({_free_gb_at(pathlib.Path(reloc)):.1f} GB free)",
+                    "green",
+                ),
+                flush=True,
+            )
         try:
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import snapshot_download as _hf_snap
 
-            snapshot_fn = snapshot_download
+            def _wrapped_snap(**kw: Any) -> str:
+                hub_c = os.environ.get("HF_HUB_CACHE") or (
+                    str(pathlib.Path(os.environ["HF_HOME"]) / "hub") if os.environ.get("HF_HOME") else None
+                )
+                if hub_c:
+                    kw.setdefault("cache_dir", hub_c)
+                if not kw.get("local_files_only"):
+                    kw.setdefault("max_workers", 4)
+                return str(_hf_snap(**kw))
+
+            snapshot_fn = _wrapped_snap
         except Exception:
             return False
 
@@ -547,6 +731,15 @@ def prewarm_hf_model_weights(
                 print(hl(f"[hf_prewarm] Verified complete checkpoint shards for {model_id}.", "green"), flush=True)
                 return True
         except Exception as exc:
+            if _is_no_space_error(exc):
+                hf_cur = pathlib.Path(os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache" / "huggingface"))
+                _purge_incomplete_hf_blobs(hf_cur)
+                msg = (
+                    f"[hf_prewarm] FATAL: Disk full while caching {model_id} in {hf_cur} ({exc}). "
+                    f"Pass --hf-home <dir_with_20GB_free> (e.g., ~/maplecg_nfs/.cbarr_hf_cache)."
+                )
+                print(hl(msg, "red"), file=sys.stderr, flush=True)
+                raise RuntimeError(msg) from exc
             if attempt >= attempts:
                 print(
                     hl(

@@ -4708,6 +4708,43 @@ class TestPhases4To7(unittest.TestCase):
                 self.assertFalse((hf_home / "xet").exists())
                 self.assertFalse((hf_home / "hub" / "models--Qwen--Qwen3.5-9B").exists())
                 self.assertTrue((hf_home / "hub" / "models--Qwen--Qwen3.5-4B").is_dir())
+
+                # Verify ENOSPC fails fast (cleans .incomplete, raises RuntimeError without useless retries)
+                from unittest import mock as _umock
+                from scripts.gpu_pool import resolve_roomy_hf_home
+
+                fake_home = td_p / "fake_home"
+                cramped_hf = fake_home / ".cache" / "huggingface"
+                (cramped_hf / "hub" / "models--Qwen--Qwen3.5-4B" / "blobs").mkdir(parents=True)
+                inc_blob = cramped_hf / "hub" / "models--Qwen--Qwen3.5-4B" / "blobs" / "part.incomplete"
+                inc_blob.write_bytes(b"partial")
+                roomy_nfs = fake_home / "maplecg_nfs"
+                roomy_nfs.mkdir(parents=True)
+
+                def _fake_du(p_str: str):
+                    nt = _umock.MagicMock()
+                    nt.free = int((120.0 if "maplecg_nfs" in p_str else 1.2) * (1024**3))
+                    return nt
+
+                with _umock.patch("scripts.gpu_pool.shutil.disk_usage", side_effect=_fake_du), _umock.patch.dict(
+                    os.environ, {"HF_HOME": str(cramped_hf)}, clear=False
+                ):
+                    reloc = resolve_roomy_hf_home(20.0, home_dir=fake_home)
+                    self.assertEqual(reloc, str(roomy_nfs / ".cbarr_hf_cache"))
+                    self.assertFalse((cramped_hf / "hub" / "models--Qwen--Qwen3.5-4B").exists())
+
+                def _enospc_snap(**kw):
+                    if kw.get("local_files_only"):
+                        raise FileNotFoundError("not cached")
+                    raise OSError(28, "No space left on device")
+
+                with _umock.patch.dict(os.environ, {"HF_HOME": str(cramped_hf)}, clear=False):
+                    (cramped_hf / "hub").mkdir(parents=True, exist_ok=True)
+                    inc2 = cramped_hf / "hub" / "stuck.incomplete"
+                    inc2.write_bytes(b"stuck")
+                    with self.assertRaises(RuntimeError):
+                        prewarm_hf_model_weights("Qwen/Qwen3.5-4B", max_retries=3, snapshot_fn=_enospc_snap)
+                    self.assertFalse(inc2.exists())
         finally:
             if prev_xet is None:
                 os.environ.pop("HF_HUB_DISABLE_XET", None)
