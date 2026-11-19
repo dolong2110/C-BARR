@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+from collections import deque
 import json
 import os
 import pathlib
@@ -53,6 +54,7 @@ class _ShardState:
     shard_dir: pathlib.Path
     proc: subprocess.Popen[bytes]
     start_ts: float
+    slot_idx: int = 0
     end_ts: float | None = None
     rc: int | None = None
     last_line: str = ""
@@ -138,7 +140,9 @@ def _split_specs(calibrate_only: bool, strict_diag: bool) -> tuple[tuple[str, st
     return tuple(specs)
 
 
-def _read_jsonl_uids(path: pathlib.Path, *, item_nested: bool = False) -> list[str]:
+def _read_jsonl_uids(
+    path: pathlib.Path, *, item_nested: bool = False, require_key: str | None = None
+) -> list[str]:
     if not path.is_file():
         return []
     uids: list[str] = []
@@ -150,6 +154,8 @@ def _read_jsonl_uids(path: pathlib.Path, *, item_nested: bool = False) -> list[s
             try:
                 obj = json.loads(raw)
             except json.JSONDecodeError:
+                continue
+            if require_key and require_key not in obj:
                 continue
             if item_nested:
                 uid = str((obj.get("item") or {}).get("uid") or obj.get("uid") or "")
@@ -191,6 +197,8 @@ def _load_split_baselines(
     model_dir: pathlib.Path,
     specs: tuple[tuple[str, str, str, str], ...],
     n_shards: int,
+    *,
+    include_b512: bool = False,
 ) -> tuple[dict[str, int], list[dict[str, int]], list[dict[str, int]], dict[str, int]]:
     total_targets: dict[str, int] = {}
     shard_targets: list[dict[str, int]] = [{} for _ in range(n_shards)]
@@ -199,7 +207,8 @@ def _load_split_baselines(
 
     for tag, _, data_fname, cache_fname in specs:
         uids = _read_jsonl_uids(data_dir / data_fname, item_nested=False)
-        canon_uids = set(_read_jsonl_uids(model_dir / cache_fname, item_nested=True))
+        req_k = "m2_b512" if (tag == "eval_450" and include_b512) else None
+        canon_uids = set(_read_jsonl_uids(model_dir / cache_fname, item_nested=True, require_key=req_k))
         uid_set = set(uids)
         total_targets[tag] = len(uids)
         total_canon[tag] = sum(1 for u in uid_set if u in canon_uids)
@@ -312,9 +321,9 @@ def _stream_worker(
     event_q.put((state.idx, "exit", str(rc)))
 
 
-def _terminate_children(states: list[_ShardState]) -> None:
+def _terminate_children(states: list[_ShardState | None]) -> None:
     """Best-effort graceful SIGTERM -> SIGKILL cleanup of active GPU child shards."""
-    alive = [st for st in states if st.proc.poll() is None]
+    alive = [st for st in states if st is not None and st.proc.poll() is None]
     if not alive:
         return
     for st in alive:
@@ -337,23 +346,30 @@ def _terminate_children(states: list[_ShardState]) -> None:
 
 def _render_snapshot(
     stage_name: str,
-    states: list[_ShardState],
+    states: list[_ShardState | None],
     specs: tuple[tuple[str, str, str, str], ...],
     total_targets: dict[str, int],
     shard_targets: list[dict[str, int]],
     shard_canon: list[dict[str, int]],
     total_canon: dict[str, int],
     start_ts: float,
+    *,
+    n_workers: int = 0,
+    pre_done_count: int = 0,
 ) -> str:
     now = time.monotonic()
     elapsed = _format_dur(now - start_ts)
-    done_ok = sum(1 for st in states if st.rc == 0)
-    done_fail = sum(1 for st in states if st.rc is not None and st.rc != 0)
-    active = len(states) - done_ok - done_fail
+    total_shards = len(states)
+    eff_workers = n_workers if n_workers > 0 else total_shards
+    spawned = [st for st in states if st is not None]
+    done_ok = pre_done_count + sum(1 for st in spawned if st.rc == 0)
+    done_fail = sum(1 for st in spawned if st.rc is not None and st.rc != 0)
+    active = sum(1 for st in spawned if st.rc is None)
+    queued = max(0, total_shards - pre_done_count - len(spawned))
 
     agg_done: dict[str, int] = {}
-    per_shard_done: list[dict[str, int]] = []
-    for st in states:
+    per_shard_done: dict[int, dict[str, int]] = {}
+    for st in spawned:
         s_counts: dict[str, int] = {}
         for tag, _, _, cache_fname in specs:
             new_rows = _count_newlines(st.shard_dir / cache_fname)
@@ -361,7 +377,7 @@ def _render_snapshot(
             canon_n = shard_canon[st.idx].get(tag, 0)
             s_counts[tag] = min(target, canon_n + new_rows) if target > 0 else (canon_n + new_rows)
             agg_done[tag] = agg_done.get(tag, 0) + new_rows
-        per_shard_done.append(s_counts)
+        per_shard_done[st.idx] = s_counts
 
     split_parts: list[str] = []
     sum_done_all = 0
@@ -387,8 +403,9 @@ def _render_snapshot(
         else f"[Shards Progress | {stage_name}]"
     )
     el_txt = hl(f"elapsed={elapsed}", "white")
-    act_txt = hl(f"active={active}/{len(states)}", "yellow" if active > 0 else "muted")
-    done_txt = hl(f"done={done_ok}/{len(states)}", "green" if done_ok > 0 else "muted")
+    act_txt = hl(f"active={active}/{eff_workers}", "yellow" if active > 0 else "muted")
+    done_txt = hl(f"done={done_ok}/{total_shards}", "green" if done_ok > 0 else "muted")
+    q_txt = f" {hl(f'queued={queued}', 'cyan')}" if total_shards > eff_workers else ""
     fail_txt = (
         hl(f" fail={done_fail} ", "badge_fail")
         if (use_color and done_fail > 0)
@@ -397,16 +414,24 @@ def _render_snapshot(
     overall_bar = fmt_progress_bar(sum_done_all, sum_tgt_all, width=18)
     bar_prefix = f"{overall_bar}  " if overall_bar else ""
 
-    border_style = "red" if done_fail > 0 else ("green" if active == 0 else "cyan")
+    border_style = "red" if done_fail > 0 else ("green" if (active == 0 and queued == 0) else "cyan")
     rows: list[str] = []
     if use_color:
         rows.append(hl("━" * 96, border_style))
     rows.append(
-        f"{hl(f'[{_utc_iso()}]', 'muted')} {title_pill} {el_txt} | {act_txt} {done_txt} {fail_txt}\n"
+        f"{hl(f'[{_utc_iso()}]', 'muted')} {title_pill} {el_txt} | {act_txt} {done_txt}{q_txt} {fail_txt}\n"
         + f"  {hl('Total (canon+shards):', 'white')} {bar_prefix}{'  '.join(split_parts)}"
     )
 
-    for st in states:
+    if total_shards > eff_workers:
+        display_states = sorted(
+            [st for st in spawned if st.rc is None or st.rc != 0],
+            key=lambda s: (s.slot_idx, s.idx),
+        )
+    else:
+        display_states = spawned
+
+    for st in display_states:
         st_dur = _format_dur((st.end_ts or now) - st.start_ts)
         if st.rc is None:
             badge = status_badge("run", "RUN ")
@@ -417,7 +442,7 @@ def _render_snapshot(
 
         s_parts: list[str] = []
         for tag, short_lbl, _, _ in specs:
-            d_n = per_shard_done[st.idx].get(tag, 0)
+            d_n = per_shard_done.get(st.idx, {}).get(tag, 0)
             t_n = shard_targets[st.idx].get(tag, 0)
             if t_n > 0:
                 cell = f"{short_lbl}={d_n}/{t_n}"
@@ -432,7 +457,13 @@ def _render_snapshot(
         latest_col = hl(latest, "sky") if latest == "starting..." else colorize_log_line(latest)
         idle_s = int(max(0.0, now - st.last_activity_ts)) if st.last_activity_ts > 0 else 0
         idle_note = hl(f" ({idle_s}s ago)", "orange") if st.rc is None and idle_s >= 15 else ""
-        gpu_lbl = hl(f"GPU{st.idx:<2d}(dev={st.cuda_dev})", gpu_color(st.idx)) if use_color else f"GPU{st.idx}(dev={st.cuda_dev})"
+        disp_gpu = st.slot_idx if total_shards > eff_workers else st.idx
+        micro_lbl = f" [s{st.idx}/{total_shards}]" if total_shards > eff_workers else ""
+        gpu_lbl = (
+            hl(f"GPU{disp_gpu:<2d}(dev={st.cuda_dev}){micro_lbl}", gpu_color(disp_gpu))
+            if use_color
+            else f"GPU{disp_gpu}(dev={st.cuda_dev}){micro_lbl}"
+        )
         dur_lbl = hl(f"{st_dur:>6s}", "white")
         sep = hl("|", "muted")
         rows.append(
@@ -463,6 +494,12 @@ def _parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, list
         choices=["auto", "all", "milestones", "off"],
     )
     parser.add_argument("--threads-per-worker", type=int, default=4)
+    parser.add_argument(
+        "--queue-mult",
+        type=str,
+        default=os.environ.get("CBARR_QUEUE_MULT", "auto"),
+        help="Micro-shard over-decomposition factor per worker slot for dynamic work-stealing ('auto' -> 2x-3x on live multi-GPU).",
+    )
     raw_stagger = os.environ.get("CBARR_SPAWN_STAGGER_SEC", "").strip()
     parser.add_argument(
         "--stagger-sec",
@@ -558,12 +595,15 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     log_dir = pathlib.Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    n_shards = int(args.shards)
+    n_workers = int(args.shards)
     vis_list = [x.strip() for x in args.visible_gpus.split(",") if x.strip()]
     slug = args.model.replace("/", "__")
     model_dir = _resolve_model_dir(out_dir, args.model, cmd_base)
     strict_diag = "--strict-diag" in cmd_base
     calibrate_only = "--calibrate-only" in cmd_base
+    include_b512 = "--include-b512" in cmd_base
+    is_mock = "--mock" in cmd_base
+    is_matrix_cmd = any("run_matrix.py" in str(tok) for tok in cmd_base)
     pre_harvested = _merge_and_prune_matrix_shards(data_dir, model_dir, strict_diag=strict_diag)
     if pre_harvested:
         print(
@@ -571,30 +611,63 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
             flush=True,
         )
     specs = _split_specs(calibrate_only=calibrate_only, strict_diag=strict_diag)
-    total_targets, shard_targets, shard_canon, total_canon = _load_split_baselines(
-        data_dir, model_dir, specs, n_shards
+    init_targets, _, _, init_canon = _load_split_baselines(
+        data_dir, model_dir, specs, n_workers, include_b512=include_b512
     )
+
+    q_raw = str(args.queue_mult or "auto").strip().lower()
+    if q_raw == "auto":
+        if is_mock or calibrate_only or n_workers <= 1 or not is_matrix_cmd:
+            q_mult = 1
+        else:
+            rem_total = sum(max(0, init_targets.get(t, 0) - init_canon.get(t, 0)) for t, _, _, _ in specs)
+            if rem_total >= n_workers * 36:
+                q_mult = 3
+            elif rem_total >= n_workers * 18:
+                q_mult = 2
+            else:
+                q_mult = 1
+    else:
+        q_mult = max(1, int(q_raw))
+
+    total_shards = n_workers * q_mult
+    total_targets, shard_targets, shard_canon, total_canon = _load_split_baselines(
+        data_dir, model_dir, specs, total_shards, include_b512=include_b512
+    )
+
+    pre_done_set: set[int] = set()
+    if q_mult > 1 and is_matrix_cmd:
+        for s_idx in range(total_shards):
+            if all(shard_canon[s_idx].get(t, 0) >= shard_targets[s_idx].get(t, 0) for t, _, _, _ in specs):
+                pre_done_set.add(s_idx)
 
     prewarmed_offline = _prewarm_hf_snapshot(args.model, cmd_base)
     threads_cap = str(max(1, int(args.threads_per_worker)))
 
-    def _cuda_for(s_idx: int) -> str:
-        return vis_list[s_idx % len(vis_list)] if vis_list else str(s_idx)
+    def _cuda_for(slot_i: int) -> str:
+        return vis_list[slot_i % len(vis_list)] if vis_list else str(slot_i)
 
     gpu_map = ", ".join(
-        hl(f"shard{i}->dev{_cuda_for(i)}", gpu_color(i)) for i in range(n_shards)
+        hl(f"shard{i}->dev{_cuda_for(i)}", gpu_color(i)) for i in range(n_workers)
     )
     first_log = log_dir / f"cbarr_{args.run_id}_gpu0_{slug}.log"
     sh_tag = hl("[sharded]", "cyan")
-    print(f"[{_utc_iso()}] {sh_tag} GPU map ({n_shards}): {gpu_map}", flush=True)
+    if total_shards > n_workers:
+        q_info = hl(
+            f"work-stealing queue={total_shards} micro-shards ({len(pre_done_set)} cached, {total_shards - len(pre_done_set)} todo)",
+            "yellow",
+        )
+        print(f"[{_utc_iso()}] {sh_tag} GPU map ({n_workers}): {gpu_map} | {q_info}", flush=True)
+    else:
+        print(f"[{_utc_iso()}] {sh_tag} GPU map ({n_workers}): {gpu_map}", flush=True)
     print(
-        f"[{_utc_iso()}] {sh_tag} Per-GPU logs (threads={threads_cap}/worker): {log_dir}/cbarr_{args.run_id}_gpu{{0..{n_shards - 1}}}_{slug}.log",
+        f"[{_utc_iso()}] {sh_tag} Per-GPU logs (threads={threads_cap}/worker): {log_dir}/cbarr_{args.run_id}_gpu{{0..{n_workers - 1}}}_{slug}.log",
         flush=True,
     )
     print(f"[{_utc_iso()}] {sh_tag} Live follow : {hl(f'tail -f {first_log}', 'yellow')}", flush=True)
 
     event_q: queue.Queue[tuple[int, str, str]] = queue.Queue()
-    states: list[_ShardState] = []
+    states: list[_ShardState | None] = [None] * total_shards
     threads: list[threading.Thread] = []
     start_ts = time.monotonic()
 
@@ -609,8 +682,7 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
     prev_term = signal.signal(signal.SIGTERM, _on_signal)
 
     try:
-        is_mock = "--mock" in cmd_base
-        if is_mock or n_shards <= 1:
+        if is_mock or n_workers <= 1:
             stagger_sec = 0.0
         elif float(args.stagger_sec) >= 0.0:
             stagger_sec = min(15.0, float(args.stagger_sec))
@@ -619,23 +691,22 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
 
             pb = _estimate_model_billions(args.model)
             stagger_sec = 8.0 if pb >= 7.0 else (3.0 if pb >= 2.8 else 1.5)
-        for s_idx in range(n_shards):
-            if s_idx > 0 and stagger_sec > 0.0:
-                time.sleep(stagger_sec)
-            cuda_dev = _cuda_for(s_idx)
-            s_log = log_dir / f"cbarr_{args.run_id}_gpu{s_idx}_{slug}.log"
-            shard_dir = model_dir / "shards" / f"shard_{s_idx}_of_{n_shards}"
+
+        def _spawn_shard_on_slot(s_idx: int, slot_i: int) -> None:
+            cuda_dev = _cuda_for(slot_i)
+            s_log = log_dir / f"cbarr_{args.run_id}_gpu{slot_i}_{slug}.log"
+            shard_dir = model_dir / "shards" / f"shard_{s_idx}_of_{total_shards}"
             s_log.parent.mkdir(parents=True, exist_ok=True)
             with s_log.open("a", encoding="utf-8") as fh:
                 fh.write(
-                    f"[{_utc_iso()}] [shard {s_idx}/{n_shards} | dev={cuda_dev} | model={args.model}]\n"
+                    f"[{_utc_iso()}] [shard {s_idx}/{total_shards} | slot={slot_i} | dev={cuda_dev} | model={args.model}]\n"
                 )
             cmd = [
                 *cmd_base,
                 "--shard-idx",
                 str(s_idx),
                 "--num-shards",
-                str(n_shards),
+                str(total_shards),
                 "--step-checkpoint-every",
                 "0",
             ]
@@ -664,9 +735,10 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                 shard_dir=shard_dir,
                 proc=proc,
                 start_ts=time.monotonic(),
+                slot_idx=slot_i,
                 last_activity_ts=time.monotonic(),
             )
-            states.append(st)
+            states[s_idx] = st
             th = threading.Thread(
                 target=_stream_worker,
                 args=(st, args.shard_log, event_q),
@@ -675,12 +747,23 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
             th.start()
             threads.append(th)
 
-        remaining = n_shards
+        pending_queue: deque[int] = deque(
+            s_idx for s_idx in range(total_shards) if s_idx not in pre_done_set
+        )
+        active_slots = 0
+        initial_launches = min(n_workers, len(pending_queue))
+        for slot_i in range(initial_launches):
+            if slot_i > 0 and stagger_sec > 0.0:
+                time.sleep(stagger_sec)
+            s_idx = pending_queue.popleft()
+            _spawn_shard_on_slot(s_idx, slot_i)
+            active_slots += 1
+
         rc_all = 0
         last_snap_ts = start_ts
         progress_sec = float(args.progress_sec)
 
-        while remaining > 0:
+        while active_slots > 0:
             if interrupted_sig:
                 break
             try:
@@ -689,27 +772,44 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                 s_idx, kind, payload = -1, "", ""
 
             if kind == "line":
-                cuda_dev = states[s_idx].cuda_dev
-                tag = hl(f"[GPU{s_idx}](dev={cuda_dev})", gpu_color(s_idx))
+                st = states[s_idx]
+                assert st is not None
+                disp_gpu = st.slot_idx if total_shards > n_workers else s_idx
+                tag = hl(f"[GPU{disp_gpu}](dev={st.cuda_dev})", gpu_color(disp_gpu))
                 print(f"{tag} {colorize_log_line(payload)}", flush=True)
             elif kind == "exit":
-                remaining -= 1
                 rc_val = int(payload)
                 st = states[s_idx]
+                assert st is not None
+                slot_i = st.slot_idx
+                disp_gpu = slot_i if total_shards > n_workers else s_idx
                 dur_s = _format_dur((st.end_ts or time.monotonic()) - st.start_ts)
                 if rc_val == 0:
-                    done_cnt = sum(1 for x in states if x.rc == 0)
+                    done_cnt = len(pre_done_set) + sum(1 for x in states if x is not None and x.rc == 0)
                     pill = f"{status_badge('done', 'DONE')} " if colors_enabled() else ""
-                    msg = hl(f"GPU{s_idx} (dev={st.cuda_dev}) DONE in {dur_s}", "green")
-                    cnt_lbl = hl(f"({done_cnt}/{n_shards} finished)", "cyan")
-                    print(
-                        f"[{_utc_iso()}] {sh_tag} {pill}{msg} {cnt_lbl}",
-                        flush=True,
-                    )
+                    shard_sfx = f" [shard {s_idx}/{total_shards}]" if total_shards > n_workers else ""
+                    msg = hl(f"GPU{disp_gpu} (dev={st.cuda_dev}) DONE in {dur_s}{shard_sfx}", "green")
+                    if pending_queue and rc_all == 0 and not interrupted_sig:
+                        next_s = pending_queue.popleft()
+                        steal_lbl = hl(
+                            f"-> stealing shard {next_s}/{total_shards} ({done_cnt}/{total_shards} done, {len(pending_queue)} queued)",
+                            "cyan",
+                        )
+                        print(f"[{_utc_iso()}] {sh_tag} {pill}{msg} {steal_lbl}", flush=True)
+                        _spawn_shard_on_slot(next_s, slot_i)
+                    else:
+                        active_slots -= 1
+                        cnt_lbl = hl(f"({done_cnt}/{total_shards} finished)", "cyan")
+                        print(
+                            f"[{_utc_iso()}] {sh_tag} {pill}{msg} {cnt_lbl}",
+                            flush=True,
+                        )
                 else:
                     rc_all = 1
+                    active_slots -= 1
+                    pending_queue.clear()
                     pill = f"{status_badge('fail', f'EXIT {rc_val}')} " if colors_enabled() else ""
-                    msg = hl(f"GPU{s_idx} (dev={st.cuda_dev}) FAILED exit={rc_val} after {dur_s}", "red")
+                    msg = hl(f"GPU{disp_gpu} (dev={st.cuda_dev}) FAILED exit={rc_val} after {dur_s}", "red")
                     print(
                         f"[{_utc_iso()}] {sh_tag} {pill}{msg} — log: {hl(str(st.log_path), 'yellow')}",
                         flush=True,
@@ -718,19 +818,19 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                     if tail:
                         print(hl("--- Last lines of failed shard log ---", "red"), flush=True)
                         for ln in tail:
-                            print(f"  {hl(f'[GPU{s_idx}!]', 'red')} {colorize_log_line(ln)}", flush=True)
+                            print(f"  {hl(f'[GPU{disp_gpu}!]', 'red')} {colorize_log_line(ln)}", flush=True)
                         print(hl("--- End failed shard log ---", "red"), flush=True)
-                    if remaining > 0:
+                    if active_slots > 0:
                         print(
                             hl(
-                                f"[{_utc_iso()}] [sharded] Waiting for {remaining} active sibling shard(s) to finish flushing caches...",
+                                f"[{_utc_iso()}] [sharded] Waiting for {active_slots} active sibling shard(s) to finish flushing caches...",
                                 "orange",
                             ),
                             flush=True,
                         )
 
             now = time.monotonic()
-            if progress_sec > 0.0 and remaining > 0 and (now - last_snap_ts) >= progress_sec:
+            if progress_sec > 0.0 and active_slots > 0 and (now - last_snap_ts) >= progress_sec:
                 print(
                     _render_snapshot(
                         args.stage_name,
@@ -741,6 +841,8 @@ def run_sharded_stage(args: argparse.Namespace, cmd_base: list[str]) -> int:
                         shard_canon,
                         total_canon,
                         start_ts,
+                        n_workers=n_workers,
+                        pre_done_count=len(pre_done_set),
                     ),
                     flush=True,
                 )

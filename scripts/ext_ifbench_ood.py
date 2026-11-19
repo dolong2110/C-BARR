@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import inspect
 import json
@@ -713,6 +714,8 @@ def _run_multi_shard(
     cands = [g.strip() for g in str(args.gpu_ids).split(",") if g.strip()] or None
     cur_safety = float(args.safety_mult)
     cur_wpg = str(args.workers_per_gpu)
+    if (bool(getattr(args, "gpu_boost", False)) or os.environ.get("CBARR_GPU_BOOST") == "1") and cur_wpg.lower() == "auto":
+        cur_wpg = "max"
     worker_map: list[str] = []
     if not args.mock:
         try:
@@ -739,17 +742,25 @@ def _run_multi_shard(
         if not worker_map:
             worker_map = cands or ["0"]
 
-    num_shards = min(num_shards, max(1, len(items)))
-    if num_shards <= 1:
-        # Delegate directly to single-process worker inside same process when num_shards == 1
+    n_slots = min(num_shards, max(1, len(items)))
+    if n_slots <= 1:
+        # Delegate directly to single-process worker inside same process when n_slots == 1
         args.shards = "1"
         args.num_shards = 1
         args.shard_id = 0
         _run_worker(args, items, out_dir, summary_path)
         return
 
+    q_raw = str(getattr(args, "queue_mult", "auto") or "auto").strip().lower()
+    if q_raw == "auto":
+        q_mult = 2 if (not args.mock and len(items) >= n_slots * 12) else 1
+    else:
+        q_mult = max(1, int(q_raw))
+    num_shards = min(len(items), n_slots * q_mult)
+
     print(
-        f"[ext_ifbench] Multi-shard launch: {num_shards} shards across slots {worker_map[:num_shards]}",
+        f"{hl('[ext_ifbench]', 'cyan')} Multi-shard launch: {hl(f'{n_slots} GPU slots', 'green')} "
+        f"({num_shards} micro-shards) across {worker_map[:n_slots]}",
         flush=True,
     )
     prewarmed = (
@@ -763,7 +774,7 @@ def _run_multi_shard(
     pending_shards = list(range(num_shards))
     attempt = 0
 
-    if args.mock or num_shards <= 1:
+    if args.mock or n_slots <= 1:
         stagger_sec = 0.0
     elif float(args.stagger_sec) >= 0.0:
         stagger_sec = min(15.0, float(args.stagger_sec))
@@ -785,9 +796,12 @@ def _run_multi_shard(
                 ) or worker_map
             except Exception:
                 pass
-        procs: list[tuple[int, subprocess.Popen[str], pathlib.Path]] = []
-        for idx, sid in enumerate(pending_shards):
-            gpu_id = worker_map[sid % len(worker_map)]
+        eff_slots = max(1, min(len(worker_map), n_slots, len(pending_shards)))
+        todo_q: deque[int] = deque(pending_shards)
+        active_map: dict[int, tuple[int, subprocess.Popen[str], pathlib.Path]] = {}
+
+        def _launch_ifb_shard(sid: int, slot_i: int) -> None:
+            gpu_id = worker_map[slot_i % len(worker_map)]
             s_cache = shard_dir / f"shard_{sid:02d}_cache.jsonl"
             s_log = shard_dir / f"shard_{sid:02d}_attempt{attempt}.log"
             cmd = [
@@ -822,53 +836,64 @@ def _run_multi_shard(
                 env["HF_HUB_OFFLINE"] = "1"
             if not args.mock and gpu_id != "cpu":
                 env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            if idx > 0 and stagger_sec > 0.0:
-                time.sleep(stagger_sec)
             log_f = s_log.open("w", encoding="utf-8")
             try:
                 proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT, env=env, text=True)
             finally:
                 log_f.close()
-            procs.append((sid, proc, s_log))
+            active_map[slot_i] = (sid, proc, s_log)
+
+        for slot_i in range(eff_slots):
+            if slot_i > 0 and stagger_sec > 0.0:
+                time.sleep(stagger_sec)
+            _launch_ifb_shard(todo_q.popleft(), slot_i)
 
         failed_shards: list[int] = []
-        reported_exit: set[int] = set()
+        done_cnt = 0
+        total_wave = len(pending_shards)
         t_batch = time.perf_counter()
         last_prog_ts = t_batch
         canon_n = len(_load_jsonl(out_dir / "ext_ifbench_ood_cache.jsonl")) if (out_dir / "ext_ifbench_ood_cache.jsonl").is_file() else 0
-        while True:
-            alive_cnt = 0
-            done_cnt = 0
-            fail_cnt = 0
-            for sid, proc, s_log in procs:
+        while active_map:
+            for slot_i in list(active_map.keys()):
+                sid, proc, s_log = active_map[slot_i]
                 rc = proc.poll()
                 if rc is None:
-                    alive_cnt += 1
-                elif rc == 0:
+                    continue
+                dev_lbl = worker_map[slot_i % len(worker_map)]
+                if rc == 0:
                     done_cnt += 1
-                    if sid not in reported_exit:
-                        reported_exit.add(sid)
-                        dev_lbl = worker_map[sid % len(worker_map)]
+                    if todo_q and not failed_shards:
+                        next_sid = todo_q.popleft()
                         print(
                             f"{hl('[ext_ifbench]', 'cyan')} {status_badge('done', 'DONE')} "
-                            f"{hl(f'GPU{sid}(dev={dev_lbl})', gpu_color(sid))} finished ({done_cnt}/{len(procs)})",
+                            f"{hl(f'GPU{slot_i}(dev={dev_lbl})', gpu_color(slot_i))} shard {sid}/{num_shards} "
+                            f"{hl(f'-> stealing shard {next_sid}/{num_shards} ({done_cnt}/{total_wave} done)', 'cyan')}",
+                            flush=True,
+                        )
+                        _launch_ifb_shard(next_sid, slot_i)
+                    else:
+                        del active_map[slot_i]
+                        print(
+                            f"{hl('[ext_ifbench]', 'cyan')} {status_badge('done', 'DONE')} "
+                            f"{hl(f'GPU{slot_i}(dev={dev_lbl})', gpu_color(slot_i))} finished ({done_cnt}/{total_wave})",
                             flush=True,
                         )
                 else:
-                    fail_cnt += 1
-                    if sid not in reported_exit:
-                        reported_exit.add(sid)
-                        failed_shards.append(sid)
-                        print(
-                            f"{hl('[ext_ifbench]', 'cyan')} {status_badge('fail', f'EXIT {rc}')} "
-                            f"{hl(f'Shard {sid} exited {rc} (see {s_log})', 'red')}",
-                            flush=True,
-                        )
-                        if s_log.is_file():
-                            tail_lns = s_log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
-                            for tln in tail_lns:
-                                print(f"  {hl(f'[IFBench GPU{sid}!]', 'red')} {colorize_log_line(tln)}", flush=True)
-            if alive_cnt == 0:
+                    del active_map[slot_i]
+                    failed_shards.append(sid)
+                    failed_shards.extend(list(todo_q))
+                    todo_q.clear()
+                    print(
+                        f"{hl('[ext_ifbench]', 'cyan')} {status_badge('fail', f'EXIT {rc}')} "
+                        f"{hl(f'Shard {sid} exited {rc} (see {s_log})', 'red')}",
+                        flush=True,
+                    )
+                    if s_log.is_file():
+                        tail_lns = s_log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+                        for tln in tail_lns:
+                            print(f"  {hl(f'[IFBench GPU{slot_i}!]', 'red')} {colorize_log_line(tln)}", flush=True)
+            if not active_map:
                 break
             now_p = time.perf_counter()
             if (now_p - last_prog_ts) >= 10.0:
@@ -887,9 +912,9 @@ def _run_multi_shard(
                 )
                 print(
                     f"{title_p} elapsed={int(now_p - t_batch)}s | "
-                    f"{hl(f'active={alive_cnt}/{len(procs)}', 'yellow')} "
-                    f"{hl(f'done={done_cnt}/{len(procs)}', 'green')} "
-                    f"{hl(f'fail={fail_cnt}', 'red' if fail_cnt else 'muted')} | "
+                    f"{hl(f'active={len(active_map)}/{eff_slots}', 'yellow')} "
+                    f"{hl(f'done={done_cnt}/{total_wave}', 'green')} "
+                    f"{hl(f'queued={len(todo_q)}', 'cyan')} | "
                     f"{bar_s}{hl(f'items={done_items}/{len(items)}', 'cyan')}",
                     flush=True,
                 )
@@ -1084,7 +1109,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--resume", action="store_true", default=True)
     ap.add_argument("--check-cached", action="store_true")
     ap.add_argument("--shards", default="1")
-    ap.add_argument("--workers-per-gpu", default="auto")
+    ap.add_argument("--workers-per-gpu", default=os.environ.get("CBARR_WORKERS_PER_GPU", "auto"))
+    ap.add_argument("--gpu-boost", action="store_true", help="High-density VRAM packing for Hybrid DeltaNet GPUs.")
+    ap.add_argument("--queue-mult", default=os.environ.get("CBARR_QUEUE_MULT", "auto"))
     ap.add_argument("--gpu-ids", default="")
     ap.add_argument("--wait-gpu-min", type=int, default=60)
     ap.add_argument("--stagger-sec", type=float, default=-1.0)

@@ -51,22 +51,38 @@ def _estimate_model_billions(model_id: str) -> float:
 
 
 def model_vram_per_worker_gb(
-    model_id: str, stage: str = "matrix", safety_mult: float = 1.0
+    model_id: str, stage: str = "matrix", safety_mult: float = 1.0, *, boost: bool = False
 ) -> float:
-    """Conservative peak free-VRAM budget (GiB) required per concurrent worker by stage."""
+    """Conservative (or empirical Hybrid-DeltaNet `boost=True`) peak free-VRAM budget (GiB) per worker."""
     params_b = _estimate_model_billions(model_id)
-    if params_b >= 11.0:
-        base = round(2.3 * params_b + 3.0, 1)
-    elif params_b >= 7.0:
-        base = 24.0
-    elif params_b >= 3.5:
-        base = 12.5
-    elif params_b >= 2.8:
-        base = 11.5
-    elif params_b >= 1.5:
-        base = 8.5
+    is_hybrid = "qwen3.5" in str(model_id or "").lower()
+    if boost:
+        # Calibrated against live BF16 L40 telemetry (Qwen3.5-9B = 17.6 GiB, Qwen3.5-4B = 9.4 GiB peak).
+        if params_b >= 11.0:
+            base = round(2.1 * params_b + 2.5, 1)
+        elif params_b >= 7.0:
+            base = 19.5 if is_hybrid else 22.0
+        elif params_b >= 3.5:
+            base = 10.8 if is_hybrid else 12.0
+        elif params_b >= 2.8:
+            base = 11.2
+        elif params_b >= 1.5:
+            base = 7.8
+        else:
+            base = 5.0
     else:
-        base = 5.5
+        if params_b >= 11.0:
+            base = round(2.3 * params_b + 3.0, 1)
+        elif params_b >= 7.0:
+            base = 24.0
+        elif params_b >= 3.5:
+            base = 12.5
+        elif params_b >= 2.8:
+            base = 11.5
+        elif params_b >= 1.5:
+            base = 8.5
+        else:
+            base = 5.5
 
     st = str(stage or "matrix").lower()
     if st == "blend":
@@ -110,9 +126,21 @@ def _extra_worker_vram_gb(params_b: float, stage: str) -> float:
     return 0.5 if params_b < 1.5 else 0.75
 
 
-def _model_bandwidth_cap(params_b: float, total_gb: float, stage: str = "matrix") -> int:
-    """Caps workers/GPU where batch_size=1 decoding saturates HBM bandwidth & SM warps."""
+def _model_bandwidth_cap(params_b: float, total_gb: float, stage: str = "matrix", *, boost: bool = False) -> int:
+    """Caps workers/GPU where batch_size=1 decoding saturates HBM/GDDR6 bandwidth & SM warps."""
     st = str(stage or "matrix").lower()
+    if boost:
+        if params_b >= 7.0:
+            w = 3 if total_gb >= 72.0 else (2 if (total_gb >= 42.0 and st != "blend") else 1)
+        elif params_b >= 2.8:
+            w = 4 if total_gb >= 64.0 else (3 if total_gb >= 40.0 else (2 if total_gb >= 28.0 else 1))
+        elif params_b >= 1.5:
+            w = 5 if total_gb >= 64.0 else (4 if total_gb >= 32.0 else (2 if total_gb >= 16.0 else 1))
+        else:
+            w = 6 if total_gb >= 40.0 else (4 if total_gb >= 24.0 else 2)
+        if st == "blend":
+            return min(w, 2 if params_b >= 7.0 else 3)
+        return w
     if params_b >= 7.0:
         w = 2 if (total_gb >= 64.0 and st != "blend") else 1
     elif params_b >= 2.8:
@@ -268,7 +296,10 @@ def compute_slots_from_free_mem(
     """Assigns per-worker GPU IDs across VRAM+headroom, bandwidth, utilization, CPU, and host-RAM bounds."""
     if not gpus:
         return []
-    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=safety_mult)
+    wpg_norm = str(workers_per_gpu or "auto").strip().lower()
+    is_boost = wpg_norm in ("max", "boost")
+    is_auto_like = wpg_norm in ("auto", "max", "boost")
+    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=safety_mult, boost=is_boost)
     params_b = _estimate_model_billions(model_id)
     extra_worker_gb = _extra_worker_vram_gb(params_b, stage=stage)
 
@@ -295,25 +326,26 @@ def compute_slots_from_free_mem(
         total_gb = float(g["total_gb"])
         eff_reserve = _effective_gpu_reserve_gb(total_gb, reserve_gb)
         max_fit = max(1, _max_workers_fitting_vram(free_gb, req_gb, extra_worker_gb, eff_reserve))
-        if workers_per_gpu != "auto":
+        if not is_auto_like:
             target_w = max(1, int(workers_per_gpu))
             w_cnt = min(max_fit, target_w)
         else:
-            w_bw = _model_bandwidth_cap(params_b, total_gb, stage=stage)
+            w_bw = _model_bandwidth_cap(params_b, total_gb, stage=stage, boost=is_boost)
             util_raw = g.get("util_pct")
             w_util = w_bw
             if util_raw is not None:
                 u_val = float(util_raw)
-                if u_val >= 60.0:
+                if u_val >= (80.0 if is_boost else 60.0):
                     w_util = 1
-                elif u_val >= 30.0:
+                elif u_val >= (55.0 if is_boost else 30.0):
                     w_util = min(w_bw, 2)
             w_cnt = min(max_fit, w_bw, w_util)
         per_gpu_counts.append([str(g["id"]), max(1, w_cnt)])
 
     # Clamp total workers cleanly to host CPU budget when auto-sizing.
-    if workers_per_gpu == "auto" and cpu_count is not None and cpu_count > 0:
-        max_total_cpu = max(len(per_gpu_counts), int(cpu_count) // max(1, int(cpus_per_worker)))
+    if is_auto_like and cpu_count is not None and cpu_count > 0:
+        eff_cpw = 1 if is_boost else max(1, int(cpus_per_worker))
+        max_total_cpu = max(len(per_gpu_counts), int(cpu_count) // eff_cpw)
         while sum(item[1] for item in per_gpu_counts) > max_total_cpu:
             idx_trim = max(
                 range(len(per_gpu_counts)),
@@ -324,7 +356,7 @@ def compute_slots_from_free_mem(
             per_gpu_counts[idx_trim][1] -= 1
 
     # Clamp total workers to available host CPU RAM so parallel weight loads do not trigger SIGKILL (137).
-    if workers_per_gpu == "auto" and host_avail_gb is not None and host_avail_gb > 0:
+    if is_auto_like and host_avail_gb is not None and host_avail_gb > 0:
         req_host = host_ram_per_worker_gb(model_id, stage=stage)
         usable_host = max(req_host, float(host_avail_gb) - float(host_reserve_gb))
         max_total_host = max(1, int(usable_host // req_host))
@@ -376,7 +408,8 @@ def select_worker_gpu_slots(
         if safety_mult is not None
         else float(os.environ.get("CBARR_VRAM_SAFETY_MULT", "1.0") or "1.0")
     )
-    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=eff_mult)
+    is_boost = str(workers_per_gpu or "auto").strip().lower() in ("max", "boost")
+    req_gb = model_vram_per_worker_gb(model_id, stage=stage, safety_mult=eff_mult, boost=is_boost)
     cpus = os.cpu_count()
     while True:
         gpus = query_physical_gpus(candidate_ids=candidate_ids)

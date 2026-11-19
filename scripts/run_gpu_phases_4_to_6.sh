@@ -77,6 +77,10 @@ SETUP_MODE="off"
 SHARDS_ARG="1"
 MAX_SHARDS_ARG=8
 WORKERS_PER_GPU_ARG="${CBARR_WORKERS_PER_GPU:-auto}"
+if [ "${CBARR_GPU_BOOST:-0}" = "1" ] && [ "$WORKERS_PER_GPU_ARG" = "auto" ]; then
+  WORKERS_PER_GPU_ARG="max"
+fi
+QUEUE_MULT_ARG="${CBARR_QUEUE_MULT:-auto}"
 SHARD_PROGRESS_SEC="${CBARR_SHARD_PROGRESS_SEC:-20}"
 SHARD_LOG_MODE="${CBARR_SHARD_LOG:-auto}"
 WAIT_GPU_MIN="${CBARR_WAIT_GPU_MIN:-60}"
@@ -223,6 +227,13 @@ while [ "$#" -gt 0 ]; do
     --no-unpack) UNPACK_MODE="off" ;;
     --color) export CBARR_COLOR=1 ;;
     --no-color) export CBARR_COLOR=0 ;;
+    --gpu-boost) WORKERS_PER_GPU_ARG="max"; export CBARR_GPU_BOOST=1; export CBARR_WORKERS_PER_GPU="max" ;;
+    --queue-mult)
+      if [ "$#" -lt 2 ]; then echo "$1 requires an argument" >&2; exit 1; fi
+      shift
+      QUEUE_MULT_ARG="$1"
+      export CBARR_QUEUE_MULT="$1"
+      ;;
     --offline) OFFLINE_MODE=1; export HF_HUB_OFFLINE=1; EXTRA_FLAGS+=("--offline") ;;
     --no-exp-log) NO_EXP_LOG=1 ;;
     --commit|--commit-only) AUTO_COMMIT=1 ;;
@@ -752,7 +763,9 @@ fi
 effective_workers_per_gpu() {
   local model_id="$1"
   local stage_kind="${2:-matrix}"
-  if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
+  local w_low
+  w_low="$(printf '%s' "$WORKERS_PER_GPU_ARG" | tr '[:upper:]' '[:lower:]')"
+  if [ "$w_low" != "auto" ] && [ "$w_low" != "max" ] && [ "$w_low" != "boost" ]; then
     echo "$WORKERS_PER_GPU_ARG"
     return
   fi
@@ -762,6 +775,23 @@ effective_workers_per_gpu() {
   fi
   if [ "$stage_kind" = "mlp" ] || [ "$stage_kind" = "replay" ] || [ "$stage_kind" = "smoke" ]; then
     echo 1
+    return
+  fi
+  if [ "$w_low" = "max" ] || [ "$w_low" = "boost" ]; then
+    case "$model_id" in
+      *9[Bb]*)
+        if [ "$stage_kind" != "blend" ] && [ "$GPU_MIN_VRAM_GB" -ge 42 ]; then echo 2; else echo 1; fi
+        ;;
+      *0.8[Bb]*|*08[Bb]*|*1[Bb]*)
+        if [ "$GPU_MIN_VRAM_GB" -ge 40 ]; then echo 6; else echo 4; fi
+        ;;
+      *2[Bb]*)
+        if [ "$GPU_MIN_VRAM_GB" -ge 32 ]; then echo 4; else echo 2; fi
+        ;;
+      *)
+        if [ "$GPU_MIN_VRAM_GB" -ge 40 ]; then echo 3; elif [ "$GPU_MIN_VRAM_GB" -ge 28 ]; then echo 2; else echo 1; fi
+        ;;
+    esac
     return
   fi
   case "$model_id" in
@@ -1160,6 +1190,7 @@ run_matrix_sharded() {
       --visible-gpus "$stage_vis_csv" \
       --progress-sec "$SHARD_PROGRESS_SEC" \
       --shard-log "$SHARD_LOG_MODE" \
+      --queue-mult "$QUEUE_MULT_ARG" \
       -- \
       "${base_args[@]}" \
       --device "$DEVICE_ARG" \

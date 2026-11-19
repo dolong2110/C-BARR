@@ -4582,6 +4582,99 @@ class TestPhases4To7(unittest.TestCase):
             else:
                 os.environ["NO_COLOR"] = prev_n
 
+    def test_v0522_dynamic_work_stealing_queue_and_gpu_boost_slots(self) -> None:
+        """Verifies --gpu-boost L40 slot density (9B->2/GPU, 4B->3/GPU) and --queue-mult dynamic work-stealing."""
+        from scripts.gpu_pool import compute_slots_from_free_mem
+
+        # 8x L40 (45.0 GiB): default 'auto' stays conservative (9B=1/GPU -> 8, 4B=2/GPU -> 16),
+        # while 'max' (--gpu-boost) packs 9B=2/GPU -> 16 and 4B=3/GPU -> 24 without exceeding VRAM.
+        eight_l40 = [
+            {"id": str(i), "free_gb": 45.0, "total_gb": 45.0, "util_pct": 0.0}
+            for i in range(8)
+        ]
+        self.assertEqual(len(compute_slots_from_free_mem(eight_l40, "Qwen/Qwen3.5-9B", "auto", cpu_count=64)), 8)
+        self.assertEqual(len(compute_slots_from_free_mem(eight_l40, "Qwen/Qwen3.5-9B", "max", cpu_count=64)), 16)
+        self.assertEqual(len(compute_slots_from_free_mem(eight_l40, "Qwen/Qwen3.5-4B", "auto", cpu_count=64)), 16)
+        self.assertEqual(len(compute_slots_from_free_mem(eight_l40, "Qwen/Qwen3.5-4B", "max", cpu_count=64)), 24)
+
+        # Dynamic work-stealing (--shards 2 --queue-mult 3 => 6 micro-shards across 2 GPU slots):
+        # Shard 0 sleeps 0.30s on slot 0 while fast shards 1..5 take 0.02s -> slot 1 steals multiple shards!
+        with tempfile.TemporaryDirectory() as td:
+            root_tmp = pathlib.Path(td)
+            tmp_data = root_tmp / "data"
+            tmp_out = root_tmp / "out"
+            tmp_logs = root_tmp / "logs"
+            tmp_data.mkdir()
+            _build_mini_frozen_dir(tmp_data)
+
+            steal_worker = root_tmp / "steal_worker.py"
+            steal_worker.write_text(
+                "\n".join(
+                    [
+                        "import json, os, pathlib, sys, time",
+                        "args = sys.argv[1:]",
+                        "s_idx = int(args[args.index('--shard-idx') + 1])",
+                        "n_sh = int(args[args.index('--num-shards') + 1])",
+                        "out_dir = pathlib.Path(args[args.index('--out-dir') + 1])",
+                        "s_dir = out_dir / 'Qwen__Qwen3.5-2B' / 'shards' / f'shard_{s_idx}_of_{n_sh}'",
+                        "s_dir.mkdir(parents=True, exist_ok=True)",
+                        "time.sleep(0.30 if s_idx == 0 else 0.02)",
+                        "(s_dir / 'eval_450_cache.jsonl').write_text(json.dumps({'item': {'uid': f'u{s_idx}'}, 'dev': os.environ.get('CUDA_VISIBLE_DEVICES')}) + '\\n', encoding='utf-8')",
+                        "print(f'COMPLETED SHARD {s_idx}/{n_sh}', flush=True)",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "run_sharded.py"),
+                    "--stage-name",
+                    "Steal Queue Test",
+                    "--model",
+                    "Qwen/Qwen3.5-2B",
+                    "--data-dir",
+                    str(tmp_data),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--log-dir",
+                    str(tmp_logs),
+                    "--run-id",
+                    "steal_01",
+                    "--shards",
+                    "2",
+                    "--visible-gpus",
+                    "0,1",
+                    "--queue-mult",
+                    "3",
+                    "--stagger-sec",
+                    "0",
+                    "--progress-sec",
+                    "0.10",
+                    "--",
+                    sys.executable,
+                    str(steal_worker),
+                    "--out-dir",
+                    str(tmp_out),
+                    "--strict-diag",
+                ],
+                cwd=ROOT,
+                env={**os.environ, "CBARR_COLOR": "0"},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+            self.assertIn("work-stealing queue=6 micro-shards", res.stdout)
+            self.assertIn("stealing shard", res.stdout)
+            # Verify all 6 micro-shards completed and fast GPU dev=1 stole >= 4 of the 6 micro-shards!
+            devs = []
+            for s_i in range(6):
+                p = tmp_out / "Qwen__Qwen3.5-2B" / "shards" / f"shard_{s_i}_of_6" / "eval_450_cache.jsonl"
+                self.assertTrue(p.is_file(), f"Missing {p}")
+                devs.append(json.loads(p.read_text(encoding="utf-8").strip())["dev"])
+            self.assertGreaterEqual(devs.count("1"), 4, f"Expected fast GPU 1 to steal >=4 shards, got {devs}")
+
 
 if __name__ == "__main__":
     unittest.main()
