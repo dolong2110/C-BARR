@@ -799,8 +799,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T215019Z -->
 
 <!-- CBARR_RUN_START:20261119T000849Z -->
-### Run `20261119T000849Z` — **RUNNING (after W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B))** (Updated 2026-11-19 00:32:45 UTC)
-- **Code Version**: `v0.5.21` | **Git Commit**: `2e314ff` | **Results Release**: `v0.5.21-res.6` | **Last Loop**: `W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B)` | **Wall Time**: `23m 48.0s` (1428.0s)
+### Run `20261119T000849Z` — **RUNNING (after W7: Stage-2 SolveFirst Replay (HuggingFaceTB/SmolLM3-3B))** (Updated 2026-11-19 00:55:01 UTC)
+- **Code Version**: `v0.5.21` | **Git Commit**: `d002c15` | **Results Release**: `v0.5.21-res.6` | **Last Loop**: `W7: Stage-2 SolveFirst Replay (HuggingFaceTB/SmolLM3-3B)` | **Wall Time**: `45m 58.0s` (2758.0s)
 - **Hardware**: 1x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --color --no-setup --shard-progress-sec 10`
 - **Raw Log**: `outputs/logs/cbarr_20261119T000849Z.log`
@@ -820,7 +820,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "2e314ff",
+  "git_rev": "d002c15",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -876,6 +876,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (cached) | PASS | 36.0s (36.0s) |
 | W7: Dense KV Eviction (HuggingFaceTB/SmolLM3-3B) | PASS | 2m 18.0s (138.0s) |
 | W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B) | PASS | 44.0s (44.0s) |
+| W7: Stage-2 SolveFirst Replay (HuggingFaceTB/SmolLM3-3B) | PASS | 21m 53.0s (1313.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -994,6 +995,6 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
 #### 6. Optional W7 Extensions
-- **`HuggingFaceTB__SmolLM3-3B`**: DenseKVEvict(n=80: a=0.00:86.2%) | PrefillMLP(layer_-1, tau=0.850, Macro=66.8%, OAA250=69.6%, U0.05=63.4%, Tok=308)
+- **`HuggingFaceTB__SmolLM3-3B`**: DenseKVEvict(n=80: a=0.00:86.2%) | PrefillMLP(layer_-1, tau=0.850, Macro=66.8%, OAA250=69.6%, U0.05=63.4%, Tok=308) | Stage2SolveFirst(replayed=139, Macro=68.5%->67.0%, OAA250=72.0%->69.6%)
 - **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%)
 <!-- CBARR_RUN_END:20261119T000849Z -->
