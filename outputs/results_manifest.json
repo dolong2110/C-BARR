@@ -1,10 +1,10 @@
 {
-  "results_seq": 11,
-  "results_version": "v0.5.26-res.11",
+  "results_seq": 12,
+  "results_version": "v0.5.26-res.12",
   "code_version": "0.5.26",
-  "git_rev": "95f4d40-dirty",
-  "sync_label": "checkpoint-Qwen3.5-4B:20261119T105923Z",
-  "updated_utc": "2026-11-19T11:05:12Z",
+  "git_rev": "2127e69-dirty",
+  "sync_label": "checkpoint-SmolLM3-3B:20261119T105923Z",
+  "updated_utc": "2026-11-19T11:08:58Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.21, 0.5.26",
@@ -13,44 +13,44 @@
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
       "model": "HuggingFaceTB/SmolLM3-3B",
-      "code_version": "0.5.21",
-      "git_rev": "aa095c6-dirty",
-      "run_id": "20261119T000849Z",
-      "sync_seq": 2,
-      "result_version": "v0.5.21+m2",
+      "code_version": "0.5.26",
+      "git_rev": "2127e69-dirty",
+      "run_id": "20261119T105923Z",
+      "sync_seq": 3,
+      "result_version": "v0.5.26+m3",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.21",
-          "git_rev": "aa095c6-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "2127e69-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.21",
-          "git_rev": "4bcf295-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "2127e69-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "diag491": {
-          "code_version": "0.5.21",
-          "git_rev": "aa095c6-dirty",
-          "run_id": "20261119T000849Z",
+          "code_version": "0.5.26",
+          "git_rev": "2127e69-dirty",
+          "run_id": "20261119T105923Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "a5203806e6099771256532263f695fa3f9e89877d15f7d762a3c8b2edcb23791",
+        "calibration_summary.json": "da327420cb905020cb9ffc7cf1b9eb66331be888cc298bd5a8957060489174a3",
         "eval_450_m2v2_comparison.json": "7db0523f01b4fd950c8ef12cb9fa3d03c8bca186880eb2e3c453ca8498c8c78f",
         "ext_deltanet_blend_evict_kv.json": "1ed0eb3177b9bb93576b4e5364dc82246fe2c5c549aa874ecc1617feb036fb58",
-        "matrix_summary.json": "55eb59e159bca2f7448494a6f97d04b6c02c44fed753097e8b2e5308276dee8d",
-        "matrix_summary_diag491.json": "55eb59e159bca2f7448494a6f97d04b6c02c44fed753097e8b2e5308276dee8d",
-        "matrix_summary_strict341.json": "91eb96302868bd1b9689c353c624ba90c2d072ea1d71427b64211eadb0ee6a0a",
+        "matrix_summary.json": "88ff0f6e5be0d12cceaa3f4a15af788f9c2032df1e231cb0fd6c27e5d70f8938",
+        "matrix_summary_diag491.json": "88ff0f6e5be0d12cceaa3f4a15af788f9c2032df1e231cb0fd6c27e5d70f8938",
+        "matrix_summary_strict341.json": "eea41bd5961621d17bf5c0941a3eaf38e04dabe8635ee1a9bc2ac3255c037005",
         "prefill_mlp_summary.json": "9391797180b65292fa62960192825073e560127fde09244622b15e0e4de84c78",
         "tables_rows.tex": "3be385eaaf025325871e792f1b32ef7ea4bea36a0291f8492e90c5ea09510d99",
         "tables_rows_diag491.tex": "3be385eaaf025325871e792f1b32ef7ea4bea36a0291f8492e90c5ea09510d99",
