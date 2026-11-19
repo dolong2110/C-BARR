@@ -1,0 +1,22 @@
+{
+  "model": "HuggingFaceTB/SmolLM3-3B",
+  "n_ehurt": 80,
+  "blend_conv_state": false,
+  "evict_think_kv": true,
+  "alphas": {
+    "0.00": {
+      "alpha": 0.0,
+      "n_ehurt": 80,
+      "n_blended_layers": 0,
+      "n_blended_conv": 0,
+      "n_evicted_kv": 36,
+      "overall_recovery_pct": 86.25,
+      "overall_wilson_ci95": [
+        77.03289993301338,
+        92.14528567566089
+      ],
+      "inhibition_recovery_pct": 94.87179487179486,
+      "structural_recovery_pct": 86.04651162790698
+    }
+  }
+}
