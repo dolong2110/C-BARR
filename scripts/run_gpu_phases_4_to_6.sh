@@ -19,7 +19,7 @@ set -euo pipefail
 #   --no-setup              Disable environment provisioning checks before running
 #   --shards <N|auto>       Intra-model GPU shard count; 'auto' uses min(GPU_COUNT, --max-shards) when >=2 GPUs visible (default: 1)
 #   --max-shards <N>        Maximum GPUs used when --shards auto is active (default: 8)
-#   --workers-per-gpu <N|auto>  Concurrent shard workers pinned per GPU ('auto' runs 2/GPU on >=32 GB GPUs for <=4B models, 1 for 9B; default: auto)
+#   --workers-per-gpu <N|auto|max>  Concurrent shard workers pinned per GPU ('auto' runs 2/GPU on >=32 GB GPUs for <=4B models; 'max' / --gpu-boost packs L40/A100 VRAM)
 #   --wait-gpu-min <N>      Poll up to N minutes if all GPUs are temporarily occupied (default: 60)
 #   --stage-retries <N>     Auto-retry shard OOM/partial failures after harvesting completed items (default: 2)
 #   --shard-progress-sec <N>  Interval in seconds for multi-GPU progress snapshots (default: 20; 0 disables)
@@ -439,12 +439,15 @@ case "$SHARD_LOG_MODE" in
   auto|all|milestones|off) ;;
   *) echo "Unknown --shard-log '$SHARD_LOG_MODE' (expected auto, all, milestones, or off)" >&2; exit 1 ;;
 esac
-if [ "$WORKERS_PER_GPU_ARG" != "auto" ]; then
-  if ! [[ "$WORKERS_PER_GPU_ARG" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Unknown --workers-per-gpu '$WORKERS_PER_GPU_ARG' (expected auto or positive integer)" >&2
-    exit 1
-  fi
-fi
+case "$(printf '%s' "$WORKERS_PER_GPU_ARG" | tr '[:upper:]' '[:lower:]')" in
+  auto|max|boost) ;;
+  *)
+    if ! [[ "$WORKERS_PER_GPU_ARG" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Unknown --workers-per-gpu '$WORKERS_PER_GPU_ARG' (expected auto, max, boost, or positive integer)" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 PINNED_GPU_CSV=""
 if [ -n "$GPU_ID" ]; then

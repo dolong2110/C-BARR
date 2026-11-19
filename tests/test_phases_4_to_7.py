@@ -4763,6 +4763,19 @@ class TestPhases4To7(unittest.TestCase):
             self.assertTrue(qual_p.is_file())
             self.assertIn("Verbatim Qualitative Case Studies", qual_p.read_text(encoding="utf-8"))
 
+            # 3. Verify --gpu-boost and --workers-per-gpu max pass bash CLI validation cleanly
+            r4 = subprocess.run(
+                [
+                    "bash", str(ROOT / "scripts" / "run_gpu_phases_4_to_6.sh"),
+                    "--part", "analyze", "--mock", "--gpu-boost", "--skip-preflight",
+                    "--no-unpack", "--no-exp-log", "--no-push",
+                    "--out-dir", str(out_dir), "--fig-dir", str(fig_dir), "--table-dir", str(table_dir),
+                ],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r4.returncode, 0, r4.stdout + r4.stderr)
+            self.assertIn("workers_per_gpu=max", r4.stdout)
+
             r3 = subprocess.run(
                 [
                     sys.executable, str(ROOT / "scripts" / "log_experiment.py"),
