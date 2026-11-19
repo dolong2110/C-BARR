@@ -799,8 +799,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261118T215019Z -->
 
 <!-- CBARR_RUN_START:20261119T000849Z -->
-### Run `20261119T000849Z` — **RUNNING (Calibration: Qwen/Qwen3.5-9B)** (Updated 2026-11-19 05:53:07 UTC)
-- **Code Version**: `v0.5.21` | **Git Commit**: `c766901` | **Results Release**: `v0.5.21-res.9` | **Last Loop**: `Calibration: Qwen/Qwen3.5-9B` | **Wall Time**: `3.3s` (3.3s)
+### Run `20261119T000849Z` — **RUNNING (Eval-450: Qwen/Qwen3.5-9B (strict341))** (Updated 2026-11-19 05:53:21 UTC)
+- **Code Version**: `v0.5.22` | **Git Commit**: `bd69dc2` | **Results Release**: `v0.5.22-res.9` | **Last Loop**: `Eval-450: Qwen/Qwen3.5-9B (strict341)` | **Wall Time**: `22.0s` (22.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261119T000849Z.log`
@@ -814,13 +814,13 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "b0_max_new_tokens": 1024,
   "b1b_max_new_tokens": 2048,
   "class_weight": "balanced",
-  "code_version": "0.5.21",
+  "code_version": "0.5.22",
   "device": "cuda",
   "do_sample": false,
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "c766901",
+  "git_rev": "bd69dc2",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -991,6 +991,28 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   - **4-Regime**: Helped=0.7%, Hurt=50.0%, Flip=50.7%, TiePass=34.7%, TieFail=14.7%
   - **Section 6 Causal (`|E_hurt|=336`)**: rho_rec=96.1%, rho_int=3.9% | A1_strip=100.0%, B2a_post=96.1%, B1_pre=95.5%, B2b_raw=49.4%, A2_swap=70.2%, B3_cut=86.3%
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
+
+- **`Qwen/Qwen3.5-9B` (`strict341`**, n_diag=341) — ver=`v0.5.21` (`c766901`) | dtype=`torch.bfloat16` | status=`eval450_complete` | wall=`22.0s` (calib=0.1s, eval=0.3s, diag=0.0s) | tau=0.475, esc=43.3%
+  - **4-Regime**: Helped=0.9%, Hurt=43.8%, Flip=44.7%, TiePass=43.1%, TieFail=12.2%
+  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+
+| Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| B0 | 87.5% | 92.0% | 93.3% | 81.3% | 88.3% | 86.7% | 83.3% | 86.9% | 86.9% | 80.7% | 310 | 1.00 | 5.03e-52 |
+| B1a | 84.3% | 96.0% | 93.3% | 81.3% | 71.7% | 80.0% | 83.3% | 33.6% | 73.0% | 75.5% | 447 | 1.00 | 4.11e-49 |
+| **B1b** | 38.3% | 62.7% | 52.0% | 52.0% | 23.3% | 26.7% | 13.3% | 0.0% | 22.2% | 10.6% | 1668 | 1.00 | - |
+| B2a | 78.4% | 85.3% | 70.7% | 82.7% | 80.0% | 81.7% | 70.0% | 63.3% | 74.0% | 74.7% | 256 | 1.00 | 3.53e-32 |
+| B2b | 70.1% | 81.3% | 76.0% | 66.7% | 68.3% | 65.0% | 63.3% | 51.6% | 60.6% | 52.5% | 895 | 1.42 | 7.17e-33 |
+| M1a | 56.8% | 72.0% | 57.3% | 81.3% | 30.0% | 80.0% | 20.0% | 43.8% | 54.2% | 45.6% | 952 | 1.00 | 1.45e-26 |
+| M1b | 54.4% | 86.7% | 89.3% | 57.3% | 33.3% | 40.0% | 20.0% | 40.4% | 49.3% | 36.4% | 1158 | 1.56 | 2.94e-19 |
+| M1c | 58.8% | 85.3% | 86.7% | 57.3% | 25.0% | 81.7% | 16.7% | 44.2% | 53.2% | 41.9% | 1062 | 1.32 | 1.32e-23 |
+| M2_B64 | 86.5% | 93.3% | 93.3% | 80.7% | 85.0% | 86.7% | 80.0% | 86.2% | 84.5% | 79.2% | 353 | 1.32 | 1.97e-49 |
+| M2_B128 | 84.6% | 93.3% | 93.3% | 79.3% | 85.0% | 86.7% | 70.0% | 85.1% | 82.2% | 77.6% | 378 | 1.32 | 7.29e-50 |
+| M2_B256 | 85.9% | 93.3% | 92.0% | 83.3% | 85.0% | 85.0% | 76.7% | 86.4% | 81.3% | 78.0% | 424 | 1.32 | 1.77e-51 |
+| M2_Pre | 86.8% | 93.3% | 92.0% | 80.7% | 91.7% | 86.7% | 76.7% | 86.7% | 83.9% | 79.0% | 382 | 1.32 | 8.51e-51 |
+| **M2** | 86.0% | 93.3% | 92.0% | 80.7% | 86.7% | 86.7% | 76.7% | 86.0% | 83.3% | 78.4% | 380 | 1.32 | 5.68e-50 |
+| M2_Prec (Aux.) | 86.3% | 93.3% | 92.0% | 80.7% | 86.7% | 88.3% | 76.7% | 86.2% | 82.8% | 78.2% | 401 | 1.32 | 3.24e-51 (raw) |
+| **Oracle_UB** | 93.9% | 98.7% | 96.0% | 90.7% | 96.7% | 91.7% | 90.0% | 93.8% | 92.5% | 87.9% | 292 | 1.00 | - |
 
 #### 6. Optional W7 Extensions
 - **`HuggingFaceTB__SmolLM3-3B`**: DenseKVEvict(n=80: a=0.00:86.2%) | PrefillMLP(layer_-1, tau=0.850, Macro=66.8%, OAA250=69.6%, U0.05=63.4%, Tok=308) | Stage2SolveFirst(replayed=139, Macro=68.5%->67.0%, OAA250=72.0%->69.6%)
