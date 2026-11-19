@@ -1274,11 +1274,16 @@ def generate_latex_table_parts(
         m for m in bundles
         if (stats_models or {}).get(m, {}).get("l2_regularization_sensitivity")
     ]
+    t5_caption = (
+        r"\caption{Appendix B Robustness Checks: (A) Zero-refit OOD generalization on \texttt{allenai/IFBench\_test} ($N=300$ prompts, 58 unseen constraints); (B) 3-seed sampled validation ($T=0.6, p=0.95, \text{pp}=1.5$, mean $\pm$ SD); (C) Gate-2 L2 inverse regularization sensitivity $C \in \{0.1, 0.25\text{ (prod)}, 0.5, 1.0\}$.}"
+        if (r6_summary or r6_sampled)
+        else r"\caption{Appendix B Robustness Checks: (A) Zero-refit OOD generalization on \texttt{allenai/IFBench\_test} ($N=300$ prompts, 58 unseen constraints); (B) Gate-2 L2 inverse regularization sensitivity $C \in \{0.1, 0.25\text{ (prod)}, 0.5, 1.0\}$ across all five backbones.}"
+    )
     t5_lines = [
-        r"% Table 5 (Appendix B): OOD IFBench_test, 3-Seed Sampled Regime (T=0.6), and L2 C Sensitivity",
+        r"% Table 5 (Appendix B): OOD IFBench_test, Optional Sampled Regime, and L2 C Sensitivity",
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Appendix B Robustness Checks: (A) Zero-refit OOD generalization on \texttt{allenai/IFBench\_test} ($N=300$ prompts, 58 unseen constraints); (B) 3-seed sampled validation ($T=0.6, p=0.95, \text{pp}=1.5$, mean $\pm$ SD); (C) Gate-2 L2 inverse regularization sensitivity $C \in \{0.1, 0.25\text{ (prod)}, 0.5, 1.0\}$.}",
+        t5_caption,
         r"\label{tab:appendix_b_robustness}",
         r"\resizebox{\textwidth}{!}{%",
         r"\begin{tabular}{llcccc}",
@@ -1306,11 +1311,9 @@ def generate_latex_table_parts(
                     f"{float(vs.get('inst_strict_pct', 0.0)):.1f}\\% / {float(vs.get('oaa_250_pct', 0.0)):.1f}\\% & "
                     f"{float(vs.get('u_005_pct', 0.0)):.1f}\\% / {float(vs.get('mean_t_tot', 0.0)):.0f} & {stat_col} \\\\"
                 )
-    else:
-        t5_lines.append(r"A: IFBench OOD & Pending cluster execution & -- & -- & -- & -- \\")
 
-    t5_lines.append(r"\midrule")
     if r6_summary:
+        t5_lines.append(r"\midrule")
         for rs in r6_summary:
             m_short = _tex_escape_tt(str(rs["model"]).split("/")[-1])
             seeds_str = ",".join(str(s) for s in rs["seeds"])
@@ -1322,6 +1325,7 @@ def generate_latex_table_parts(
                 f"$\\Delta$B1b ${rs['delta_m2_minus_b1b_pp']:+.1f}$ pp ({rs['delta_tok_savings_pct']:.1f}\\% saved) \\\\"
             )
     elif r6_sampled:
+        t5_lines.append(r"\midrule")
         for r6 in r6_sampled:
             m_short = _tex_escape_tt(str(r6["model"]).split("/")[-1])
             t5_lines.append(
@@ -1329,17 +1333,17 @@ def generate_latex_table_parts(
                 f"M2 {_fmt_pct(r6['sampled_m2_macro'])}\\% & OAA {_fmt_pct(r6['sampled_m2_oaa250'])}\\% & "
                 f"Tok {float(r6['sampled_m2_tok']):.0f} & B1b {_fmt_pct(r6['sampled_b1b_macro'])}\\% \\\\"
             )
-    else:
-        t5_lines.append(r"B: 3-Seed Sampled ($T=0.6$) & Pending cluster execution & -- & -- & -- & -- \\")
 
-    t5_lines.append(r"\midrule")
+    l2_prefix = "C" if (r6_summary or r6_sampled) else "B"
+    if ood_map or r6_summary or r6_sampled:
+        t5_lines.append(r"\midrule")
     if l2_models:
         for m_id in l2_models:
             m_short = _tex_escape_tt(str(m_id).split("/")[-1])
             for crow in (stats_models or {})[m_id]["l2_regularization_sensitivity"]:
                 tag = " (prod)" if crow.get("is_prod_effective_c") else ""
                 t5_lines.append(
-                    f"C: Gate-2 L2 (\\texttt{{{m_short}}}) & $C={float(crow['reg_c']):g}${tag} & "
+                    f"{l2_prefix}: Gate-2 L2 (\\texttt{{{m_short}}}) & $C={float(crow['reg_c']):g}${tag} & "
                     f"{_fmt_pct(crow['eval_m2_macro'])}\\% & {_fmt_pct(crow['eval_m2_oaa250'])}\\% & "
                     f"{_fmt_pct(crow['eval_m2_u005'])}\\% / {float(crow['eval_m2_tok']):.0f} & "
                     f"$\\tau^*={float(crow['tau_prob']):.3f}$, $\\|w\\|_2={float(crow['coef_l2_norm']):.2f}$ \\\\"
