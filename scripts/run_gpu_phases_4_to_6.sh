@@ -71,6 +71,7 @@ else
 fi
 export TRITON_DEFAULT_FP_FUSION="${TRITON_DEFAULT_FP_FUSION:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
 
 PART_MODE="all"
 SETUP_MODE="off"
@@ -681,30 +682,26 @@ prune_hf_cache_if_low_disk() {
   if [ "$IS_MOCK" -ne 0 ] || [ "$OFFLINE_MODE" -eq 1 ]; then
     return 0
   fi
-  "$PY_BIN" -c "
-import os, pathlib, shutil, sys
-thresh = float(sys.argv[1])
-keep_dirs = {'models--' + m.strip().replace('/', '--') for m in sys.argv[2:] if m.strip()}
-if thresh <= 0:
-    sys.exit(0)
-hf_hub = pathlib.Path(os.environ.get('HF_HOME') or (pathlib.Path.home() / '.cache' / 'huggingface')) / 'hub'
-if not hf_hub.is_dir():
-    sys.exit(0)
-free_gb = shutil.disk_usage(str(hf_hub)).free / (1024**3)
-if free_gb < thresh:
-    print(f'[Disk Guard] Free disk {free_gb:.1f} GB < {thresh:.1f} GB; pruning unused HF weights under {hf_hub} (keep={sorted(keep_dirs)})...', flush=True)
-    for item in hf_hub.iterdir():
-        if item.is_dir() and item.name.startswith('models--'):
-            if item.name in keep_dirs and free_gb >= 10.0:
-                continue
-            shutil.rmtree(item, ignore_errors=True)
-" "$thresh_gb" "$@" 2>&1 | tee -a "$RUN_LOG" || true
+  "$PY_BIN" -c "import sys; from scripts.gpu_pool import prune_hf_disk_cache; prune_hf_disk_cache(float(sys.argv[1]), sys.argv[2], sys.argv[3:])" \
+    "$thresh_gb" "$OUT_DIR" "$@" 2>&1 | tee -a "$RUN_LOG" || true
 }
 
 check_workspace_disk_space() {
   local stage_label="${1:-Stage}"
+  shift || true
   if [ "$IS_MOCK" -ne 0 ]; then
     return 0
+  fi
+  local cur_low
+  cur_low="$("$PY_BIN" -c "
+import pathlib, shutil, sys
+p = pathlib.Path(sys.argv[1])
+if not p.exists():
+    p = pathlib.Path('.')
+print('1' if (shutil.disk_usage(str(p)).free / (1024**3)) < 6.0 else '0')
+" "$OUT_DIR" 2>/dev/null || echo 0)"
+  if [ "$cur_low" = "1" ]; then
+    prune_hf_cache_if_low_disk 25 "$@"
   fi
   "$PY_BIN" -c "
 import pathlib, shutil, sys
@@ -1430,7 +1427,8 @@ run_ifbench_ood_stage() {
   fi
   local _ifbm _ifb_slug
   for _ifbm in "${IFBENCH_MODELS_ARG[@]}"; do
-    check_workspace_disk_space "IFBench OOD (${_ifbm})" || return 1
+    prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "$_ifbm"
+    check_workspace_disk_space "IFBench OOD (${_ifbm})" "$_ifbm" || return 1
     _ifb_slug="${_ifbm//\//__}"
     local ifb_args=(
       --model "$_ifbm"
@@ -1465,6 +1463,7 @@ run_r6_sampled_stage() {
   local _r6m _r6_seed _r6_slug _orig_seed
   _orig_seed="$SEED"
   for _r6m in "${R6_MODELS_ARG[@]}"; do
+    prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "$_r6m"
     for _r6_seed in "${R6_SEEDS_ARG[@]}"; do
       SEED="$_r6_seed"
       _rebuild_matrix_param_flags "$SEED"
@@ -1605,6 +1604,17 @@ if free_gb < 45.0:
   fi
   echo "========================================================================"
 } 2>&1 | tee -a "$RUN_LOG"
+
+# Self-heal disk space upfront before unpacking caches (purges HF xet/pip & retired model weights, keeps active model)
+if [ "${#MODELS_ARG[@]}" -gt 0 ]; then
+  prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "${MODELS_ARG[0]}"
+elif [ "$PART_MODE" = "ifbench" ]; then
+  prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "${IFBENCH_MODELS_ARG[@]}"
+elif [ "$PART_MODE" = "r6" ]; then
+  prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "${R6_MODELS_ARG[@]}"
+else
+  prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" Qwen/Qwen3.5-4B
+fi
 
 case "$PART_MODE" in
   1)
@@ -1807,6 +1817,7 @@ case "$PART_MODE" in
       prune_hf_cache_if_low_disk 28 Qwen/Qwen3.5-9B Qwen/Qwen3.5-4B
       run_matrix_sharded "Phase 6 / W6: Qwen3.5-9B (strict341)" Qwen/Qwen3.5-9B --strict-diag
       sync_model_checkpoint Qwen/Qwen3.5-9B
+      prune_hf_cache_if_low_disk "$PRUNE_HF_BELOW_GB" "${IFBENCH_MODELS_ARG[@]}" "${R6_MODELS_ARG[@]}"
     fi
     run_ifbench_ood_stage
     run_r6_sampled_stage

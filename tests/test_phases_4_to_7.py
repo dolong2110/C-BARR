@@ -4675,6 +4675,45 @@ class TestPhases4To7(unittest.TestCase):
                 devs.append(json.loads(p.read_text(encoding="utf-8").strip())["dev"])
             self.assertGreaterEqual(devs.count("1"), 4, f"Expected fast GPU 1 to steal >=4 shards, got {devs}")
 
+    def test_v0523_disk_guard_self_heals_xet_and_retired_hf_weights(self) -> None:
+        """Verifies HF_HUB_DISABLE_XET=1 and prune_hf_disk_cache purges xet + non-protected models while keeping active model."""
+        from scripts.gpu_pool import prewarm_hf_model_weights, prune_hf_disk_cache
+
+        prev_xet = os.environ.pop("HF_HUB_DISABLE_XET", None)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                td_p = pathlib.Path(td)
+                snap = td_p / "snap"
+                snap.mkdir()
+                (snap / "config.json").write_text("{}", encoding="utf-8")
+                (snap / "tokenizer.json").write_text("{}", encoding="utf-8")
+                (snap / "model.safetensors").write_bytes(b"ok")
+                self.assertTrue(
+                    prewarm_hf_model_weights("Qwen/Qwen3.5-4B", snapshot_fn=lambda **_: str(snap))
+                )
+                self.assertEqual(os.environ.get("HF_HUB_DISABLE_XET"), "1")
+
+                hf_home = td_p / "hf_home"
+                (hf_home / "xet").mkdir(parents=True)
+                (hf_home / "xet" / "chunk.bin").write_bytes(b"x" * 64)
+                (hf_home / "hub" / "models--Qwen--Qwen3.5-9B").mkdir(parents=True)
+                (hf_home / "hub" / "models--Qwen--Qwen3.5-4B").mkdir(parents=True)
+                run_sh = (ROOT / "scripts" / "run_gpu_phases_4_to_6.sh").read_text(encoding="utf-8")
+                self.assertIn('export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"', run_sh)
+
+                res = prune_hf_disk_cache(
+                    999999.0, td_p, ["Qwen/Qwen3.5-4B"], hf_home=hf_home
+                )
+                self.assertTrue(res["pruned"])
+                self.assertFalse((hf_home / "xet").exists())
+                self.assertFalse((hf_home / "hub" / "models--Qwen--Qwen3.5-9B").exists())
+                self.assertTrue((hf_home / "hub" / "models--Qwen--Qwen3.5-4B").is_dir())
+        finally:
+            if prev_xet is None:
+                os.environ.pop("HF_HUB_DISABLE_XET", None)
+            else:
+                os.environ["HF_HUB_DISABLE_XET"] = prev_xet
+
 
 if __name__ == "__main__":
     unittest.main()

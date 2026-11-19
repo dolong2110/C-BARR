@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -507,6 +508,7 @@ def prewarm_hf_model_weights(
         return _has_complete_hf_weights(local_p)
     if offline or os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
         return True
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     if snapshot_fn is None:
         try:
             from huggingface_hub import snapshot_download
@@ -564,6 +566,76 @@ def prewarm_hf_model_weights(
             )
             time.sleep(wait_s)
     return False
+
+
+def prune_hf_disk_cache(
+    thresh_gb: float,
+    out_dir: pathlib.Path | str = "outputs",
+    keep_models: list[str] | tuple[str, ...] = (),
+    *,
+    hf_home: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Self-heals low disk space by purging duplicate HF xet/pip caches and retired model weights."""
+    thresh = float(thresh_gb)
+    if thresh <= 0:
+        return {"pruned": False}
+    keep_dirs = {"models--" + str(m).strip().replace("/", "--") for m in keep_models if str(m).strip()}
+    hf_root = hf_home or pathlib.Path(
+        os.environ.get("HF_HOME") or (pathlib.Path.home() / ".cache" / "huggingface")
+    )
+    hf_hub = hf_root / "hub"
+    out_p = pathlib.Path(out_dir)
+    probe_paths = [
+        p for p in (hf_root, out_p if out_p.exists() else pathlib.Path(".")) if p.exists()
+    ]
+    if not probe_paths:
+        return {"pruned": False}
+
+    def _min_free() -> float:
+        return min(shutil.disk_usage(str(p)).free / (1024.0**3) for p in probe_paths)
+
+    free_before = _min_free()
+    if free_before >= thresh:
+        return {"pruned": False, "free_before_gb": round(free_before, 2)}
+
+    import shutil as _sh
+
+    print(
+        hl(
+            f"[Disk Guard] Free disk {free_before:.2f} GB < {thresh:.1f} GB; pruning xet/pip & unused HF checkpoints (keep={sorted(keep_dirs)})...",
+            "orange",
+        ),
+        flush=True,
+    )
+    for sub in ("xet", "downloads"):
+        sp = hf_root / sub
+        if sp.is_dir():
+            _sh.rmtree(sp, ignore_errors=True)
+    if hf_home is None and _min_free() < 15.0:
+        pip_cache = pathlib.Path.home() / ".cache" / "pip"
+        if pip_cache.is_dir():
+            _sh.rmtree(pip_cache, ignore_errors=True)
+    if hf_hub.is_dir():
+        for item in hf_hub.iterdir():
+            if item.is_dir() and item.name.startswith("models--") and item.name not in keep_dirs:
+                _sh.rmtree(item, ignore_errors=True)
+        if _min_free() < 2.0:
+            for item in hf_hub.iterdir():
+                if item.is_dir() and item.name.startswith("models--"):
+                    _sh.rmtree(item, ignore_errors=True)
+    free_after = _min_free()
+    print(
+        hl(
+            f"[Disk Guard] Disk cleanup complete: {free_before:.2f} GB -> {free_after:.2f} GB free.",
+            "green",
+        ),
+        flush=True,
+    )
+    return {
+        "pruned": True,
+        "free_before_gb": round(free_before, 2),
+        "free_after_gb": round(free_after, 2),
+    }
 
 
 def main() -> None:
