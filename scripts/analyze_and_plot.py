@@ -971,9 +971,13 @@ def generate_latex_table_parts(
     for k in VARIANT_ORDER:
         if k in ("M1a", "M2_B64"):
             t1_lines.append(r"\midrule")
-        sig = r"$^\dagger$" if float(t1_sys[k].get("p_holm_vs_b1b", 1.0)) < 0.05 else ""
-        if k == "M2" and m2_conf_p < 0.05:
-            sig = rf"{sig}$^\ddagger$"
+        has_dag = float(t1_sys[k].get("p_holm_vs_b1b", 1.0)) < 0.05
+        has_ddag = k == "M2" and m2_conf_p < 0.05
+        sig = (
+            r"$^{\dagger\ddagger}$"
+            if (has_dag and has_ddag)
+            else (r"$^\dagger$" if has_dag else (r"$^\ddagger$" if has_ddag else ""))
+        )
         t1_lines.append(_row_tex(VARIANT_LATEX_LABELS[k], t1_sys[k], sig=sig))
     if "M2_Prec" in t1_rep.get("auxiliary_systems", {}):
         t1_lines.append(_row_tex(r"M2-Prec: C-BARR Aux.\ ($\phi_{\text{prec}} \to \text{M2-128}$)", t1_rep["auxiliary_systems"]["M2_Prec"]))
@@ -1379,6 +1383,176 @@ def generate_latex_tables(
     return "\n\n".join(blocks) + "\n"
 
 
+def plot_fig0_architecture_overview(fig_path: pathlib.Path) -> None:
+    """Generates Figure 0: Vector schematic of the 3-stage C-BARR inference & state-bridging pipeline."""
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+    fig, ax = plt.subplots(figsize=(11.8, 2.95))
+    ax.set_xlim(0.0, 11.8)
+    ax.set_ylim(0.0, 3.05)
+    ax.axis("off")
+
+    def _box(x: float, y: float, w: float, h: float, title: str, body: str, fc: str, ec: str) -> None:
+        patch = FancyBboxPatch(
+            (x, y),
+            w,
+            h,
+            boxstyle="round,pad=0.05,rounding_size=0.10",
+            facecolor=fc,
+            edgecolor=ec,
+            linewidth=1.35,
+            zorder=2,
+        )
+        ax.add_patch(patch)
+        ax.text(
+            x + w / 2,
+            y + h - 0.16,
+            title,
+            ha="center",
+            va="top",
+            fontsize=8.5,
+            fontweight="bold",
+            color="#111111",
+            zorder=3,
+        )
+        ax.text(
+            x + w / 2,
+            y + (h - 0.24) / 2,
+            body,
+            ha="center",
+            va="center",
+            fontsize=7.4,
+            color="#222222",
+            zorder=3,
+        )
+
+    def _arrow(
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        label: str = "",
+        col: str = "#333333",
+        lx: float | None = None,
+        ly: float | None = None,
+    ) -> None:
+        arr = FancyArrowPatch(
+            (x0, y0),
+            (x1, y1),
+            arrowstyle="-|>,head_length=5.5,head_width=3.5",
+            linewidth=1.3,
+            color=col,
+            zorder=4,
+        )
+        ax.add_patch(arr)
+        if label:
+            tx = (x0 + x1) / 2 if lx is None else lx
+            ty = (y0 + y1) / 2 if ly is None else ly
+            ax.text(
+                tx,
+                ty,
+                label,
+                ha="center",
+                va="center",
+                fontsize=7.1,
+                color=col,
+                fontweight="bold",
+                bbox=dict(boxstyle="round,pad=0.13", fc="white", ec="none", alpha=0.92),
+                zorder=5,
+            )
+
+    # Column 1: User Prompt
+    _box(0.08, 1.00, 1.38, 1.02, "User Prompt $x$", "Frozen weights\n$\\mathcal{M}_\\theta$ (no FT)", "#F4F6F8", "#4A5568")
+    _arrow(1.52, 1.51, 1.92, 1.51)
+
+    # Column 2: Gate 1
+    _box(
+        1.98,
+        0.88,
+        2.22,
+        1.26,
+        "Gate 1: Lexical Screen",
+        "25 numeral-masked rules\n$\\phi_{\\mathrm{plan}}, \\phi_{\\mathrm{prec}}, \\phi_{\\mathrm{sym}}$\nConflict clause $c_{\\mathrm{anc}}(x)$",
+        "#EBF8FF",
+        OKABE_ITO["blue"],
+    )
+
+    # Branch A (Top): Pure precision -> Direct Non-Thinking
+    _arrow(4.26, 1.82, 5.22, 2.38, "Pure $\\phi_{\\mathrm{prec}}$", OKABE_ITO["green"], lx=4.72, ly=2.24)
+    _box(
+        5.28,
+        2.06,
+        2.68,
+        0.82,
+        "Direct Non-Thinking ($B=0$)",
+        "Bypass <think> drift & loops\nZero deliberation overhead",
+        "#E6FFFA",
+        OKABE_ITO["green"],
+    )
+
+    # Branch B (Middle): Planning hit -> straight to Method M2
+    _arrow(4.26, 1.51, 8.88, 1.51, "$\\phi_{\\mathrm{plan}}=1$ (planning tier)", OKABE_ITO["purple"], lx=6.62, ly=1.67)
+
+    # Branch C (Bottom): Unmatched -> Gate 2 Fast Probe
+    _arrow(4.26, 1.16, 5.22, 0.68, "Unmatched", OKABE_ITO["sky"], lx=4.72, ly=0.76)
+    _box(
+        5.28,
+        0.14,
+        2.68,
+        1.04,
+        "Gate 2: $K\\leq 32$ Fast Probe",
+        "Non-thinking $(H_1, \\bar{H}, H_{\\max}, I_{\\mathrm{inertia}})$\nL2 scorer $p_{\\mathrm{slow}}(x) \\lessgtr \\tau^*$ ($6$ scalars)",
+        "#FFF5EB",
+        OKABE_ITO["orange"],
+    )
+
+    # Gate 2 -> Escalate to Method M2 vs Fast Continuation
+    _arrow(8.02, 0.92, 8.88, 1.24, "$p_{\\mathrm{slow}} \\geq \\tau^*$", OKABE_ITO["orange"], lx=8.43, ly=1.18)
+    _arrow(8.02, 0.44, 8.88, 0.44, "$p_{\\mathrm{slow}} < \\tau^*$", OKABE_ITO["green"], lx=8.45, ly=0.60)
+
+    # Column 4 Top: Compliant Answer
+    _arrow(8.02, 2.47, 8.88, 2.47, "", OKABE_ITO["green"])
+    _box(
+        8.94,
+        2.16,
+        2.74,
+        0.68,
+        "Compliant Answer $a_{\\mathrm{final}}$",
+        "$T_{\\mathrm{delib}} \\leq 250$ (100% $\\mathrm{OAA}_{250}$ SLA)",
+        "#F0FFF4",
+        OKABE_ITO["green"],
+    )
+
+    # Column 4 Middle: Method M2
+    _box(
+        8.94,
+        0.86,
+        2.74,
+        1.08,
+        "Method M2: Capped Bridge",
+        "Cap $B \\in \\{64,128,250-T_{\\mathrm{probe}}\\}$\nSplice P_TERM + </think>\nTurn-delimited user $c_{\\mathrm{anc}}(x)$",
+        "#FAF5FF",
+        OKABE_ITO["purple"],
+    )
+    _arrow(10.31, 1.98, 10.31, 2.14, "", OKABE_ITO["purple"])
+
+    # Column 4 Bottom: Stateful Fast Continuation
+    _box(
+        8.94,
+        0.12,
+        2.74,
+        0.58,
+        "Stateful Continuation ($\\mathcal{C}_1$)",
+        "Reuse KV/DeltaNet cache (no re-prefill)",
+        "#F0FFF4",
+        OKABE_ITO["green"],
+    )
+
+    fig.tight_layout(pad=0.12)
+    fig.savefig(fig_path, format="pdf", bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_fig1_pareto_frontier(
     bundles: dict[str, dict[str, Any]],
     primary_model: str,
@@ -1397,13 +1571,27 @@ def plot_fig1_pareto_frontier(
         (["M1a", "M1b", "M1c"], OKABE_ITO["sky"], "s", "Unbudgeted Routers (M1a-M1c)"),
         (["M2_B64", "M2_B128", "M2_B256", "M2_Pre"], OKABE_ITO["orange"], "^", "C-BARR Caps / Pre-Anc."),
     ]
+    custom_offsets: dict[str, tuple[int, int]] = {
+        "B0": (-20, 7),
+        "B2a": (-24, -12),
+        "B1a": (9, -2),
+        "B2b": (6, 4),
+        "B1b": (-26, 6),
+        "M1a": (6, 4),
+        "M1b": (9, -8),
+        "M1c": (6, 4),
+        "M2_Pre": (-44, -3),
+    }
     for keys, col, mk, grp_lbl in style_groups:
         xs = [float(sys_d[k]["mean_t_tot"]) for k in keys]
         ys = [100.0 * float(sys_d[k]["macro_acc"]) for k in keys]
         ax_l.scatter(xs, ys, color=col, marker=mk, s=55, label=grp_lbl, zorder=3)
         for k, x, y in zip(keys, xs, ys):
-            ann_k = "M2-250" if k == "M2_B256" else k
-            ax_l.annotate(ann_k, (x, y), xytext=(4, 4), textcoords="offset points", fontsize=7.5)
+            if k in ("M2_B64", "M2_B128", "M2_B256"):
+                continue
+            ann_k = "M2-Pre" if k == "M2_Pre" else k
+            dx, dy = custom_offsets.get(k, (5, 4))
+            ax_l.annotate(ann_k, (x, y), xytext=(dx, dy), textcoords="offset points", fontsize=7.6)
 
     ax_l.scatter(
         [float(sys_d["M2"]["mean_t_tot"])],
@@ -1419,7 +1607,7 @@ def plot_fig1_pareto_frontier(
     ax_l.annotate(
         "M2",
         (float(sys_d["M2"]["mean_t_tot"]), 100.0 * float(sys_d["M2"]["macro_acc"])),
-        xytext=(5, 5),
+        xytext=(-14, 10),
         textcoords="offset points",
         fontsize=8.5,
         fontweight="bold",
@@ -1433,10 +1621,17 @@ def plot_fig1_pareto_frontier(
         label="Oracle_UB",
         zorder=4,
     )
+    ax_l.annotate(
+        "Oracle_UB",
+        (float(oracle_s["mean_t_tot"]), 100.0 * float(oracle_s["macro_acc"])),
+        xytext=(7, -3),
+        textcoords="offset points",
+        fontsize=7.6,
+    )
     aux_d = rep.get("auxiliary_systems") if isinstance(rep.get("auxiliary_systems"), dict) else {}
-    for aux_k, aux_lbl, aux_mk, aux_col in (
-        ("M2_Prec", "M2-Prec", "X", OKABE_ITO["blue"]),
-        ("M2_B512", "M2-512 (R3)", "P", OKABE_ITO["yellow"]),
+    for aux_k, aux_lbl, aux_mk, aux_col, aux_off in (
+        ("M2_Prec", "M2-Prec", "X", OKABE_ITO["blue"], (-4, 12)),
+        ("M2_B512", "M2-512 (R3)", "P", OKABE_ITO["yellow"], (9, 2)),
     ):
         if aux_k in aux_d:
             ax_l.scatter(
@@ -1453,14 +1648,16 @@ def plot_fig1_pareto_frontier(
             ax_l.annotate(
                 aux_lbl,
                 (float(aux_d[aux_k]["mean_t_tot"]), 100.0 * float(aux_d[aux_k]["macro_acc"])),
-                xytext=(4, 4),
+                xytext=aux_off,
                 textcoords="offset points",
                 fontsize=7.5,
             )
+    ax_l.set_xlim(175, 1840)
+    ax_l.set_ylim(25, 99)
     ax_l.set_xlabel(r"Mean Total Tokens ($\overline{T}_{\mathrm{tot}}$)")
     ax_l.set_ylabel("Macro Accuracy (%)")
     ax_l.set_title(f"(a) Accuracy vs. Token Budget ({t_key.split('/')[-1]})")
-    ax_l.legend(loc="lower right", frameon=True, framealpha=0.9)
+    ax_l.legend(loc="upper right", frameon=True, framealpha=0.92, fontsize=7.6)
 
     slice_short = ["GSM-E", "GSM-H", "CSQA", "IFE-Plan", "IFE-Prec", "IFE-Conf"]
     x_pos = np.arange(len(SLICE_ORDER))
@@ -1613,51 +1810,53 @@ def plot_fig4_horizons_and_w7(
     """Generates Figure 4: (a) Gate-2 Probe Horizon K=1..32 vs Prefill MLP & (b) W7 Blending / Loop Pathology."""
     fig, (ax_l, ax_r) = plt.subplots(1, 2, figsize=(10.5, 3.9))
 
-    # Panel (a): Probe-Horizon Ablation K in {1,4,8,16,32} + Zero-Generation Prefill MLP
+    # Panel (a): Multi-backbone Probe-Horizon Ablation K in {1,4,8,16,32} + Zero-Generation Prefill MLP
     t_key = primary_model if primary_model in bundles else next(iter(bundles))
-    ph = (stats_models.get(t_key, {}) or {}).get("probe_horizon_ablation", {})
     ks = [1, 4, 8, 16, 32]
-    xs_k = [k for k in ks if f"K_{k}" in ph]
-    if xs_k:
-        macros = [100.0 * float(ph[f"K_{k}"]["macro_acc"]) for k in xs_k]
-        oaas = [100.0 * float(ph[f"K_{k}"]["oaa_250"]) for k in xs_k]
-        ax_l.plot(xs_k, macros, color=OKABE_ITO["blue"], marker="o", linewidth=2.0, label="Gate-2 MacroAcc")
-        ax_l.plot(xs_k, oaas, color=OKABE_ITO["green"], marker="D", linestyle="--", linewidth=1.8, label="Gate-2 OAA_250")
-    mlp = bundles[t_key].get("prefill_mlp")
-    if isinstance(mlp, dict) and isinstance(mlp.get("eval_table"), dict):
-        et = mlp["eval_table"]
-        ax_l.scatter(
-            [0],
-            [100.0 * float(et.get("macro_acc", 0.0))],
-            color=OKABE_ITO["orange"],
-            marker="*",
-            s=110,
-            label="Zero-Gen Prefill MLP (Macro)",
-            zorder=5,
-        )
-        ax_l.axhline(
-            y=100.0 * float(et.get("macro_acc", 0.0)),
-            color=OKABE_ITO["orange"],
-            linestyle=":",
-            linewidth=1.1,
-            alpha=0.75,
-        )
+    horizon_specs = [
+        ("Qwen/Qwen3.5-9B", OKABE_ITO["purple"], "-", "s", "Qwen3.5-9B"),
+        (t_key, OKABE_ITO["blue"], "-", "o", f"{t_key.split('/')[-1]} (Primary)"),
+        ("Qwen/Qwen3.5-2B", OKABE_ITO["green"], "--", "^", "Qwen3.5-2B"),
+        (dense_model, OKABE_ITO["orange"], "-.", "D", f"{dense_model.split('/')[-1]} (Dense)"),
+    ]
+    plotted_vals: list[float] = []
+    seen_h: set[str] = set()
+    for m_h, col_h, ls_h, mk_h, lbl_h in horizon_specs:
+        if m_h in seen_h or m_h not in bundles:
+            continue
+        seen_h.add(m_h)
+        ph_m = (stats_models.get(m_h, {}) or {}).get("probe_horizon_ablation", {})
+        xs_k = [k for k in ks if f"K_{k}" in ph_m]
+        if xs_k:
+            ys_k = [100.0 * float(ph_m[f"K_{k}"]["macro_acc"]) for k in xs_k]
+            plotted_vals.extend(ys_k)
+            ax_l.plot(xs_k, ys_k, color=col_h, linestyle=ls_h, marker=mk_h, linewidth=1.9, markersize=5, label=lbl_h)
+        mlp_m = bundles[m_h].get("prefill_mlp")
+        if isinstance(mlp_m, dict) and isinstance(mlp_m.get("eval_table"), dict):
+            mv = 100.0 * float(mlp_m["eval_table"].get("macro_acc", 0.0))
+            plotted_vals.append(mv)
+            ax_l.scatter([0], [mv], color=col_h, marker="*", s=105, edgecolor="#111111", linewidth=0.6, zorder=5)
+    if any(isinstance(bundles[m].get("prefill_mlp"), dict) for m in seen_h):
+        ax_l.scatter([], [], color="#555555", marker="*", s=95, label="$K=0$ Prefill MLP")
     ax_l.set_xticks([0, 1, 4, 8, 16, 32])
     ax_l.set_xticklabels(["0\n(MLP)", "1", "4", "8", "16", "32"])
     ax_l.set_xlabel("Gate-2 Non-Thinking Probe Horizon $K$ (Tokens)")
-    ax_l.set_ylabel("Eval-450 Score (%)")
-    ax_l.set_ylim(0, 105)
-    ax_l.set_title(f"(a) Probe Horizon vs. Zero-Gen Prefill ({t_key.split('/')[-1]})")
+    ax_l.set_ylabel("Eval-450 Macro Accuracy (%)")
+    if plotted_vals:
+        ax_l.set_ylim(max(0.0, min(plotted_vals) - 6.0), min(100.0, max(plotted_vals) + 5.0))
+    else:
+        ax_l.set_ylim(0, 105)
+    ax_l.set_title("(a) Probe Horizon vs. Zero-Gen Prefill ($K=0$)")
     if ax_l.get_legend_handles_labels()[0]:
-        ax_l.legend(loc="lower right", frameon=True, framealpha=0.9)
+        ax_l.legend(loc="center right", frameon=True, framealpha=0.92, fontsize=7.5)
 
-    # Panel (b): W7 State Restoration (DeltaNet alpha-blend / conv+KV) or Cross-Scale Loop Pathology fallback
+    # Panel (b): W7 State Restoration (DeltaNet alpha-blend / conv+KV & Dense KV eviction)
     bl = bundles[t_key].get("ext_deltanet_blend")
     if isinstance(bl, dict) and isinstance(bl.get("alphas"), dict) and bl["alphas"]:
         a_keys = sorted(bl["alphas"].keys(), key=lambda x: float(x))
         alphas = [float(bl["alphas"][k]["alpha"]) for k in a_keys]
         ov_pct = [float(bl["alphas"][k]["overall_recovery_pct"]) for k in a_keys]
-        ax_r.plot(alphas, ov_pct, color=OKABE_ITO["purple"], marker="o", linewidth=2.0, label="DeltaNet Recurrent Blend")
+        ax_r.plot(alphas, ov_pct, color=OKABE_ITO["purple"], marker="o", linewidth=2.0, label="Qwen3.5-4B Rec. Blend")
         bl_ck = bundles[t_key].get("ext_deltanet_blend_conv_kv")
         if isinstance(bl_ck, dict) and isinstance(bl_ck.get("alphas"), dict) and bl_ck["alphas"]:
             ck_keys = sorted(bl_ck["alphas"].keys(), key=lambda x: float(x))
@@ -1667,8 +1866,8 @@ def plot_fig4_horizons_and_w7(
                 color=OKABE_ITO["sky"],
                 marker="^",
                 linestyle="-.",
-                linewidth=1.8,
-                label="DeltaNet Conv+Rec+KV Evict",
+                linewidth=1.9,
+                label="Qwen3.5-4B Conv+Rec+KV Evict",
             )
         diag_d = bundles[t_key].get("full_diag") or bundles[t_key].get("strict_diag") or {}
         if "B2a_post_anchor" in diag_d:
@@ -1677,24 +1876,33 @@ def plot_fig4_horizons_and_w7(
                 color=OKABE_ITO["green"],
                 linestyle="--",
                 linewidth=1.3,
-                label="Control B2a (Post-Think Re-Anchor)",
+                label="Qwen3.5-4B B2a Text Anchor (96.1%)",
             )
         if dense_model in bundles:
+            d_diag = bundles[dense_model].get("full_diag") or bundles[dense_model].get("strict_diag") or {}
+            if "B2a_post_anchor" in d_diag:
+                ax_r.axhline(
+                    y=float(d_diag["B2a_post_anchor"]["overall_recovery_pct"]),
+                    color=OKABE_ITO["grey"],
+                    linestyle=":",
+                    linewidth=1.3,
+                    label=f"{dense_model.split('/')[-1]} B2a Text Anchor (62.5%)",
+                )
             d_ev = bundles[dense_model].get("ext_deltanet_blend_evict_kv")
             if isinstance(d_ev, dict) and isinstance(d_ev.get("alphas"), dict) and d_ev["alphas"]:
                 first_k = next(iter(d_ev["alphas"]))
                 ax_r.axhline(
                     y=float(d_ev["alphas"][first_k]["overall_recovery_pct"]),
                     color=OKABE_ITO["orange"],
-                    linestyle=":",
-                    linewidth=1.4,
-                    label=f"{dense_model.split('/')[-1]} KV Evict",
+                    linestyle="-",
+                    linewidth=1.6,
+                    label=f"{dense_model.split('/')[-1]} <think> KV Evict (86.2%)",
                 )
         ax_r.set_xlabel(r"State Blend Weight $\alpha$ (Prompt State Retention)")
         ax_r.set_ylabel(r"Strict $E_{\mathrm{hurt}}$ Recovery (%)")
-        ax_r.set_ylim(0, 108)
+        ax_r.set_ylim(54, 102)
         ax_r.set_title(r"(b) Zero-Token State Restoration on $E_{\mathrm{hurt}}$")
-        ax_r.legend(loc="lower right", frameon=True, framealpha=0.9)
+        ax_r.legend(loc="lower right", frameon=True, framealpha=0.92, fontsize=7.3)
     else:
         m_list = list(bundles.keys())
         x_m = np.arange(len(m_list))
@@ -2025,7 +2233,7 @@ def generate_paper_writing_digest(
             "",
             "## 3. Proposition 1 Conformal Degradation Risk & Hindsight `Oracle_UB` Retention",
             "",
-            "| Model | Dev Deg. vs B1b | CRC Bound | Hoeffding UCB (`M=29`) | Eval Deg. vs B1b (`k/450`) | Eval Deg. vs B0 (`k/450`) | Within Bounds | Oracle Macro Ret.% | Oracle U_0.05 Ret.% |",
+            "| Model | Dev Deg. vs B1b | CRC Bound | Hoeffding UCB (`M=29`) | Eval Deg. vs B1b (`k/450`) | Eval Deg. vs B0 (`k/450`) | Within Bounds | Oracle Macro Ret.% | Tok Ratio vs Oracle |",
             "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
         ]
     )
@@ -2040,9 +2248,11 @@ def generate_paper_writing_digest(
         ev_b1 = f"{100*ca.get('eval_observed_degradation_risk',0):.2f}% ({ca.get('eval_degradation_events',0)}/450)"
         ev_b0 = f"{100*ca.get('eval_vs_b0_degradation_risk',0):.2f}% ({ca.get('eval_vs_b0_degradation_events',0)}/450)"
         wb = f"CRC={ca.get('within_crc_expectation_bound', 'n/a')}, Hoef={ca.get('within_hoeffding_ucb', 'n/a')}"
+        m2_oe = (oe.get("variants") or {}).get("M2") or {}
+        tok_rat = float(m2_oe.get("oracle_token_overhead_ratio", 0.0))
         lines.append(
             f"| `{m}` | {dev_r} | {crc_b} | {hoef_b} | {ev_b1} | {ev_b0} | {wb} | "
-            f"{100*oe.get('macro_acc_retention_ratio',0):.1f}% | {100*oe.get('u_005_retention_ratio',0):.1f}% |"
+            f"{100*float(m2_oe.get('macro_acc_retention',0)):.1f}% | {tok_rat:.2f}x |"
         )
 
     lines.extend(["", "## 4. Section 6 Counterfactual Controls & Pooled Exact `k/n` Audit", ""])
@@ -2534,6 +2744,7 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    plot_fig0_architecture_overview(fig_dir / "fig0_cbarr_overview.pdf")
     plot_fig1_pareto_frontier(bundles, args.primary_model, fig_dir / "fig1_pareto_frontier.pdf")
     plot_fig2_bsr_sla(bundles, args.primary_model, args.dense_model, fig_dir / "fig2_bsr_sla_curve.pdf")
     plot_fig3_ehurt_recovery(

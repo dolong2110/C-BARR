@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -4812,6 +4813,28 @@ class TestPhases4To7(unittest.TestCase):
             )
             self.assertEqual(r4.returncode, 0, r4.stdout + r4.stderr)
             self.assertIn("workers_per_gpu=max", r4.stdout)
+
+            # 4. Verify NeurIPS 2026 manuscript, checklist, fig0 overview, and no-$$ table formatting
+            self.assertTrue((fig_dir / "fig0_cbarr_overview.pdf").is_file())
+            tab1_txt = (table_dir / "tab1_main_results.tex").read_text(encoding="utf-8")
+            self.assertNotIn("$$", tab1_txt)
+            main_tex = (ROOT / "paper" / "main.tex").read_text(encoding="utf-8")
+            chk_tex = (ROOT / "paper" / "checklist.tex").read_text(encoding="utf-8")
+            bib_tex = (ROOT / "paper" / "references.bib").read_text(encoding="utf-8")
+            self.assertTrue((ROOT / "paper" / "neurips_2026.sty").is_file())
+            self.assertIn(r"\usepackage{neurips_2026}", main_tex)
+            self.assertIn(r"\input{checklist.tex}", main_tex)
+            self.assertNotIn("$$", main_tex)
+            self.assertEqual(len(re.findall(r"Answer:\s*\\answer(?:Yes|No|NA)\{\}", chk_tex)), 16)
+            self.assertNotIn("TODO", chk_tex)
+            bib_keys = set(re.findall(r"@\w+\{\s*([^,\s]+)\s*,", bib_tex))
+            cited = {
+                k.strip()
+                for grp in re.findall(r"\\cite[tp]?\*?\{([^}]+)\}", main_tex + "\n" + chk_tex)
+                for k in grp.split(",")
+                if k.strip()
+            }
+            self.assertEqual(cited - bib_keys, set())
 
             r3 = subprocess.run(
                 [
