@@ -2,11 +2,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
 from src.engine import Gate1Output, run_gate1_lexical
+
+
+def _finite_float(val: Any, default: float = 0.0) -> float:
+    """Coerces scalar to finite float (sanitizing NaN/-inf from nucleus-warped sampled scores)."""
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else float(default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 @dataclass
@@ -22,11 +32,11 @@ def _build_gate2_feature_vec(g1: Gate1Output, probe: dict[str, Any]) -> np.ndarr
     """Extracts the 5 scalar Gate-2 logistic regression features in canonical order."""
     return np.array(
         [
-            float(probe["H_first"]),
-            float(probe["H_mean"]),
-            float(probe["H_max"]),
-            float(probe["I_inertia"]),
-            float(g1.phi_sym),
+            _finite_float(probe.get("H_first"), 0.0),
+            _finite_float(probe.get("H_mean"), 0.0),
+            _finite_float(probe.get("H_max"), 0.0),
+            _finite_float(probe.get("I_inertia"), 0.0),
+            _finite_float(g1.phi_sym, 0.0),
         ],
         dtype=np.float64,
     )
@@ -44,7 +54,10 @@ def select_tiered_budget(
     if g1.phi_plan == 1 and (g1.phi_prec == 1 or g1.phi_sym == 1):
         return 250
     # High peak probe entropy or Thinking Inertia escalates uncertain items to the top 250 tier
-    if probe is not None and (probe["H_max"] >= tau_h_high or probe["I_inertia"] == 1):
+    if probe is not None and (
+        _finite_float(probe.get("H_max"), -1.0) >= _finite_float(tau_h_high, 0.85)
+        or int(_finite_float(probe.get("I_inertia"), 0.0)) == 1
+    ):
         return 250
     if g1.phi_plan == 1:
         return 128
@@ -74,12 +87,13 @@ def fit_gate2_logistic_weights(
     reg_c: float = 1.0,
 ) -> tuple[list[float], float]:
     """Fits standardized L2 logistic regression and projects weights back to raw 5-feature space."""
-    if len(np.unique(y_arr)) < 2:
+    x_clean = np.nan_to_num(np.asarray(x_arr, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+    if len(np.unique(y_arr)) < 2 or not np.any(np.std(x_clean, axis=0) > 1e-12):
         return [0.6, 0.8, 0.4, 1.0, 0.5], -1.0
     from sklearn.preprocessing import StandardScaler
 
     scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(x_arr)
+    x_scaled = np.nan_to_num(scaler.fit_transform(x_clean), nan=0.0, posinf=0.0, neginf=0.0)
     clf = LogisticRegression(
         C=min(float(reg_c), 0.25),
         class_weight="balanced",
@@ -208,7 +222,9 @@ class CBARRCalibrator:
             need_slow = _gate2_target_label(rec)
             y_seed.append(need_slow)
             if int(rec["m2_b128"]["z"]) > int(rec["fast_done"]["z"]):
-                h_max_thinking_helped.append(float(rec["probe"]["H_max"]))
+                hm_v = _finite_float(rec["probe"].get("H_max"), float("nan"))
+                if math.isfinite(hm_v):
+                    h_max_thinking_helped.append(hm_v)
 
         X_arr = np.vstack(X_seed)
         y_arr = np.asarray(y_seed, dtype=int)
@@ -282,7 +298,7 @@ def score_gate2_probability(
 ) -> float:
     """Computes calibrated Gate-2 escalation probability P(escalate | gate1, probe)."""
     feat = _build_gate2_feature_vec(g1, probe)
-    logit = float(np.dot(np.asarray(params.coef), feat) + params.intercept)
+    logit = float(np.clip(np.dot(np.asarray(params.coef, dtype=np.float64), feat) + float(params.intercept), -60.0, 60.0))
     return float(1.0 / (1.0 + np.exp(-logit)))
 
 

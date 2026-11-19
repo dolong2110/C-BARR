@@ -4851,6 +4851,54 @@ class TestPhases4To7(unittest.TestCase):
             self.assertIn("Probe Horizons", md_txt)
             self.assertIn("Gate-2 L2 Sensitivity", md_txt)
 
+    def test_v0529_top_p_nan_probe_entropy_calibration(self) -> None:
+        """Regression test: NaN probe entropies from top_p nucleus warping calibrate and merge cleanly without ValueError."""
+        import math as _math
+        import numpy as _np
+        from src.engine import run_gate1_lexical
+        from src.routers import CBARRCalibrator, resolve_all_variants_for_item, score_gate2_probability
+
+        def _mk_rec(idx: int, slow_helps: bool) -> dict:
+            prompt = f"Calculate {idx} + {idx + 3}?" if idx % 2 == 0 else f"Answer choice {idx}: (A) yes (B) no"
+            g1 = run_gate1_lexical(prompt)
+            return {
+                "item": {"uid": f"u_{idx}", "prompt": prompt, "slice": "gsm8k_easy"},
+                "g1": g1,
+                "probe": {
+                    "H_first": float("nan"),
+                    "H_mean": float("nan"),
+                    "H_max": float("nan"),
+                    "I_inertia": 1 if slow_helps else 0,
+                    "T_probe": 12,
+                    "latency_ms": 10.0,
+                },
+                "b0": {"z": 0 if slow_helps else 1, "T_total": 40, "latency_ms": 20.0, "calls": 1},
+                "b1a": {"z": 1, "T_total": 80, "latency_ms": 30.0, "calls": 1},
+                "b1b": {"z": 1, "T_total": 400, "latency_ms": 90.0, "calls": 1},
+                "b2a": {"z": 1, "T_total": 60, "latency_ms": 25.0, "calls": 1},
+                "fast_done": {"z": 0 if slow_helps else 1, "T_total": 40, "latency_ms": 20.0, "calls": 1},
+                "m2_b64": {"z": 1, "T_total": 90, "latency_ms": 35.0, "calls": 1},
+                "m2_b128": {"z": 1, "T_total": 120, "latency_ms": 45.0, "calls": 1},
+                "m2_b256": {"z": 1, "T_total": 180, "latency_ms": 55.0, "calls": 1},
+                "m2_b256_direct": {"z": 1, "T_total": 180, "latency_ms": 55.0, "calls": 1},
+                "m2_pre_b64": {"z": 1, "T_total": 90, "latency_ms": 35.0, "calls": 1},
+                "m2_pre_b128": {"z": 1, "T_total": 120, "latency_ms": 45.0, "calls": 1},
+                "m2_pre_b256": {"z": 1, "T_total": 180, "latency_ms": 55.0, "calls": 1},
+                "m2_pre_b256_direct": {"z": 1, "T_total": 180, "latency_ms": 55.0, "calls": 1},
+            }
+
+        seed_recs = [_mk_rec(i, slow_helps=(i % 3 == 0)) for i in range(12)]
+        dev_recs = [_mk_rec(100 + i, slow_helps=(i % 3 == 0)) for i in range(12)]
+        cal = CBARRCalibrator(seed=42, reg_c=0.25)
+        params = cal.fit(seed_recs, dev_recs)
+        self.assertTrue(all(_math.isfinite(c) for c in params.coef))
+        self.assertTrue(_math.isfinite(params.intercept))
+        self.assertTrue(_math.isfinite(params.tau_h_high))
+        prob = score_gate2_probability(seed_recs[0]["g1"], seed_recs[0]["probe"], params)
+        self.assertTrue(_math.isfinite(prob))
+        resolved = resolve_all_variants_for_item(seed_recs[0], params, _np.random.default_rng(0), 0.2)
+        self.assertIn("M2", resolved)
+
 
 if __name__ == "__main__":
     unittest.main()

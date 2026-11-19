@@ -33,6 +33,7 @@ from src.metrics import (
 from src.routers import (
     CalibratedRouterParams,
     _build_gate2_feature_vec,
+    _finite_float,
     _gate2_target_label,
     _get_slow_rec,
     fit_gate2_logistic_weights,
@@ -392,11 +393,11 @@ def _probe_horizon_ablation(
         pr = row["probe"]
         return np.array(
             [
-                float(pr.get("H_first", 0.0)),
-                float(pr.get(h_mean_k, pr.get("H_mean", 0.0))),
-                float(pr.get(h_max_k, pr.get("H_max", 0.0))),
-                float(pr.get(i_k, pr.get("I_inertia", 0))),
-                float(g1.phi_sym),
+                _finite_float(pr.get("H_first"), 0.0),
+                _finite_float(pr.get(h_mean_k, pr.get("H_mean")), 0.0),
+                _finite_float(pr.get(h_max_k, pr.get("H_max")), 0.0),
+                _finite_float(pr.get(i_k, pr.get("I_inertia")), 0.0),
+                _finite_float(g1.phi_sym, 0.0),
             ],
             dtype=np.float64,
         )
@@ -422,14 +423,14 @@ def _probe_horizon_ablation(
             b_dir = select_tiered_budget(prompt_str, g1, None, tau_h_high_k)
             return _get_slow_rec(row, b_dir, direct=True, prefix="m2"), 1
         fv = _feat(row, g1, hm_k, hx_k, in_k)
-        prob = 1.0 / (1.0 + np.exp(-float(np.dot(coef, fv) + intercept)))
+        prob = 1.0 / (1.0 + np.exp(-float(np.clip(np.dot(coef, fv) + intercept, -60.0, 60.0))))
         if prob >= tau:
             probe_k = {
                 **pr,
-                "H_first": float(pr.get("H_first", 0.0)),
-                "H_mean": float(pr.get(hm_k, pr.get("H_mean", 0.0))),
-                "H_max": float(pr.get(hx_k, pr.get("H_max", 0.0))),
-                "I_inertia": int(pr.get(in_k, pr.get("I_inertia", 0))),
+                "H_first": _finite_float(pr.get("H_first"), 0.0),
+                "H_mean": _finite_float(pr.get(hm_k, pr.get("H_mean")), 0.0),
+                "H_max": _finite_float(pr.get(hx_k, pr.get("H_max")), -1.0),
+                "I_inertia": int(_finite_float(pr.get(in_k, pr.get("I_inertia")), 0.0)),
                 "T_probe": eff_probe,
             }
             b_esc = select_tiered_budget(prompt_str, g1, probe_k, tau_h_high_k)
@@ -451,9 +452,11 @@ def _probe_horizon_ablation(
         coef_list, intercept = fit_gate2_logistic_weights(x_s, y_s, seed=seed, reg_c=reg_c)
         coef = np.asarray(coef_list, dtype=np.float64)
         h_max_helped = [
-            float(r["probe"].get(hx_k, r["probe"]["H_max"]))
+            hv
             for r in seed_rows
             if int(r["m2_b128"]["z"]) > int(r["fast_done"]["z"])
+            for hv in [_finite_float(r["probe"].get(hx_k, r["probe"].get("H_max")), float("nan"))]
+            if np.isfinite(hv)
         ]
         tau_h_high_k = float(np.median(h_max_helped)) if h_max_helped else 0.85
 
@@ -523,22 +526,24 @@ def _l2_regularization_sensitivity(
         x_seed_l.append(_build_gate2_feature_vec(g1, rec["probe"]))
         y_seed_l.append(_gate2_target_label(rec))
         if int(rec["m2_b128"]["z"]) > int(rec["fast_done"]["z"]):
-            h_help.append(float(rec["probe"]["H_max"]))
+            hv = _finite_float(rec["probe"].get("H_max"), float("nan"))
+            if np.isfinite(hv):
+                h_help.append(hv)
     for rec in dev_rows:
         rec["g1"] = rec.get("g1") or run_gate1_lexical(rec["item"]["prompt"])
 
-    x_arr = np.vstack(x_seed_l)
+    x_arr = np.nan_to_num(np.vstack(x_seed_l), nan=0.0, posinf=0.0, neginf=0.0)
     y_arr = np.asarray(y_seed_l, dtype=int)
     tau_h_high = float(np.median(h_help)) if h_help else 0.85
     eval_items = [r["item"] for r in eval_rows]
 
     out: list[dict[str, Any]] = []
     for c_val in c_values:
-        if len(np.unique(y_arr)) < 2:
+        if len(np.unique(y_arr)) < 2 or not np.any(np.std(x_arr, axis=0) > 1e-12):
             coef_list, intercept = [0.6, 0.8, 0.4, 1.0, 0.5], -1.0
         else:
             scaler = StandardScaler()
-            x_scaled = scaler.fit_transform(x_arr)
+            x_scaled = np.nan_to_num(scaler.fit_transform(x_arr), nan=0.0, posinf=0.0, neginf=0.0)
             clf = LogisticRegression(C=float(c_val), class_weight="balanced", random_state=seed)
             clf.fit(x_scaled, y_arr)
             scales = np.where(np.abs(scaler.scale_) > 1e-9, scaler.scale_, 1.0)
