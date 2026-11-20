@@ -1,8 +1,8 @@
 {
   "model": "Qwen/Qwen3.5-9B",
-  "code_version": "0.5.27",
-  "git_rev": "bd2f8d2",
-  "run_id": "20261119T114300Z",
+  "code_version": "0.5.31",
+  "git_rev": "d4bccf3",
+  "run_id": "20261120T123558Z",
   "diag_pool": "strict341",
   "diag_n_items": 341,
   "status": "completed",
@@ -11,9 +11,9 @@
     "dtype": "torch.bfloat16"
   },
   "training_params": {
-    "code_version": "0.5.27",
-    "git_rev": "bd2f8d2",
-    "run_id": "20261119T114300Z",
+    "code_version": "0.5.31",
+    "git_rev": "d4bccf3",
+    "run_id": "20261120T123558Z",
     "model": "Qwen/Qwen3.5-9B",
     "diag_pool": "strict341",
     "device": "cuda",
@@ -44,10 +44,10 @@
     "b1b_max_new_tokens": 2048
   },
   "timing_sec": {
-    "calibration": 0.13,
-    "eval_matrix": 0.32,
-    "section6_diagnostics": 0.1,
-    "total_wall": 26.02
+    "calibration": 0.14,
+    "eval_matrix": 0.31,
+    "section6_diagnostics": 0.09,
+    "total_wall": 25.33
   },
   "calibrated_params": {
     "coef": [
