@@ -1484,8 +1484,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T114300Z -->
 
 <!-- CBARR_RUN_START:20261119T222033Z_pr6 -->
-### Run `20261119T222033Z_pr6` — **PASSED** (Updated 2026-11-20 03:27:01 UTC)
-- **Code Version**: `v0.5.30` | **Git Commit**: `20ddfdf` | **Results Release**: `v0.5.30-res.24` | **Last Loop**: `Submission Audit: Double-Blind Anonymity` | **Wall Time**: `5h 06m 17s` (18377.0s)
+### Run `20261119T222033Z_pr6` — **RUNNING (after GitHub Sync (script-part-r6))** (Updated 2026-11-20 03:27:19 UTC)
+- **Code Version**: `v0.5.30` | **Git Commit**: `fc3235a` | **Results Release**: `v0.5.30-res.25` | **Last Loop**: `GitHub Sync (script-part-r6)` | **Wall Time**: `5h 06m 39s` (18399.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --shards auto --gpu-boost --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache --commit --push`
 - **Raw Log**: `outputs/logs/cbarr_20261119T222033Z_pr6.log`
@@ -1505,7 +1505,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "20ddfdf",
+  "git_rev": "fc3235a",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1553,6 +1553,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (merge) | PASS | 52.0s (52.0s) |
 | Phase 7 / W8: Analysis, Tables & Figures | PASS | 1m 16.0s (76.0s) |
 | Submission Audit: Double-Blind Anonymity | PASS | 0.0s (0.0s) |
+| GitHub Sync (script-part-r6) | PASS | 9.0s (9.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
