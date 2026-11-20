@@ -1,6 +1,6 @@
 # C-BARR Final Paper-Writing Statistical & Mechanistic Digest
 
-- **Analyzer Code Version**: `v0.5.31` (`1978dc4-dirty`)
+- **Analyzer Code Version**: `v0.5.31` (`7c2f5c0`)
 - **Evaluated Backbones (5)**: `HuggingFaceTB/SmolLM3-3B`, `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `Qwen/Qwen3.5-9B`
 - **Bootstrap Resamples**: `n_boot=10000` (`seed=42`)
 
