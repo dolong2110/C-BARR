@@ -1484,10 +1484,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T114300Z -->
 
 <!-- CBARR_RUN_START:20261119T222033Z_pr6 -->
-### Run `20261119T222033Z_pr6` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached))** (Updated 2026-11-19 22:22:14 UTC)
-- **Code Version**: `v0.5.30` | **Git Commit**: `af6a598` | **Results Release**: `v0.5.30-res.21` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached)` | **Wall Time**: `1m 33.0s` (93.0s)
+### Run `20261119T222033Z_pr6` — **RUNNING (Calibration: Qwen/Qwen3.5-4B)** (Updated 2026-11-20 00:54:43 UTC)
+- **Code Version**: `v0.5.30` | **Git Commit**: `8881e83` | **Results Release**: `v0.5.30-res.22` | **Last Loop**: `Calibration: Qwen/Qwen3.5-4B` | **Wall Time**: `3.3s` (3.3s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --shards auto --gpu-boost --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache --commit --push`
+- **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261119T222033Z_pr6.log`
 
 #### 1. Training & Experiment Parameters
@@ -1505,7 +1505,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "af6a598",
+  "git_rev": "8881e83",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1547,6 +1547,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Unpack Synced Worker Results | PASS | 1.0s (1.0s) |
 | Gate 0: Preflight Tests | PASS | 6.0s (6.0s) |
 | Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
+| Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B | PASS | 2h 31m 53s (9113.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
@@ -1556,6 +1557,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `Qwen/Qwen3.5-2B` | `v0.5.27` (`e7f34a0`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.27` (`1f3f0e5-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.30` (`af6a598-dirty`) | 0.625 | 0.850 | 50.0% (OK) | 16.7% | -0.29 | [0.00, 0.00, 0.00, 0.86, -2.01] | 70/15/75/25/0.761 | 63/17/67/27/0.710 | 33/0.778 (n=40) | 50.0%->84.0% (1552->360t) | 0.1s |
+| `Qwen/Qwen3.5-4B` | `v0.5.30` (`8881e83`) | 0.425 | 0.850 | 83.3% (OK) | 16.7% | 0.26 | [0.00, 0.00, 0.00, -0.49, 0.06] | 63/9/50/15/0.580 | 12/12/100/21/0.592 | 10/0.237 (n=40) | 45.0%->89.0% (1701->439t) | 0.1s |
 | `Qwen/Qwen3.5-9B` | `v0.5.27` (`bd2f8d2`) | 0.475 | 2.662 | 43.3% (OK) | 16.7% | -0.31 | [0.30, 0.32, -0.02, 0.00, -1.64] | 57/7/100/13/0.750 | 53/10/75/18/0.656 | 21/0.640 (n=40) | 40.0%->83.0% (1662->351t) | 0.1s |
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
