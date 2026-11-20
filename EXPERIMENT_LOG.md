@@ -1484,8 +1484,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T114300Z -->
 
 <!-- CBARR_RUN_START:20261119T222033Z_pr6 -->
-### Run `20261119T222033Z_pr6` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (merge))** (Updated 2026-11-20 03:24:56 UTC)
-- **Code Version**: `v0.5.30` | **Git Commit**: `1a10592` | **Results Release**: `v0.5.30-res.23` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (merge)` | **Wall Time**: `5h 04m 16s` (18256.0s)
+### Run `20261119T222033Z_pr6` — **RUNNING (after Phase 7 / W8: Analysis, Tables & Figures)** (Updated 2026-11-20 03:26:34 UTC)
+- **Code Version**: `v0.5.30` | **Git Commit**: `f1ec6e0` | **Results Release**: `v0.5.30-res.24` | **Last Loop**: `Phase 7 / W8: Analysis, Tables & Figures` | **Wall Time**: `5h 05m 49s` (18349.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --shards auto --gpu-boost --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache --commit --push`
 - **Raw Log**: `outputs/logs/cbarr_20261119T222033Z_pr6.log`
@@ -1505,7 +1505,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "1a10592",
+  "git_rev": "f1ec6e0",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1551,6 +1551,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (merge) | PASS | 51.0s (51.0s) |
 | Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B | PASS | 2h 28m 22s (8902.0s) |
 | Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (merge) | PASS | 52.0s (52.0s) |
+| Phase 7 / W8: Analysis, Tables & Figures | PASS | 1m 16.0s (76.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
@@ -1759,6 +1760,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 - **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357, OrigPrecF1=86.0%->81.2%, ParaPrecF1=78.9%->82.6%) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%) | IFBenchOOD(N=300: B0=28.7%/B1b=2.0%/M2=31.3%, OAA250=31.3%, Tok=443, p_vs_B1b=1.73e-24)
 
 #### 7. Phase 7 Statistical Audit & Gate-4 Summary
+- **Version Mismatch Alert**: analyzer=`v0.5.30` | versions seen across models=`['0.5.27']` | mismatched=`['HuggingFaceTB/SmolLM3-3B', 'Qwen/Qwen3.5-0.8B', 'Qwen/Qwen3.5-2B', 'Qwen/Qwen3.5-4B', 'Qwen/Qwen3.5-9B']`
 | Model | Version | Clean-446 (max delta) | M2 Macro | B1b Macro | M2 OAA_250 | Delta OAA_250 [95% CI] | Tok Red | p_holm vs B1b | p(M2 vs B0) | p(M2 vs Pre) | Gate 4 | R2 (rec / int) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `HuggingFaceTB/SmolLM3-3B` | `v0.5.27+m4` | 448 (0.5 pp) | 68.5% | 69.4% | 72.0% | +68.4 [64.0, 72.7] pp | 62.0% | 1 | 0.1524 | 0.7539 | CHECK | 62.5% / 37.5% |
@@ -1790,4 +1792,5 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 - **`Qwen/Qwen3.5-9B` (Gate-2 L2 Sensitivity)**: C=0.1:85.9%(esc=50%), C=0.25:86.0%(esc=43%), C=0.5:85.9%(esc=42%), C=1:86.0%(esc=33%)
 - **Pooled E_hurt (diag_341_strict)**: A1=100.0% (912/912), B2a=88.6% (808/912), p_midp(B2a vs A1)=4.93e-32
 - **Pooled E_hurt (diag_491)**: A1=100.0% (416/416), B2a=89.7% (373/416)
+- **R6 Multi-Seed (`Qwen/Qwen3.5-4B`, k=3 [42, 43, 44], T=0.6)**: M2 Macro=82.3+/-2.7%, Tok=412+/-42, Delta_B1b=+41.5 pp
 <!-- CBARR_RUN_END:20261119T222033Z_pr6 -->
