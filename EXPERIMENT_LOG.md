@@ -1798,8 +1798,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T222033Z_pr6 -->
 
 <!-- CBARR_RUN_START:20261120T123558Z -->
-### Run `20261120T123558Z` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached))** (Updated 2026-11-20 12:50:27 UTC)
-- **Code Version**: `v0.5.31` | **Git Commit**: `bc8c734` | **Results Release**: `v0.5.31-res.30` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached)` | **Wall Time**: `14m 21.0s` (861.0s)
+### Run `20261120T123558Z` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (cached))** (Updated 2026-11-20 12:51:25 UTC)
+- **Code Version**: `v0.5.31` | **Git Commit**: `91bca89` | **Results Release**: `v0.5.31-res.31` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (cached)` | **Wall Time**: `15m 19.0s` (919.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --gpu-boost --with-ifbench --with-r6 --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261120T123558Z.log`
@@ -1819,7 +1819,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "bc8c734",
+  "git_rev": "91bca89",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1880,6 +1880,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Phase 6 / W6: Qwen3.5-9B (strict341) (cached) | PASS | 40.0s (40.0s) |
 | Appendix B: IFBench OOD (Qwen/Qwen3.5-4B) (cached) | PASS | 0.0s (0.0s) |
 | Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
+| Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (cached) | PASS | 39.0s (39.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -1895,7 +1896,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `Qwen/Qwen3.5-2B` | `v0.5.31` (`8accece`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.31` (`f7a0ebf-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.31` (`bc8c734`) | 0.625 | 0.850 | 50.0% (OK) | 16.7% | -0.29 | [0.00, 0.00, 0.00, 0.86, -2.01] | 70/15/75/25/0.761 | 63/17/67/27/0.710 | 33/0.778 (n=40) | 50.0%->84.0% (1552->360t) | 0.2s |
-| `Qwen/Qwen3.5-4B` | `v0.5.30` (`8881e83`) | 0.425 | 0.850 | 83.3% (OK) | 16.7% | 0.26 | [0.00, 0.00, 0.00, -0.49, 0.06] | 63/9/50/15/0.580 | 12/12/100/21/0.592 | 10/0.237 (n=40) | 45.0%->89.0% (1701->439t) | 0.1s |
+| `Qwen/Qwen3.5-4B` | `v0.5.31` (`91bca89`) | 0.425 | 0.850 | 83.3% (OK) | 16.7% | 0.26 | [0.00, 0.00, 0.00, -0.49, 0.06] | 63/9/50/15/0.580 | 12/12/100/21/0.592 | 10/0.237 (n=40) | 45.0%->89.0% (1701->439t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.30` (`779927c`) | 0.525 | 0.850 | 50.0% (OK) | 16.7% | 0.04 | [0.00, 0.00, 0.00, 0.11, -0.42] | 33/9/80/17/0.553 | 63/13/60/21/0.624 | 25/0.639 (n=40) | 42.0%->82.0% (1619->400t) | 0.1s |
 | `Qwen/Qwen3.5-9B` | `v0.5.31` (`d4bccf3`) | 0.475 | 2.662 | 43.3% (OK) | 16.7% | -0.31 | [0.30, 0.32, -0.02, 0.00, -1.64] | 57/7/100/13/0.750 | 53/10/75/18/0.656 | 21/0.640 (n=40) | 40.0%->83.0% (1662->351t) | 0.1s |
 
@@ -2023,7 +2024,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | M2_Prec (Aux.) | 84.0% | 93.3% | 90.7% | 83.3% | 76.7% | 86.7% | 73.3% | 85.1% | 81.3% | 77.3% | 391 | 1.39 | 2.12e-47 (raw) |
 | **Oracle_UB** | 94.5% | 97.3% | 97.3% | 90.7% | 93.3% | 91.7% | 96.7% | 93.8% | 92.0% | 88.1% | 283 | 1.00 | - |
 
-- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.30` (`8881e83`) | dtype=`torch.bfloat16` | sample(T=0.6, top_p=0.95, pp=1.5, seed=43) | wall=`29.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.425, esc=83.3%
+- **`Qwen/Qwen3.5-4B` (`strict341`**, n_diag=341) — ver=`v0.5.31` (`91bca89`) | dtype=`torch.bfloat16` | sample(T=0.6, top_p=0.95, pp=1.5, seed=43) | wall=`25.1s` (calib=0.1s, eval=0.4s, diag=0.1s) | tau=0.425, esc=83.3%
   - **4-Regime**: Helped=0.9%, Hurt=36.9%, Flip=37.8%, TiePass=46.9%, TieFail=15.3%
   - **Section 6 Causal (`|E_hurt|=195`)**: rho_rec=92.8%, rho_int=7.2% | A1_strip=100.0%, B2a_post=92.8%, B1_pre=91.8%, B2b_raw=47.2%, A2_swap=67.7%, B3_cut=90.3%
 

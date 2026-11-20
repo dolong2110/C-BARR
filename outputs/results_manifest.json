@@ -1,10 +1,10 @@
 {
-  "results_seq": 31,
-  "results_version": "v0.5.31-res.31",
+  "results_seq": 32,
+  "results_version": "v0.5.31-res.32",
   "code_version": "0.5.31",
-  "git_rev": "bc8c734-dirty",
-  "sync_label": "checkpoint-Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42:20261120T123558Z",
-  "updated_utc": "2026-11-20T12:50:30Z",
+  "git_rev": "91bca89-dirty",
+  "sync_label": "checkpoint-Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s43:20261120T123558Z",
+  "updated_utc": "2026-11-20T12:51:29Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.30, 0.5.31",
@@ -234,33 +234,33 @@
     },
     "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s43": {
       "model": "Qwen/Qwen3.5-4B",
-      "code_version": "0.5.30",
-      "git_rev": "8881e83",
-      "run_id": "20261119T222033Z_pr6",
-      "sync_seq": 1,
-      "result_version": "v0.5.30+m1",
+      "code_version": "0.5.31",
+      "git_rev": "91bca89",
+      "run_id": "20261120T123558Z",
+      "sync_seq": 2,
+      "result_version": "v0.5.31+m2",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.30",
-          "git_rev": "8881e83",
-          "run_id": "20261119T222033Z_pr6",
+          "code_version": "0.5.31",
+          "git_rev": "91bca89",
+          "run_id": "20261120T123558Z",
           "seed": 43,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.30",
-          "git_rev": "8881e83",
-          "run_id": "20261119T222033Z_pr6",
+          "code_version": "0.5.31",
+          "git_rev": "91bca89",
+          "run_id": "20261120T123558Z",
           "seed": 43,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "bd70739eb19c865b6934ecb7e6e289c0128f35eb1373ffd9993cc06160944d13",
-        "matrix_summary.json": "7df52e123bc7eb947e7eaab611348a20219301977264dbbdd842c2599fe6339a",
-        "matrix_summary_strict341.json": "7df52e123bc7eb947e7eaab611348a20219301977264dbbdd842c2599fe6339a",
+        "calibration_summary.json": "06846557dbdecae2857cb24b2a59793642d5fbfa9e118eb6fc630476141fd0e1",
+        "matrix_summary.json": "0ad47f730d30e5255f5331da91860b1d3f033bc9e02a2d214608f016257dd1b7",
+        "matrix_summary_strict341.json": "0ad47f730d30e5255f5331da91860b1d3f033bc9e02a2d214608f016257dd1b7",
         "tables_rows.tex": "1ec80c2ecf2bb22eb1e21d798e9488a970a0634225a2151042ffdb1da71cf28e",
         "tables_rows_strict341.tex": "1ec80c2ecf2bb22eb1e21d798e9488a970a0634225a2151042ffdb1da71cf28e",
         "seed_60_cache.jsonl.gz": "6c098ecc839c4c2c0e0ab878860e9c2d15ed022a9491bb22c228e4163d57206d",
