@@ -1798,8 +1798,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T222033Z_pr6 -->
 
 <!-- CBARR_RUN_START:20261120T123558Z -->
-### Run `20261120T123558Z` — **PASSED** (Updated 2026-11-20 12:54:29 UTC)
-- **Code Version**: `v0.5.31` | **Git Commit**: `fcb586c` | **Results Release**: `v0.5.31-res.33` | **Last Loop**: `Submission Audit: Double-Blind Anonymity` | **Wall Time**: `18m 24.0s` (1104.0s)
+### Run `20261120T123558Z` — **RUNNING (after GitHub Sync (script-all-in-one))** (Updated 2026-11-20 12:54:49 UTC)
+- **Code Version**: `v0.5.31` | **Git Commit**: `5a84aa6` | **Results Release**: `v0.5.31-res.34` | **Last Loop**: `GitHub Sync (script-all-in-one)` | **Wall Time**: `18m 43.0s` (1123.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --gpu-boost --with-ifbench --with-r6 --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261120T123558Z.log`
@@ -1819,7 +1819,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "fcb586c",
+  "git_rev": "5a84aa6",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1884,6 +1884,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
 | Phase 7 / W8: Analysis, Tables & Figures | PASS | 1m 25.0s (85.0s) |
 | Submission Audit: Double-Blind Anonymity | PASS | 0.0s (0.0s) |
+| GitHub Sync (script-all-in-one) | PASS | 10.0s (10.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
