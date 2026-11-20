@@ -1484,10 +1484,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T114300Z -->
 
 <!-- CBARR_RUN_START:20261119T222033Z_pr6 -->
-### Run `20261119T222033Z_pr6` — **RUNNING (Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (strict341))** (Updated 2026-11-20 00:55:06 UTC)
-- **Code Version**: `v0.5.30` | **Git Commit**: `ae6a33b` | **Results Release**: `v0.5.30-res.22` | **Last Loop**: `Section 6 & Matrix Complete: Qwen/Qwen3.5-4B (strict341)` | **Wall Time**: `29.9s` (29.9s)
+### Run `20261119T222033Z_pr6` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (merge))** (Updated 2026-11-20 00:55:18 UTC)
+- **Code Version**: `v0.5.30` | **Git Commit**: `9731fce` | **Results Release**: `v0.5.30-res.22` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (merge)` | **Wall Time**: `2h 34m 38s` (9278.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_matrix.py`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --shards auto --gpu-boost --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache --commit --push`
 - **Raw Log**: `outputs/logs/cbarr_20261119T222033Z_pr6.log`
 
 #### 1. Training & Experiment Parameters
@@ -1505,7 +1505,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "ae6a33b",
+  "git_rev": "9731fce",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1548,6 +1548,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Gate 0: Preflight Tests | PASS | 6.0s (6.0s) |
 | Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
 | Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B | PASS | 2h 31m 53s (9113.0s) |
+| Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (merge) | PASS | 51.0s (51.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
