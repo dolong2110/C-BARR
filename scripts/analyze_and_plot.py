@@ -223,6 +223,16 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         ext_ifbench_ood = json.loads(
             (model_dir / "ext_ifbench_ood.json").read_text(encoding="utf-8")
         )
+    ext_m2_state_adaptive = None
+    if (model_dir / "ext_m2_state_adaptive.json").exists():
+        ext_m2_state_adaptive = json.loads(
+            (model_dir / "ext_m2_state_adaptive.json").read_text(encoding="utf-8")
+        )
+    ext_math500_eval = None
+    if (model_dir / "ext_math500_eval.json").exists():
+        ext_math500_eval = json.loads(
+            (model_dir / "ext_math500_eval.json").read_text(encoding="utf-8")
+        )
 
     eval_cache_path = model_dir / "eval_450_cache.jsonl"
     items: list[dict[str, Any]] = []
@@ -275,6 +285,8 @@ def load_model_bundle(model_dir: pathlib.Path) -> dict[str, Any] | None:
         "prefill_mlp": prefill_mlp,
         "m2v2_comparison": m2v2_comparison,
         "ext_ifbench_ood": ext_ifbench_ood,
+        "ext_m2_state_adaptive": ext_m2_state_adaptive,
+        "ext_math500_eval": ext_math500_eval,
         "items": items,
         "per_system_runs": per_system_runs,
     }
@@ -1262,6 +1274,34 @@ def generate_latex_table_parts(
                 f"Macro {_fmt_pct(r6['sampled_m2_macro'])} & OAA {_fmt_pct(r6['sampled_m2_oaa250'])} & "
                 f"Tok {float(r6['sampled_m2_tok']):.0f} (vs B1b {_fmt_pct(r6['sampled_b1b_macro'])}) & {n_eval_r6} \\\\"
             )
+        for m_id, bnd in bundles.items():
+            sa = bnd.get("ext_m2_state_adaptive")
+            if isinstance(sa, dict) and isinstance(sa.get("systems"), dict):
+                m_short = _tex_escape_tt(m_id.split("/")[-1])
+                zt = sa["systems"].get("M2_ZeroTok", {})
+                ad = sa["systems"].get("M2_Adapt", {})
+                mc_ad = (sa.get("comparisons") or {}).get("M2_Adapt_vs_B1b", {})
+                t4_lines.append(
+                    f"M2-ZeroTok State (\\texttt{{{m_short}}}) & Zero-Token ($T_{{\\text{{inj}}}}=0$) & "
+                    f"Macro {_fmt_pct(zt.get('macro_acc', 0.0))} & OAA {_fmt_pct(zt.get('oaa_250', 0.0))} & "
+                    f"Tok {float(zt.get('mean_t_tot', 0.0)):.0f} & {int(sa.get('n_eval', 450))} \\\\"
+                )
+                t4_lines.append(
+                    f"M2-Adapt Multi-Cap (\\texttt{{{m_short}}}) & $B \\in \\{{0..512\\}}$ (dev-cal) & "
+                    f"Macro {_fmt_pct(ad.get('macro_acc', 0.0))} & OAA$_{{512}}$ {_fmt_pct(ad.get('oaa_512', 0.0))} & "
+                    f"Tok {float(ad.get('mean_t_tot', 0.0)):.0f} ($p={float(mc_ad.get('p_exact', 1.0)):.3g}$) & {int(sa.get('n_eval', 450))} \\\\"
+                )
+            m5 = bnd.get("ext_math500_eval")
+            if isinstance(m5, dict) and isinstance(m5.get("systems"), dict):
+                m_short = _tex_escape_tt(m_id.split("/")[-1])
+                msy = m5["systems"]
+                b0m, b1m, adm = msy.get("B0", {}), msy.get("B1b", {}), msy.get("M2_Adapt", {})
+                t4_lines.append(
+                    f"MATH-500 L1--L5 (\\texttt{{{m_short}}}) & B0 / B1b $\\to$ M2-Adapt & "
+                    f"{float(b0m.get('acc_pct', 0.0)):.1f} / {float(b1m.get('acc_pct', 0.0)):.1f} $\\to$ {float(adm.get('acc_pct', 0.0)):.1f} & "
+                    f"L4--5: {float(adm.get('hard_l4_l5_pct', 0.0)):.1f} & "
+                    f"Tok {float(adm.get('mean_t_tot', 0.0)):.0f} (vs {float(b1m.get('mean_t_tot', 0.0)):.0f}) & {int(m5.get('n_problems', 200))} \\\\"
+                )
 
     t4_lines.extend([r"\bottomrule", r"\end{tabular}}", r"\end{table}"])
 
@@ -2359,6 +2399,30 @@ def generate_paper_writing_digest(
                     f"Classic Macro={100*cs.get('macro_acc',0):.1f}% (OAA_250={100*cs.get('oaa_250',0):.1f}%) vs "
                     f"SolveFirst Macro={100*ss.get('macro_acc',0):.1f}% (OAA_250={100*ss.get('oaa_250',0):.1f}%)"
                 )
+            sa_ext = wd.get("ext_m2_state_adaptive")
+            if isinstance(sa_ext, dict) and isinstance(sa_ext.get("systems"), dict):
+                zt = sa_ext["systems"].get("M2_ZeroTok", {})
+                ad = sa_ext["systems"].get("M2_Adapt", {})
+                mc_b1 = (sa_ext.get("comparisons") or {}).get("M2_Adapt_vs_B1b", {})
+                mc_b0 = (sa_ext.get("comparisons") or {}).get("M2_Adapt_vs_B0", {})
+                lines.append(
+                    f"- **End-to-End State & Regime-Adaptive C-BARR**: "
+                    f"`M2_ZeroTok` Macro={100*zt.get('macro_acc',0):.1f}% (OAA_250={100*zt.get('oaa_250',0):.1f}%, {zt.get('mean_t_tot',0):.0f}t) | "
+                    f"**`M2_Adapt` Macro={100*ad.get('macro_acc',0):.1f}%** ({ad.get('mean_t_tot',0):.0f}t, "
+                    f"vs B1b `{mc_b1.get('delta_macro_pp',0):+.1f}pp` `p={mc_b1.get('p_exact',1.0):.3g}`, "
+                    f"vs B0 `{mc_b0.get('delta_macro_pp',0):+.1f}pp` `p={mc_b0.get('p_exact',1.0):.3g}`)"
+                )
+            m5_ext = wd.get("ext_math500_eval")
+            if isinstance(m5_ext, dict) and isinstance(m5_ext.get("systems"), dict):
+                msy = m5_ext["systems"]
+                b0m, b1m, m250m, adm = msy.get("B0", {}), msy.get("B1b", {}), msy.get("M2_250", {}), msy.get("M2_Adapt", {})
+                lines.append(
+                    f"- **MATH-500 Hard Reasoning (`N={m5_ext.get('n_problems',0)}`, Levels 1-5)**: "
+                    f"B0={b0m.get('acc_pct',0):.1f}% ({b0m.get('mean_t_tot',0):.0f}t) | "
+                    f"B1b={b1m.get('acc_pct',0):.1f}% ({b1m.get('mean_t_tot',0):.0f}t, exh={b1m.get('exhaust_rate_pct',0):.1f}%) | "
+                    f"M2_250={m250m.get('acc_pct',0):.1f}% ({m250m.get('mean_t_tot',0):.0f}t) | "
+                    f"**M2_Adapt={adm.get('acc_pct',0):.1f}%** (L1-2={adm.get('easy_l1_l2_pct',0):.1f}%, L4-5={adm.get('hard_l4_l5_pct',0):.1f}%, {adm.get('mean_t_tot',0):.0f}t)"
+                )
             lines.append("")
 
     lines.extend(["", "## 7. Appendix B: OOD `IFBench_test`, 3-Seed `R6`, and Cross-Model L2 Sensitivity", ""])
@@ -2711,6 +2775,8 @@ def main() -> None:
             "ext_deltanet_blend_evict_kv",
             "prefill_mlp",
             "m2v2_comparison",
+            "ext_m2_state_adaptive",
+            "ext_math500_eval",
         ):
             if bundle.get(wk) is not None:
                 w7_entry[wk] = bundle[wk]

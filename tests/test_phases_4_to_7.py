@@ -4899,6 +4899,123 @@ class TestPhases4To7(unittest.TestCase):
         resolved = resolve_all_variants_for_item(seed_recs[0], params, _np.random.default_rng(0), 0.2)
         self.assertIn("M2", resolved)
 
+    def test_v0600_spotlight_state_adapt_and_math500(self) -> None:
+        """Verifies non-overlapping ext_m2_state_and_adaptive.py, ext_math500_eval.py, and sync/digest wiring."""
+        from scripts.ext_math500_eval import _run_math_item, extract_last_boxed, grade_math500_answer
+        from scripts.run_matrix import _build_engine
+        from scripts.sync_results import COMPACT_CACHE_NAMES, MODEL_SUMMARY_FILES
+        from src.routers import CalibratedRouterParams
+
+        self.assertIn("ext_m2_state_adaptive_cache.jsonl", COMPACT_CACHE_NAMES)
+        self.assertIn("ext_math500_cache.jsonl", COMPACT_CACHE_NAMES)
+        self.assertIn("ext_m2_state_adaptive.json", MODEL_SUMMARY_FILES)
+        self.assertIn("ext_math500_eval.json", MODEL_SUMMARY_FILES)
+
+        self.assertEqual(extract_last_boxed(r"Step 1... \boxed{\frac{3}{6}}."), r"\frac{3}{6}")
+        self.assertTrue(grade_math500_answer(r"Therefore \boxed{\frac{1}{2}}", "0.5"))
+        self.assertTrue(grade_math500_answer(r"Answer: \boxed{1,250}", "1250"))
+        self.assertFalse(grade_math500_answer(r"\boxed{41}", "42"))
+
+        # Exercise live-engine code path of _run_math_item(mock=False) on MockEngine to catch any signature drift
+        mock_eng = _build_engine("Qwen/Qwen3.5-4B", "cpu", use_mock=True)
+        live_path_row = _run_math_item(
+            mock_eng,
+            {"uid": "m_live_sig", "slice": "math_level_3", "level": 3, "subject": "Algebra", "prompt": "Compute 2 + 2.", "gold": "4"},
+            CalibratedRouterParams(coef=[0.1, 0.2, 0.3, 0.5, 0.4], intercept=-0.3, tau_prob=0.5, tau_h_high=0.85, m2_escalation_rate_dev=0.3),
+            mock=False,
+        )
+        self.assertIn("m2_b1024", live_path_row)
+        self.assertNotIn("_kv_state", live_path_row["probe"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = pathlib.Path(tmp) / "outputs"
+            m_dir = out_dir / "Qwen__Qwen3.5-4B"
+            m_dir.mkdir(parents=True)
+            # Run mock MATH-500 evaluation
+            rc_m5 = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_math500_eval.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(out_dir),
+                    "--mock",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(rc_m5.returncode, 0, msg=rc_m5.stderr + "\n" + rc_m5.stdout)
+            m5_json = json.loads((m_dir / "ext_math500_eval.json").read_text(encoding="utf-8"))
+            self.assertEqual(m5_json["n_problems"], 15)
+            self.assertGreater(
+                m5_json["systems"]["M2_Adapt"]["acc_pct"],
+                m5_json["systems"]["B0"]["acc_pct"],
+            )
+
+            # Also verify ext_m2_state_and_adaptive.py --mock on synthetic cached rows
+            slices = ("gsm8k_easy", "gsm8k_hard", "csqa", "ifeval_planning", "ifeval_precision", "ifeval_conflict")
+            prompts = {
+                "gsm8k_easy": "Alice has 12 apples and buys 8 more. How many apples?",
+                "gsm8k_hard": "A train travels 120 miles in 2 hours and 90 miles in 1.5 hours. Average speed?",
+                "csqa": "Where do people read books? (A) library (B) ocean (C) volcano (D) cloud (E) moon",
+                "ifeval_planning": "Write a 2 paragraph summary of solar energy.",
+                "ifeval_precision": "Explain wind power. Do not use any commas.",
+                "ifeval_conflict": "Write a 2 paragraph note on hydro power. Do not use any commas.",
+            }
+            for fname, n_rows in (("seed_60_cache.jsonl", 12), ("dev_60_cache.jsonl", 12), ("eval_450_cache.jsonl", 12)):
+                rows_l = []
+                for idx in range(n_rows):
+                    sl = slices[idx % len(slices)]
+                    run_stub = {"a_final": "ok", "t_think": "plan", "z": 1, "correct": True, "T_probe": 0, "T_think": 32, "T_wasted": 0, "T_inj": 0, "T_final": 16, "T_total": 48, "calls": 1, "truncated": False, "think_exhausted": False, "has_loop": False, "has_cot_spillover": False, "latency_ms": 1.0}
+                    rows_l.append({
+                        "item": {
+                            "uid": f"{fname}_{idx}",
+                            "key": 5000 + idx,
+                            "slice": sl,
+                            "dataset": "ifeval" if "ifeval" in sl else "csqa",
+                            "prompt": prompts[sl],
+                            "gold": "A",
+                            "instruction_id_list": ["punctuation:no_comma"],
+                            "kwargs": [{}],
+                        },
+                        "probe": {"T_probe": 8, "H_first": 0.3, "H_mean": 0.3, "H_max": 0.5, "I_inertia": idx % 2, "latency_ms": 1.0},
+                        "b0": dict(run_stub, z=int(idx % 2 == 0)),
+                        "b1a": dict(run_stub),
+                        "b1b": dict(run_stub, z=0, think_exhausted=True, T_total=2048),
+                        "b2a": dict(run_stub),
+                        "fast_done": dict(run_stub, z=int(idx % 2 == 0)),
+                        "m2_b64": dict(run_stub),
+                        "m2_b128": dict(run_stub),
+                        "m2_b256": dict(run_stub),
+                        "m2_b256_direct": dict(run_stub),
+                        "m2_pre_b64": dict(run_stub),
+                        "m2_pre_b128": dict(run_stub),
+                        "m2_pre_b256": dict(run_stub),
+                        "m2_pre_b256_direct": dict(run_stub),
+                    })
+                (m_dir / fname).write_text("".join(json.dumps(r) + "\n" for r in rows_l), encoding="utf-8")
+
+            rc_sa = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "ext_m2_state_and_adaptive.py"),
+                    "--model",
+                    "Qwen/Qwen3.5-4B",
+                    "--out-dir",
+                    str(out_dir),
+                    "--mock",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(rc_sa.returncode, 0, msg=rc_sa.stderr + "\n" + rc_sa.stdout)
+            sa_json = json.loads((m_dir / "ext_m2_state_adaptive.json").read_text(encoding="utf-8"))
+            self.assertIn("M2_ZeroTok", sa_json["systems"])
+            self.assertIn("M2_Adapt", sa_json["systems"])
+
 
 if __name__ == "__main__":
     unittest.main()

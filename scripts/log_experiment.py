@@ -322,7 +322,12 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
         mlp = _load_json_safe(sub / "prefill_mlp_summary.json")
         m2v2 = _load_json_safe(sub / "eval_450_m2v2_comparison.json")
         ifbench_ood = _load_json_safe(sub / "ext_ifbench_ood.json")
-        if any(isinstance(x, dict) for x in (blend, blend_conv_kv, blend_evict_kv, mlp, m2v2, ifbench_ood)):
+        state_adapt = _load_json_safe(sub / "ext_m2_state_adaptive.json")
+        math500 = _load_json_safe(sub / "ext_math500_eval.json")
+        if any(
+            isinstance(x, dict)
+            for x in (blend, blend_conv_kv, blend_evict_kv, mlp, m2v2, ifbench_ood, state_adapt, math500)
+        ):
             items.append(
                 {
                     "dir": sub.name,
@@ -332,6 +337,8 @@ def _extract_w7_extensions(out_dir: pathlib.Path) -> list[dict[str, Any]]:
                     "mlp": mlp,
                     "m2v2": m2v2,
                     "ifbench_ood": ifbench_ood,
+                    "state_adapt": state_adapt,
+                    "math500": math500,
                 }
             )
     return items
@@ -720,6 +727,24 @@ def _render_run_markdown(
                     f"OAA250={m2i.get('oaa_250_pct', 0):.1f}%, "
                     f"Tok={m2i.get('mean_t_tot', 0):.0f}, p_vs_B1b={mc_i.get('p_exact', 1.0):.3g})"
                 )
+            sa_ext = w7.get("state_adapt")
+            if isinstance(sa_ext, dict) and isinstance(sa_ext.get("systems"), dict):
+                ssy = sa_ext["systems"]
+                s_zt = ssy.get("M2_ZeroTok", {})
+                s_ad = ssy.get("M2_Adapt", {})
+                parts.append(
+                    f"StateAdapt(M2_ZeroTok={_fmt_pct(s_zt.get('macro_acc'))}, "
+                    f"M2_Adapt={_fmt_pct(s_ad.get('macro_acc'))}@{s_ad.get('mean_t_tot', 0):.0f}t)"
+                )
+            m500 = w7.get("math500")
+            if isinstance(m500, dict) and isinstance(m500.get("systems"), dict):
+                msy = m500["systems"]
+                parts.append(
+                    f"MATH500(N={m500.get('n_problems', 0)}: "
+                    f"B0={msy.get('B0', {}).get('acc_pct', 0):.1f}%/"
+                    f"B1b={msy.get('B1b', {}).get('acc_pct', 0):.1f}%/"
+                    f"M2_Adapt={msy.get('M2_Adapt', {}).get('acc_pct', 0):.1f}%)"
+                )
             if parts:
                 lines.append(f"- **`{w7['dir']}`**: " + " | ".join(parts))
 
@@ -773,7 +798,8 @@ def _render_run_markdown(
                 )
                 conf_lines.append(f"- **`{m_id}` (Confirmatory 4-pair Holm)**: {p_str}")
             ca = m_d.get("conformal_risk_audit") or {}
-            oe = (m_d.get("oracle_efficiency_audit") or {}).get("M2") or {}
+            oe_root = m_d.get("oracle_efficiency_audit") or {}
+            oe = ((oe_root.get("variants") or {}).get("M2")) or oe_root.get("M2") or {}
             if ca or oe:
                 dc = ca.get("dev_calibration") or {}
                 crc_s = (
@@ -781,11 +807,13 @@ def _render_run_markdown(
                     if "crc_expectation_bound" in dc
                     else ""
                 )
+                mac_ret = float(oe.get("macro_acc_retention", oe.get("macro_acc_retention_ratio", 0.0)))
+                tok_rat = float(oe.get("oracle_token_overhead_ratio", 0.0))
                 conf_lines.append(
                     f"- **`{m_id}` (Conformal & Oracle Audit)**: {crc_s}"
                     f"EvalDeg(vs B1b)={100*ca.get('eval_observed_degradation_risk', 0):.2f}% ({ca.get('eval_degradation_events', 0)}/450), "
                     f"EvalDeg(vs B0)={100*ca.get('eval_vs_b0_degradation_risk', 0):.2f}% ({ca.get('eval_vs_b0_degradation_events', 0)}/450), "
-                    f"OracleRet(Macro/U0.05)={100*oe.get('macro_acc_retention_ratio', 0):.1f}%/{100*oe.get('u_005_retention_ratio', 0):.1f}%"
+                    f"OracleRet(Macro)={100*mac_ret:.1f}% ({tok_rat:.2f}x tok)"
                 )
             ph = m_d.get("probe_horizon_ablation") or {}
             if ph:
