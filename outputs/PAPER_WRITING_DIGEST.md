@@ -1,6 +1,6 @@
 # C-BARR Final Paper-Writing Statistical & Mechanistic Digest
 
-- **Analyzer Code Version**: `v0.5.27` (`8165453`)
+- **Analyzer Code Version**: `v0.5.30` (`f1ec6e0`)
 - **Evaluated Backbones (5)**: `HuggingFaceTB/SmolLM3-3B`, `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `Qwen/Qwen3.5-9B`
 - **Bootstrap Resamples**: `n_boot=10000` (`seed=42`)
 
@@ -92,7 +92,7 @@
 ## 7. Appendix B: OOD `IFBench_test`, 3-Seed `R6`, and Cross-Model L2 Sensitivity
 
 - **IFBench_test OOD (`Qwen/Qwen3.5-4B`, `N=300`)**: B0=28.7% (386t) | B1b=2.0% (2034t) | **M2=31.3%** (OAA_250=31.3%, 443t, `p_exact=1.73e-24`)
-- **3-Seed Sampled R6**: *Pending execution (`--part r6`).*
+- **3-Seed Sampled R6 (`Qwen/Qwen3.5-4B`, seeds `[42, 43, 44]`, `T=0.6`)**: B0=82.8+/-1.4% | B1b=40.8+/-2.2% | **M2=82.3+/-2.7%** (OAA_250=83.0+/-2.2%, Tok=412+/-42, TokSav=75.2%)
 
 ### Gate-2 L2 Regularization Sensitivity (`C in {0.1, 0.25 (prod), 0.5, 1.0}`)
 | Model | `C=0.10` Macro (Esc, Tok) | `C=0.25 (prod)` Macro (Esc, Tok) | `C=0.50` Macro (Esc, Tok) | `C=1.00` Macro (Esc, Tok) |

@@ -535,7 +535,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.375,
           "tau_h_high": 3.143613815307617,
-          "coef_l2_norm": 1.0523685344140135,
+          "coef_l2_norm": 1.052368534414013,
           "dev_esc_rate": 0.5,
           "eval_m2_macro": 0.685,
           "eval_m2_oaa250": 0.72,
@@ -559,7 +559,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.39999999999999997,
           "tau_h_high": 3.143613815307617,
-          "coef_l2_norm": 2.214071549744232,
+          "coef_l2_norm": 2.2140715497442325,
           "dev_esc_rate": 0.4666666666666667,
           "eval_m2_macro": 0.6872222222222223,
           "eval_m2_oaa250": 0.7222222222222222,
@@ -1528,7 +1528,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.85,
           "tau_h_high": 3.71868634223938,
-          "coef_l2_norm": 0.4994017798022664,
+          "coef_l2_norm": 0.49940177980226647,
           "dev_esc_rate": 0.16666666666666666,
           "eval_m2_macro": 0.5427777777777777,
           "eval_m2_oaa250": 0.5688888888888889,
@@ -1540,7 +1540,7 @@
           "is_prod_effective_c": true,
           "tau_prob": 0.5249999999999999,
           "tau_h_high": 3.71868634223938,
-          "coef_l2_norm": 0.7595148823758696,
+          "coef_l2_norm": 0.7595148823758698,
           "dev_esc_rate": 0.31666666666666665,
           "eval_m2_macro": 0.5361111111111111,
           "eval_m2_oaa250": 0.5622222222222222,
@@ -1552,7 +1552,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.5499999999999999,
           "tau_h_high": 3.71868634223938,
-          "coef_l2_norm": 0.9241965089674451,
+          "coef_l2_norm": 0.9241965089674452,
           "dev_esc_rate": 0.25,
           "eval_m2_macro": 0.5361111111111111,
           "eval_m2_oaa250": 0.5622222222222222,
@@ -1564,7 +1564,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.5499999999999999,
           "tau_h_high": 3.71868634223938,
-          "coef_l2_norm": 1.0430373248697333,
+          "coef_l2_norm": 1.043037324869733,
           "dev_esc_rate": 0.2833333333333333,
           "eval_m2_macro": 0.5361111111111111,
           "eval_m2_oaa250": 0.5622222222222222,
@@ -2340,7 +2340,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.6,
           "tau_h_high": 3.156507134437561,
-          "coef_l2_norm": 1.3746567832626628,
+          "coef_l2_norm": 1.3746567832626626,
           "dev_esc_rate": 0.2833333333333333,
           "eval_m2_macro": 0.7050000000000001,
           "eval_m2_oaa250": 0.7222222222222222,
@@ -2352,7 +2352,7 @@
           "is_prod_effective_c": true,
           "tau_prob": 0.85,
           "tau_h_high": 3.156507134437561,
-          "coef_l2_norm": 2.2884774717246743,
+          "coef_l2_norm": 2.2884774717246756,
           "dev_esc_rate": 0.16666666666666666,
           "eval_m2_macro": 0.6961111111111111,
           "eval_m2_oaa250": 0.7133333333333334,
@@ -2364,7 +2364,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.6,
           "tau_h_high": 3.156507134437561,
-          "coef_l2_norm": 3.243859078275493,
+          "coef_l2_norm": 3.2438590782754932,
           "dev_esc_rate": 0.31666666666666665,
           "eval_m2_macro": 0.7094444444444444,
           "eval_m2_oaa250": 0.7333333333333333,
@@ -2376,7 +2376,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.5499999999999999,
           "tau_h_high": 3.156507134437561,
-          "coef_l2_norm": 4.455030000196505,
+          "coef_l2_norm": 4.455030000196504,
           "dev_esc_rate": 0.43333333333333335,
           "eval_m2_macro": 0.7127777777777777,
           "eval_m2_oaa250": 0.7377777777777778,
@@ -3152,7 +3152,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.575,
           "tau_h_high": 2.536835789680481,
-          "coef_l2_norm": 0.7425137310063827,
+          "coef_l2_norm": 0.7425137310063825,
           "dev_esc_rate": 0.2,
           "eval_m2_macro": 0.8477777777777779,
           "eval_m2_oaa250": 0.8533333333333334,
@@ -3176,7 +3176,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.725,
           "tau_h_high": 2.536835789680481,
-          "coef_l2_norm": 2.078557785009555,
+          "coef_l2_norm": 2.0785577850095547,
           "dev_esc_rate": 0.2,
           "eval_m2_macro": 0.8455555555555555,
           "eval_m2_oaa250": 0.8488888888888889,
@@ -3188,7 +3188,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.775,
           "tau_h_high": 2.536835789680481,
-          "coef_l2_norm": 2.8916418962537165,
+          "coef_l2_norm": 2.891641896253717,
           "dev_esc_rate": 0.2,
           "eval_m2_macro": 0.8455555555555555,
           "eval_m2_oaa250": 0.8488888888888889,
@@ -4538,7 +4538,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.44999999999999996,
           "tau_h_high": 2.66174852848053,
-          "coef_l2_norm": 1.074910805467458,
+          "coef_l2_norm": 1.0749108054674579,
           "dev_esc_rate": 0.5,
           "eval_m2_macro": 0.8588888888888889,
           "eval_m2_oaa250": 0.8577777777777778,
@@ -4550,7 +4550,7 @@
           "is_prod_effective_c": true,
           "tau_prob": 0.475,
           "tau_h_high": 2.66174852848053,
-          "coef_l2_norm": 1.701621504004401,
+          "coef_l2_norm": 1.7016215040044018,
           "dev_esc_rate": 0.43333333333333335,
           "eval_m2_macro": 0.86,
           "eval_m2_oaa250": 0.86,
@@ -4562,7 +4562,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.5,
           "tau_h_high": 2.66174852848053,
-          "coef_l2_norm": 2.2674642582420783,
+          "coef_l2_norm": 2.2674642582420774,
           "dev_esc_rate": 0.4166666666666667,
           "eval_m2_macro": 0.8588888888888889,
           "eval_m2_oaa250": 0.8577777777777778,
@@ -4574,7 +4574,7 @@
           "is_prod_effective_c": false,
           "tau_prob": 0.5499999999999999,
           "tau_h_high": 2.66174852848053,
-          "coef_l2_norm": 2.877997289268369,
+          "coef_l2_norm": 2.877997289268368,
           "dev_esc_rate": 0.3333333333333333,
           "eval_m2_macro": 0.86,
           "eval_m2_oaa250": 0.86,
@@ -4817,14 +4817,20 @@
     }
   },
   "version_audit": {
-    "analyzer_code_version": "0.5.27",
-    "analyzer_git_rev": "8165453",
+    "analyzer_code_version": "0.5.30",
+    "analyzer_git_rev": "f1ec6e0",
     "consistent_across_models": true,
-    "matches_analyzer_version": true,
+    "matches_analyzer_version": false,
     "versions_seen": [
       "0.5.27"
     ],
-    "mismatched_models": [],
+    "mismatched_models": [
+      "HuggingFaceTB/SmolLM3-3B",
+      "Qwen/Qwen3.5-0.8B",
+      "Qwen/Qwen3.5-2B",
+      "Qwen/Qwen3.5-4B",
+      "Qwen/Qwen3.5-9B"
+    ],
     "models": {
       "HuggingFaceTB/SmolLM3-3B": {
         "code_version": "0.5.27",
@@ -4832,7 +4838,7 @@
         "run_id": "20261119T114300Z",
         "sync_seq": 4,
         "result_version": "v0.5.27+m4",
-        "matches_analyzer_version": true
+        "matches_analyzer_version": false
       },
       "Qwen/Qwen3.5-0.8B": {
         "code_version": "0.5.27",
@@ -4840,7 +4846,7 @@
         "run_id": "20261119T114300Z",
         "sync_seq": 4,
         "result_version": "v0.5.27+m4",
-        "matches_analyzer_version": true
+        "matches_analyzer_version": false
       },
       "Qwen/Qwen3.5-2B": {
         "code_version": "0.5.27",
@@ -4848,7 +4854,7 @@
         "run_id": "20261119T114300Z",
         "sync_seq": 4,
         "result_version": "v0.5.27+m4",
-        "matches_analyzer_version": true
+        "matches_analyzer_version": false
       },
       "Qwen/Qwen3.5-4B": {
         "code_version": "0.5.27",
@@ -4856,7 +4862,7 @@
         "run_id": "20261119T114300Z",
         "sync_seq": 6,
         "result_version": "v0.5.27+m6",
-        "matches_analyzer_version": true
+        "matches_analyzer_version": false
       },
       "Qwen/Qwen3.5-9B": {
         "code_version": "0.5.27",
@@ -4864,7 +4870,7 @@
         "run_id": "20261119T114300Z",
         "sync_seq": 3,
         "result_version": "v0.5.27+m3",
-        "matches_analyzer_version": true
+        "matches_analyzer_version": false
       }
     }
   },
@@ -4893,6 +4899,87 @@
       "Qwen/Qwen3.5-9B": 0.38333333333333336
     }
   },
+  "r6_sampled_validation": [
+    {
+      "model": "Qwen/Qwen3.5-4B",
+      "dir": "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "presence_penalty": 1.5,
+      "seed": 42,
+      "n_eval": 450,
+      "sampled_b0_macro": 0.8444444444444444,
+      "sampled_b1b_macro": 0.385,
+      "sampled_b1b_tok": 1675.0866666666666,
+      "sampled_m2_macro": 0.8288888888888889,
+      "sampled_m2_oaa250": 0.8444444444444444,
+      "sampled_m2_u005": 0.7702311111111112,
+      "sampled_m2_tok": 371.06666666666666,
+      "sampled_m2_loop_rate": 0.02
+    },
+    {
+      "model": "Qwen/Qwen3.5-4B",
+      "dir": "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s43",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "presence_penalty": 1.5,
+      "seed": 43,
+      "n_eval": 450,
+      "sampled_b0_macro": 0.8183333333333334,
+      "sampled_b1b_macro": 0.42944444444444446,
+      "sampled_b1b_tok": 1661.7422222222222,
+      "sampled_m2_macro": 0.7944444444444443,
+      "sampled_m2_oaa250": 0.8044444444444444,
+      "sampled_m2_u005": 0.7135928888888889,
+      "sampled_m2_tok": 454.2577777777778,
+      "sampled_m2_loop_rate": 0.022222222222222223
+    },
+    {
+      "model": "Qwen/Qwen3.5-4B",
+      "dir": "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s44",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "presence_penalty": 1.5,
+      "seed": 44,
+      "n_eval": 450,
+      "sampled_b0_macro": 0.8222222222222223,
+      "sampled_b1b_macro": 0.41,
+      "sampled_b1b_tok": 1660.2622222222221,
+      "sampled_m2_macro": 0.8466666666666667,
+      "sampled_m2_oaa250": 0.8422222222222222,
+      "sampled_m2_u005": 0.7598644444444443,
+      "sampled_m2_tok": 411.7888888888889,
+      "sampled_m2_loop_rate": 0.024444444444444446
+    }
+  ],
+  "r6_sampled_summary": [
+    {
+      "model": "Qwen/Qwen3.5-4B",
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "presence_penalty": 1.5,
+      "n_seeds": 3,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "b0_macro_mean": 0.8283333333333335,
+      "b0_macro_std": 0.014087469259006603,
+      "b1b_macro_mean": 0.40814814814814815,
+      "b1b_macro_std": 0.02228001743614068,
+      "m2_macro_mean": 0.8233333333333333,
+      "m2_macro_std": 0.026550673656330136,
+      "m2_oaa250_mean": 0.8303703703703703,
+      "m2_oaa250_std": 0.02247998652665708,
+      "m2_u005_mean": 0.7478961481481482,
+      "m2_u005_std": 0.0301562952184185,
+      "m2_tok_mean": 412.3711111111111,
+      "m2_tok_std": 41.59861150341855,
+      "delta_m2_minus_b1b_pp": 41.51851851851851,
+      "delta_tok_savings_pct": 75.24333045313918
+    }
+  ],
   "confirmatory_pooled_diag": {
     "strict341_pooled": {
       "deltanet_models": {

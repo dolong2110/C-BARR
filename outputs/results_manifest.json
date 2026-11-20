@@ -1,10 +1,10 @@
 {
-  "results_seq": 24,
-  "results_version": "v0.5.30-res.24",
+  "results_seq": 25,
+  "results_version": "v0.5.30-res.25",
   "code_version": "0.5.30",
-  "git_rev": "ff75d3b-dirty",
-  "sync_label": "checkpoint-Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s44:20261119T222033Z_pr6",
-  "updated_utc": "2026-11-20T03:25:02Z",
+  "git_rev": "20ddfdf-dirty",
+  "sync_label": "script-part-r6:20261119T222033Z_pr6",
+  "updated_utc": "2026-11-20T03:27:10Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.27, 0.5.30",
@@ -348,19 +348,19 @@
     }
   },
   "phase7_sha256": {
-    "stats_summary.json": "bc7b10075941726176d2ee541852861a4a1e9ceebac3afe2d0ac0589f1f6cfdc",
-    "paper_tables.tex": "8708d4e2dcbe56abd60500c98c29de9792bda45e06eb063c47fc73e9add795f3",
-    "PAPER_WRITING_DIGEST.md": "48081a719f4c4058c8f1ee2ce5d562451003a041598f0fdb334ab468e381196d",
+    "stats_summary.json": "22e5908a58502c9c43edaf88804bde89033b0f4f87fc5cbf6f982885f0bac94f",
+    "paper_tables.tex": "c360dd972e364ad0d470f3558103a9559ee1c36e8789a62784b65c4597fbfbee",
+    "PAPER_WRITING_DIGEST.md": "a64d9a42197d7e72b92d5c9c0c615c2b098d08c4fd4a7d933118dae3075605ae",
     "PAPER_QUALITATIVE_EXAMPLES.md": "27bff58172c082290fdf978e6bee76d4378d46a28880dffe9f436de29690bd7a",
-    "paper/figures/fig0_cbarr_overview.pdf": "405521b2998e904646d57f0878d4707aee46ae9b3f4422b38fa126988e3850d3",
-    "paper/figures/fig1_pareto_frontier.pdf": "2099d0f8c09206f4d244a522c8113a3f2a52004cb00ebb99c3a16275e17138fd",
-    "paper/figures/fig2_bsr_sla_curve.pdf": "f4f97987544dd37b1c07a87d36c48571777a2e43ca547ef7b193e90d753857f2",
-    "paper/figures/fig3_ehurt_causal_recovery.pdf": "ef916b2b2d130d58b49feed34b88b84a574571ab0a9c158a2ace0e93153a618d",
-    "paper/figures/fig4_horizons_and_w7.pdf": "03c01ecc7087ac81c84126a46af8b99b419c01578863db4e7595b45f81f21c37",
+    "paper/figures/fig0_cbarr_overview.pdf": "4bd805266e9dd4ff829db6b43ef07853eb14fd16997df6813ddb91af12b5f2be",
+    "paper/figures/fig1_pareto_frontier.pdf": "961a6fac1c7f246502a99ace6b8075c58df2f6f742e6d498a8f5e324a2589c0c",
+    "paper/figures/fig2_bsr_sla_curve.pdf": "b6d03c80087d99ca5070ac1ca1e80b44e3a9e6e03c803e7c274d0938c788889d",
+    "paper/figures/fig3_ehurt_causal_recovery.pdf": "71b72c6b6efdf2768e3c7367e7458a6ad1388f0c65ce35d1a0617bdb10185caa",
+    "paper/figures/fig4_horizons_and_w7.pdf": "fdca8e609d8fbed89514282b17b8de74e96ebb610a75b01c1e0edd80e2c5a609",
     "paper/tables/tab1_main_results.tex": "fcad2dc97d65d348483176829cb23bdbd1e3024bae373c482fb36fd359f98051",
     "paper/tables/tab2_scale_pathology.tex": "2633d4a1b07015084dbbceab9e8441b82c4e1711e0f41105d41958b332534b79",
     "paper/tables/tab3_diagnostic_control.tex": "5e9a3203ca8287705836ae5a285df63b80be2a57326b4feb735a89528128a603",
-    "paper/tables/tab4_extensions_w7.tex": "acc44fd219e1a21b45f767263bad8406f4bba296c6bfcf2a8c1e710b05d0df61",
-    "paper/tables/tab5_appendix_ood_r6_l2.tex": "e275af270408fbafa4e60854a5f14c351eea2bb9a60dc0a4befefd5435a8ee9c"
+    "paper/tables/tab4_extensions_w7.tex": "bb89f76f566fe0fb6de9153e360e563e1fbf07d9e43a5df3d3b29be4227604d9",
+    "paper/tables/tab5_appendix_ood_r6_l2.tex": "c9b4e55cc14e795fb831a5bc68b3bc247cb41d4656b4273f583a3adb708b50f2"
   }
 }
