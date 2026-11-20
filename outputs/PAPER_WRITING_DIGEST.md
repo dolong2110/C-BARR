@@ -1,6 +1,6 @@
 # C-BARR Final Paper-Writing Statistical & Mechanistic Digest
 
-- **Analyzer Code Version**: `v0.5.30` (`f1ec6e0`)
+- **Analyzer Code Version**: `v0.5.31` (`1978dc4-dirty`)
 - **Evaluated Backbones (5)**: `HuggingFaceTB/SmolLM3-3B`, `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `Qwen/Qwen3.5-9B`
 - **Bootstrap Resamples**: `n_boot=10000` (`seed=42`)
 
@@ -43,11 +43,11 @@
 
 | Model | Dev Deg. vs B1b | CRC Bound | Hoeffding UCB (`M=29`) | Eval Deg. vs B1b (`k/450`) | Eval Deg. vs B0 (`k/450`) | Within Bounds | Oracle Macro Ret.% | Tok Ratio vs Oracle |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `Qwen/Qwen3.5-0.8B` | 0.0% | 1.6% | 23.0% | 0.44% (2/450) | 5.11% (23/450) | CRC=True, Hoef=True | 0.0% | 0.00x |
-| `Qwen/Qwen3.5-2B` | 0.0% | 1.6% | 23.0% | 1.11% (5/450) | 1.56% (7/450) | CRC=True, Hoef=True | 0.0% | 0.00x |
-| `Qwen/Qwen3.5-4B` | 1.7% | 3.3% | 24.7% | 0.67% (3/450) | 1.11% (5/450) | CRC=True, Hoef=True | 0.0% | 0.00x |
-| `Qwen/Qwen3.5-9B` | 1.7% | 3.3% | 24.7% | 1.11% (5/450) | 4.44% (20/450) | CRC=True, Hoef=True | 0.0% | 0.00x |
-| `HuggingFaceTB/SmolLM3-3B` | 11.7% | 13.1% | 34.7% | 10.44% (47/450) | 4.22% (19/450) | CRC=True, Hoef=True | 0.0% | 0.00x |
+| `Qwen/Qwen3.5-0.8B` | 0.0% | 1.6% | 23.0% | 0.44% (2/450) | 5.11% (23/450) | CRC=True, Hoef=True | 73.1% | 1.29x |
+| `Qwen/Qwen3.5-2B` | 0.0% | 1.6% | 23.0% | 1.11% (5/450) | 1.56% (7/450) | CRC=True, Hoef=True | 79.8% | 1.24x |
+| `Qwen/Qwen3.5-4B` | 1.7% | 3.3% | 24.7% | 0.67% (3/450) | 1.11% (5/450) | CRC=True, Hoef=True | 89.7% | 1.20x |
+| `Qwen/Qwen3.5-9B` | 1.7% | 3.3% | 24.7% | 1.11% (5/450) | 4.44% (20/450) | CRC=True, Hoef=True | 91.5% | 1.30x |
+| `HuggingFaceTB/SmolLM3-3B` | 11.7% | 13.1% | 34.7% | 10.44% (47/450) | 4.22% (19/450) | CRC=True, Hoef=True | 77.7% | 1.29x |
 
 ## 4. Section 6 Counterfactual Controls & Pooled Exact `k/n` Audit
 

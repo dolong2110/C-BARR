@@ -1256,8 +1256,9 @@ def generate_latex_table_parts(
         for r6 in r6_sampled or []:
             m_short = _tex_escape_tt(str(r6["model"]).split("/")[-1])
             n_eval_r6 = int(r6.get("n_eval") or 450)
+            seed_r6 = int(r6.get("seed", 42))
             t4_lines.append(
-                f"R6 Sampled M2 (\\texttt{{{m_short}}}) & $T={float(r6['temperature']):g}, p={float(r6['top_p']):g}, pp={float(r6['presence_penalty']):g}$ & "
+                f"R6 Sampled M2 (\\texttt{{{m_short}}}) & $T={float(r6['temperature']):g}, p={float(r6['top_p']):g}, \\text{{pp}}={float(r6['presence_penalty']):g}, s={seed_r6}$ & "
                 f"Macro {_fmt_pct(r6['sampled_m2_macro'])} & OAA {_fmt_pct(r6['sampled_m2_oaa250'])} & "
                 f"Tok {float(r6['sampled_m2_tok']):.0f} (vs B1b {_fmt_pct(r6['sampled_b1b_macro'])}) & {n_eval_r6} \\\\"
             )
@@ -2250,7 +2251,7 @@ def generate_paper_writing_digest(
         ms = stats_out["models"][m]
         ca = ms.get("conformal_risk_audit") or {}
         dc = ca.get("dev_calibration") or {}
-        oe = (ms.get("oracle_efficiency_audit") or {}).get("M2") or {}
+        oe = ms.get("oracle_efficiency_audit") or {}
         dev_r = f"{100*dc['empirical_degradation_risk']:.1f}%" if "empirical_degradation_risk" in dc else "--"
         crc_b = f"{100*dc['crc_expectation_bound']:.1f}%" if "crc_expectation_bound" in dc else "--"
         hoef_b = f"{100*dc['hoeffding_ucb']:.1f}%" if "hoeffding_ucb" in dc else "--"
