@@ -1,10 +1,10 @@
 {
-  "results_seq": 30,
-  "results_version": "v0.5.31-res.30",
+  "results_seq": 31,
+  "results_version": "v0.5.31-res.31",
   "code_version": "0.5.31",
-  "git_rev": "d4bccf3-dirty",
-  "sync_label": "checkpoint-Qwen3.5-9B:20261120T123558Z",
-  "updated_utc": "2026-11-20T12:49:22Z",
+  "git_rev": "bc8c734-dirty",
+  "sync_label": "checkpoint-Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42:20261120T123558Z",
+  "updated_utc": "2026-11-20T12:50:30Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.30, 0.5.31",
@@ -196,33 +196,33 @@
     },
     "Qwen__Qwen3.5-4B__T0.6_tp0.95_pp1.5_s42": {
       "model": "Qwen/Qwen3.5-4B",
-      "code_version": "0.5.30",
-      "git_rev": "af6a598-dirty",
-      "run_id": "20261119T222033Z_pr6",
-      "sync_seq": 1,
-      "result_version": "v0.5.30+m1",
+      "code_version": "0.5.31",
+      "git_rev": "bc8c734",
+      "run_id": "20261120T123558Z",
+      "sync_seq": 2,
+      "result_version": "v0.5.31+m2",
       "diag_pools": {
         "default": {
-          "code_version": "0.5.30",
-          "git_rev": "af6a598-dirty",
-          "run_id": "20261119T222033Z_pr6",
+          "code_version": "0.5.31",
+          "git_rev": "bc8c734",
+          "run_id": "20261120T123558Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         },
         "strict341": {
-          "code_version": "0.5.30",
-          "git_rev": "af6a598-dirty",
-          "run_id": "20261119T222033Z_pr6",
+          "code_version": "0.5.31",
+          "git_rev": "bc8c734",
+          "run_id": "20261120T123558Z",
           "seed": 42,
           "lam_utility": 0.05,
           "dtype": "torch.bfloat16"
         }
       },
       "artifact_sha256": {
-        "calibration_summary.json": "78d211f2bdd9a0d4731f94caaab051781946662ce8e680d6a3a341f04d66bc66",
-        "matrix_summary.json": "ed43fb16b89666f1f213e4693c28ca20604cefb342e7a3d9e431b3f2f98dff0e",
-        "matrix_summary_strict341.json": "ed43fb16b89666f1f213e4693c28ca20604cefb342e7a3d9e431b3f2f98dff0e",
+        "calibration_summary.json": "e48b1d9a3c0100c499a19546352a0b68dd99c079745978e5a99fe3b73cc103b4",
+        "matrix_summary.json": "365453e9c8ed5aac99c83c97f87a90b42828a7668d70f146a56622560d8de74f",
+        "matrix_summary_strict341.json": "365453e9c8ed5aac99c83c97f87a90b42828a7668d70f146a56622560d8de74f",
         "tables_rows.tex": "d8932021f1e76c99a8b29efb74fcb8d1bc7dfabd2e98ad310b3cb256e3b0df71",
         "tables_rows_strict341.tex": "d8932021f1e76c99a8b29efb74fcb8d1bc7dfabd2e98ad310b3cb256e3b0df71",
         "seed_60_cache.jsonl.gz": "d5af0792dbf405891d68eac208558f241eb073875db06e56d12b4b2fc5140610",
