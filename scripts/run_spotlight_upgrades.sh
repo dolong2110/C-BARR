@@ -64,11 +64,21 @@ fi
 export HF_HUB_DISABLE_XET=1
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
+# Clean up any accidental literal ./None folder from v0.6.0 HF_HOME stringification
+if [ -d "./None" ]; then
+  rm -rf "./None"
+fi
+if [ "${HF_HOME:-}" = "None" ]; then
+  unset HF_HOME
+fi
+
 # Auto-relocate HF_HOME onto roomy NFS/scratch mount when default home partition is tight
 if [ "$IS_MOCK" -eq 0 ]; then
-  RESOLVED_HF_HOME="$("$PY_BIN" -c 'from scripts.gpu_pool import resolve_roomy_hf_home; print(resolve_roomy_hf_home(min_free_gb=20.0))' 2>/dev/null || true)"
-  if [ -n "$RESOLVED_HF_HOME" ]; then
+  RESOLVED_HF_HOME="$("$PY_BIN" -c 'from scripts.gpu_pool import resolve_roomy_hf_home; print(resolve_roomy_hf_home(min_free_gb=20.0) or "")' 2>/dev/null || true)"
+  if [ -n "$RESOLVED_HF_HOME" ] && [ "$RESOLVED_HF_HOME" != "None" ]; then
     export HF_HOME="$RESOLVED_HF_HOME"
+  fi
+  if [ -n "${HF_HOME:-}" ]; then
     mkdir -p "$HF_HOME"
     echo "[spotlight] Using HF_HOME=${HF_HOME}"
   fi
