@@ -1798,8 +1798,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T222033Z_pr6 -->
 
 <!-- CBARR_RUN_START:20261120T123558Z -->
-### Run `20261120T123558Z` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (cached))** (Updated 2026-11-20 12:52:24 UTC)
-- **Code Version**: `v0.5.31` | **Git Commit**: `73e20d2` | **Results Release**: `v0.5.31-res.32` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (cached)` | **Wall Time**: `16m 18.0s` (978.0s)
+### Run `20261120T123558Z` — **RUNNING (after Phase 7 / W8: Analysis, Tables & Figures)** (Updated 2026-11-20 12:54:06 UTC)
+- **Code Version**: `v0.5.31` | **Git Commit**: `7c2f5c0` | **Results Release**: `v0.5.31-res.33` | **Last Loop**: `Phase 7 / W8: Analysis, Tables & Figures` | **Wall Time**: `17m 56.0s` (1076.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --gpu-boost --with-ifbench --with-r6 --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261120T123558Z.log`
@@ -1819,7 +1819,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "73e20d2",
+  "git_rev": "7c2f5c0",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1882,6 +1882,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=42): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
 | Contingency R6 Sampled (T=0.6, seed=43): Qwen/Qwen3.5-4B (cached) | PASS | 39.0s (39.0s) |
 | Contingency R6 Sampled (T=0.6, seed=44): Qwen/Qwen3.5-4B (cached) | PASS | 40.0s (40.0s) |
+| Phase 7 / W8: Analysis, Tables & Figures | PASS | 1m 25.0s (85.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -2096,14 +2097,13 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 - **`Qwen__Qwen3.5-4B`**: DeltaNetBlend(n=336: a=0.00:93.2%, a=0.25:95.2%, a=0.50:95.2%, a=0.75:94.0%, a=1.00:91.7%) | DeltaNetConvKV(n=336: a=0.00:85.7%, a=0.25:88.1%, a=0.50:89.9%, a=0.75:91.7%, a=1.00:95.8%) | PrefillMLP(layer_-1, tau=0.525, Macro=84.1%, OAA250=84.9%, U0.05=77.8%, Tok=357, OrigPrecF1=86.0%->81.2%, ParaPrecF1=78.9%->82.6%) | Stage2SolveFirst(replayed=17, Macro=84.6%->84.3%, OAA250=84.9%->84.4%) | IFBenchOOD(N=300: B0=28.7%/B1b=2.0%/M2=31.3%, OAA250=31.3%, Tok=443, p_vs_B1b=1.73e-24)
 
 #### 7. Phase 7 Statistical Audit & Gate-4 Summary
-- **Version Mismatch Alert**: analyzer=`v0.5.31` | versions seen across models=`['0.5.27']` | mismatched=`['HuggingFaceTB/SmolLM3-3B', 'Qwen/Qwen3.5-0.8B', 'Qwen/Qwen3.5-2B', 'Qwen/Qwen3.5-4B', 'Qwen/Qwen3.5-9B']`
 | Model | Version | Clean-446 (max delta) | M2 Macro | B1b Macro | M2 OAA_250 | Delta OAA_250 [95% CI] | Tok Red | p_holm vs B1b | p(M2 vs B0) | p(M2 vs Pre) | Gate 4 | R2 (rec / int) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `HuggingFaceTB/SmolLM3-3B` | `v0.5.27+m4` | 448 (0.5 pp) | 68.5% | 69.4% | 72.0% | +68.4 [64.0, 72.7] pp | 62.0% | 1 | 0.1524 | 0.7539 | CHECK | 62.5% / 37.5% |
-| `Qwen/Qwen3.5-0.8B` | `v0.5.27+m4` | 448 (0.2 pp) | 53.6% | 2.7% | 56.2% | +56.2 [51.6, 60.9] pp | 78.2% | 7.792e-67 | 1 | 0.2295 | PASS | 76.1% / 23.9% |
-| `Qwen/Qwen3.5-2B` | `v0.5.27+m4` | 448 (0.1 pp) | 69.6% | 13.7% | 71.3% | +71.3 [67.1, 75.6] pp | 79.7% | 5.977e-64 | 0.3593 | 0.6072 | PASS | 90.2% / 9.8% |
-| `Qwen/Qwen3.5-4B` | `v0.5.27+m6` | 448 (0.4 pp) | 84.6% | 30.2% | 84.9% | +84.7 [81.3, 88.0] pp | 79.2% | 5.104e-62 | 1 | 0.424 | PASS | 96.1% / 3.9% |
-| `Qwen/Qwen3.5-9B` | `v0.5.27+m3` | 448 (0.4 pp) | 86.0% | 38.3% | 86.0% | +86.0 [82.7, 89.1] pp | 77.2% | 5.684e-50 | 0.6177 | 0.5488 | PASS | 95.1% / 4.9% |
+| `HuggingFaceTB/SmolLM3-3B` | `v0.5.31+m5` | 448 (0.5 pp) | 68.5% | 69.4% | 72.0% | +68.4 [64.0, 72.7] pp | 62.0% | 1 | 0.1524 | 0.7539 | CHECK | 62.5% / 37.5% |
+| `Qwen/Qwen3.5-0.8B` | `v0.5.31+m5` | 448 (0.2 pp) | 53.6% | 2.7% | 56.2% | +56.2 [51.6, 60.9] pp | 78.2% | 7.792e-67 | 1 | 0.2295 | PASS | 76.1% / 23.9% |
+| `Qwen/Qwen3.5-2B` | `v0.5.31+m5` | 448 (0.1 pp) | 69.6% | 13.7% | 71.3% | +71.3 [67.1, 75.6] pp | 79.7% | 5.977e-64 | 0.3593 | 0.6072 | PASS | 90.2% / 9.8% |
+| `Qwen/Qwen3.5-4B` | `v0.5.31+m7` | 448 (0.4 pp) | 84.6% | 30.2% | 84.9% | +84.7 [81.3, 88.0] pp | 79.2% | 5.104e-62 | 1 | 0.424 | PASS | 96.1% / 3.9% |
+| `Qwen/Qwen3.5-9B` | `v0.5.31+m4` | 448 (0.4 pp) | 86.0% | 38.3% | 86.0% | +86.0 [82.7, 89.1] pp | 77.2% | 5.684e-50 | 0.6177 | 0.5488 | PASS | 95.1% / 4.9% |
 
 #### 8. Confirmatory Audit & Appendix B Summary
 - **`HuggingFaceTB/SmolLM3-3B` (Confirmatory 4-pair Holm)**: M2_vs_B1b: p_holm4=0.961 (midp=0.817), M2_vs_B0: p_holm4=0.61 (midp=0.476), M2_vs_B2a: p_holm4=0.961 (midp=0.817), M2_vs_M1c: p_holm4=0.961 (midp=0.817)
