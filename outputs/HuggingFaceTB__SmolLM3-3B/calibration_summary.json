@@ -329,18 +329,18 @@
       }
     }
   },
-  "wall_time_sec": 0.13,
+  "wall_time_sec": 0.12,
   "runtime": {
     "device": "cuda",
     "dtype": "torch.bfloat16"
   },
-  "code_version": "0.5.27",
-  "git_rev": "1f57685-dirty",
-  "run_id": "20261119T114300Z",
+  "code_version": "0.5.31",
+  "git_rev": "f8d621b-dirty",
+  "run_id": "20261120T123558Z",
   "training_params": {
-    "code_version": "0.5.27",
-    "git_rev": "1f57685-dirty",
-    "run_id": "20261119T114300Z",
+    "code_version": "0.5.31",
+    "git_rev": "f8d621b-dirty",
+    "run_id": "20261120T123558Z",
     "model": "HuggingFaceTB/SmolLM3-3B",
     "diag_pool": "diag491",
     "device": "cuda",

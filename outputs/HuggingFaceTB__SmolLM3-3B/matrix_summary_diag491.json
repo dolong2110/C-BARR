@@ -1,8 +1,8 @@
 {
   "model": "HuggingFaceTB/SmolLM3-3B",
-  "code_version": "0.5.27",
-  "git_rev": "1f57685-dirty",
-  "run_id": "20261119T114300Z",
+  "code_version": "0.5.31",
+  "git_rev": "f8d621b-dirty",
+  "run_id": "20261120T123558Z",
   "diag_pool": "diag491",
   "diag_n_items": 491,
   "status": "completed",
@@ -11,9 +11,9 @@
     "dtype": "torch.bfloat16"
   },
   "training_params": {
-    "code_version": "0.5.27",
-    "git_rev": "1f57685-dirty",
-    "run_id": "20261119T114300Z",
+    "code_version": "0.5.31",
+    "git_rev": "f8d621b-dirty",
+    "run_id": "20261120T123558Z",
     "model": "HuggingFaceTB/SmolLM3-3B",
     "diag_pool": "diag491",
     "device": "cuda",
@@ -45,10 +45,10 @@
     "b1b_max_new_tokens": 2048
   },
   "timing_sec": {
-    "calibration": 0.13,
-    "eval_matrix": 0.34,
+    "calibration": 0.12,
+    "eval_matrix": 0.33,
     "section6_diagnostics": 0.08,
-    "total_wall": 26.18
+    "total_wall": 25.42
   },
   "calibrated_params": {
     "coef": [

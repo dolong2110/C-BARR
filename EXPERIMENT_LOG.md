@@ -1798,8 +1798,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261119T222033Z_pr6 -->
 
 <!-- CBARR_RUN_START:20261120T123558Z -->
-### Run `20261120T123558Z` — **RUNNING (after W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached))** (Updated 2026-11-20 12:42:31 UTC)
-- **Code Version**: `v0.5.31` | **Git Commit**: `f7a0ebf` | **Results Release**: `v0.5.31-res.25` | **Last Loop**: `W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached)` | **Wall Time**: `6m 26.0s` (386.0s)
+### Run `20261120T123558Z` — **RUNNING (after W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B) (cached))** (Updated 2026-11-20 12:46:16 UTC)
+- **Code Version**: `v0.5.31` | **Git Commit**: `f8d621b` | **Results Release**: `v0.5.31-res.26` | **Last Loop**: `W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B) (cached)` | **Wall Time**: `10m 11.0s` (611.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_gpu_phases_4_to_6.sh --part all --setup-mode auto --shards auto --auto-9b --with-w7 --auto-b512 --auto-r6 --commit --push --gpu-boost --with-ifbench --with-r6 --hf-home <HOME>/maplecg_nfs/.cbarr_hf_cache`
 - **Raw Log**: `outputs/logs/cbarr_20261120T123558Z.log`
@@ -1819,7 +1819,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "f7a0ebf",
+  "git_rev": "f8d621b",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -1868,6 +1868,12 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | W7: DeltaNet Blend (Qwen/Qwen3.5-4B) (cached) | PASS | 6.0s (6.0s) |
 | W7: DeltaNet Conv+KV Blend (Qwen/Qwen3.5-4B) (cached) | PASS | 4.0s (4.0s) |
 | W7: Prefill MLP Probe (Qwen/Qwen3.5-4B) (cached) | PASS | 13.0s (13.0s) |
+| W7: Stage-2 SolveFirst Replay (Qwen/Qwen3.5-4B) (cached) | PASS | 0.0s (0.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (strict341) (cached) | PASS | 40.0s (40.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (Contingency R3 B=512) (cached) | PASS | 41.0s (41.0s) |
+| Phase 5 / W5: HuggingFaceTB/SmolLM3-3B (diag491) (cached) | PASS | 41.0s (41.0s) |
+| W7: Dense KV Eviction (HuggingFaceTB/SmolLM3-3B) (cached) | PASS | 5.0s (5.0s) |
+| W7: Prefill MLP Probe (HuggingFaceTB/SmolLM3-3B) (cached) | PASS | 12.0s (12.0s) |
 
 #### 3. Gate-3 Live 12-Item Smoke Check
 | Model | Items | D13 <=250 | No Reminder Leak | SmolLM3 Frozen Date |
@@ -1878,7 +1884,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `HuggingFaceTB/SmolLM3-3B` | `v0.5.27` (`1f57685-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
+| `HuggingFaceTB/SmolLM3-3B` | `v0.5.31` (`f8d621b-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
 | `Qwen/Qwen3.5-0.8B` | `v0.5.27` (`39b29e3`) | 0.525 | 3.719 | 31.7% (OK) | 16.7% | -0.79 | [-0.06, 0.14, 0.15, -0.21, 0.70] | 57/26/73/38/0.651 | 70/19/38/25/0.618 | 40/0.750 (n=40) | 4.0%->61.0% (2000->467t) | 0.1s |
 | `Qwen/Qwen3.5-2B` | `v0.5.27` (`e7f34a0`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.31` (`f7a0ebf-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
@@ -1889,7 +1895,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 
 #### 5. Evaluation Matrix & Section 6 Diagnostics (Per Model x Pool)
 
-- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.27` (`1f57685-dirty`) | dtype=`torch.bfloat16` | wall=`26.9s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
+- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.5.31` (`f8d621b-dirty`) | dtype=`torch.bfloat16` | wall=`26.6s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
   - **4-Regime**: Helped=13.6%, Hurt=9.6%, Flip=23.1%, TiePass=60.0%, TieFail=16.9%
   - **Section 6 Causal (`|E_hurt|=58`)**: rho_rec=63.8%, rho_int=36.2% | A1_strip=100.0%, B2a_post=63.8%, B1_pre=62.1%, B2b_raw=34.5%, A2_swap=55.2%, B3_cut=60.3%
 
@@ -1912,7 +1918,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | M2_B512 | 67.9% | 80.0% | 72.0% | 72.0% | 65.0% | 81.7% | 36.7% | 38.9% | 64.1% | 61.1% | 511 | 1.31 | 0.295 (raw) |
 | **Oracle_UB** | 88.2% | 97.3% | 97.3% | 89.3% | 83.3% | 95.0% | 66.7% | 88.0% | 88.5% | 84.7% | 287 | 1.00 | - |
 
-- **`HuggingFaceTB/SmolLM3-3B` (`diag491`**, n_diag=491) — ver=`v0.5.27` (`1f57685-dirty`) | dtype=`torch.bfloat16` | wall=`26.2s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
+- **`HuggingFaceTB/SmolLM3-3B` (`diag491`**, n_diag=491) — ver=`v0.5.31` (`f8d621b-dirty`) | dtype=`torch.bfloat16` | wall=`25.4s` (calib=0.1s, eval=0.3s, diag=0.1s) | tau=0.400, esc=46.7%
   - **4-Regime**: Helped=13.6%, Hurt=9.6%, Flip=23.1%, TiePass=60.0%, TieFail=16.9%
   - **Section 6 Causal (`|E_hurt|=80`)**: rho_rec=62.5%, rho_int=37.5% | A1_strip=100.0%, B2a_post=62.5%, B1_pre=58.8%, B2b_raw=33.8%, A2_swap=60.0%, B3_cut=62.5%
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
