@@ -2134,10 +2134,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261120T123558Z -->
 
 <!-- CBARR_RUN_START:20261120T200335Z_pr6 -->
-### Run `20261120T200335Z_pr6` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge))** (Updated 2026-11-21 06:30:57 UTC)
-- **Code Version**: `v0.6.1` | **Git Commit**: `0ae3858` | **Results Release**: `v0.6.1-res.35` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge)` | **Wall Time**: `10h 27m 14s` (37634.0s)
+### Run `20261120T200335Z_pr6` — **RUNNING (Calibration: HuggingFaceTB/SmolLM3-3B)** (Updated 2026-11-21 07:38:34 UTC)
+- **Code Version**: `v0.6.1` | **Git Commit**: `71c4c09` | **Results Release**: `v0.6.1-res.36` | **Last Loop**: `Calibration: HuggingFaceTB/SmolLM3-3B` | **Wall Time**: `5.3s` (5.3s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --no-unpack --skip-preflight --out-dir outputs --shards auto --r6-models HuggingFaceTB/SmolLM3-3B --r6-seeds 42 43 44 --gpu-boost --hf-home None --commit --push`
+- **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261120T200335Z_pr6.log`
 
 #### 1. Training & Experiment Parameters
@@ -2155,7 +2155,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "0ae3858",
+  "git_rev": "71c4c09",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -2198,6 +2198,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=42): HuggingFaceTB/SmolLM3-3B (merge) | PASS | 5h 50m 07s (21007.0s) |
 | Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B | PASS | 1h 25m 03s (5103.0s) |
 | Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge) | PASS | 52.0s (52.0s) |
+| Contingency R6 Sampled (T=0.6, seed=44): HuggingFaceTB/SmolLM3-3B | PASS | 1h 06m 56s (4016.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
@@ -2205,6 +2206,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | `HuggingFaceTB/SmolLM3-3B` | `v0.5.31` (`f8d621b-dirty`) | 0.400 | 3.144 | 46.7% (OK) | 16.7% | -0.37 | [0.26, 0.53, -0.09, -0.43, -1.45] | 75/28/71/40/0.806 | 48/16/100/28/0.698 | 36/0.806 (n=40) | 76.0%->74.0% (960->407t) | 0.1s |
 | `HuggingFaceTB/SmolLM3-3B` | `v0.6.0` (`6ea0a74-dirty`) | 0.425 | 0.850 | 50.0% (OK) | 16.7% | 0.50 | [0.00, 0.00, 0.00, -0.74, -1.60] | 60/12/75/20/0.708 | 42/18/78/29/0.508 | 37/0.630 (n=40) | 80.0%->71.0% (872->371t) | 0.1s |
 | `HuggingFaceTB/SmolLM3-3B` | `v0.6.1` (`5bfd729-dirty`) | 0.150 | 0.850 | 83.3% (OK) | 16.7% | 0.15 | [0.00, 0.00, 0.00, 0.30, -2.05] | 45/23/100/38/0.725 | 17/17/100/29/0.488 | 33/0.500 (n=40) | 79.0%->90.0% (922->458t) | 0.1s |
+| `HuggingFaceTB/SmolLM3-3B` | `v0.6.1` (`71c4c09-dirty`) | 0.425 | 0.850 | 50.0% (OK) | 16.7% | 0.51 | [0.00, 0.00, 0.00, -0.72, -1.67] | 62/22/75/34/0.714 | 45/20/89/33/0.596 | 38/0.696 (n=40) | 80.0%->80.0% (890->402t) | 0.1s |
 | `Qwen/Qwen3.5-0.8B` | `v0.5.31` (`6cf16ab`) | 0.525 | 3.719 | 31.7% (OK) | 16.7% | -0.79 | [-0.06, 0.14, 0.15, -0.21, 0.70] | 57/26/73/38/0.651 | 70/19/38/25/0.618 | 40/0.750 (n=40) | 4.0%->61.0% (2000->467t) | 0.2s |
 | `Qwen/Qwen3.5-2B` | `v0.5.31` (`8accece`) | 0.850 | 3.157 | 16.7% (WARN) | 16.7% | -2.95 | [-0.34, 0.06, 0.43, 2.19, 0.39] | 65/9/100/16/0.888 | 88/0/0/0/0.369 | 0/0.684 (n=40) | 13.0%->78.0% (1951->376t) | 0.1s |
 | `Qwen/Qwen3.5-4B` | `v0.5.31` (`f7a0ebf-dirty`) | 0.650 | 2.537 | 20.0% (OK) | 16.7% | -0.64 | [-0.68, 0.60, 0.10, 0.96, -0.43] | 72/19/100/32/0.804 | 87/0/0/0/0.629 | 0/0.410 (n=40) | 38.0%->90.0% (1744->365t) | 0.1s |
