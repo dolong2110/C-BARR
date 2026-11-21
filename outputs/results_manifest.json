@@ -1,14 +1,14 @@
 {
-  "results_seq": 35,
-  "results_version": "v0.6.1-res.35",
+  "results_seq": 36,
+  "results_version": "v0.6.1-res.36",
   "code_version": "0.6.1",
-  "git_rev": "77ccf19-dirty",
-  "sync_label": "checkpoint-HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s42:20261120T200335Z_pr6",
-  "updated_utc": "2026-11-21T05:04:46Z",
+  "git_rev": "501168f-dirty",
+  "sync_label": "checkpoint-HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s43:20261120T200335Z_pr6",
+  "updated_utc": "2026-11-21T06:31:02Z",
   "consistent_code_versions": false,
   "version_warnings": [
-    "Multiple code versions across model results: 0.5.31, 0.6.0",
-    "Repo VERSION is v0.6.1, while models have versions: ['0.5.31', '0.6.0']"
+    "Multiple code versions across model results: 0.5.31, 0.6.0, 0.6.1",
+    "Repo VERSION is v0.6.1, while models have versions: ['0.5.31', '0.6.0', '0.6.1']"
   ],
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
@@ -99,6 +99,44 @@
         "eval_450_cache.jsonl.gz": "a8d9d520d4545e382cb351da0a9b595304927de8d3227ac98fe1e5145bc0af91",
         "diag_ehurt_cache.jsonl.gz": "cb44371d968e6c732df3a4037c6c296693eaaf170321231569fd5c830cf7f23c",
         "diag_controls_cache.jsonl.gz": "152a693e3258a3613751f31a63acfaab076455ce9d58a64ecd1b60d7ad84628e"
+      }
+    },
+    "HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s43": {
+      "model": "HuggingFaceTB/SmolLM3-3B",
+      "code_version": "0.6.1",
+      "git_rev": "5bfd729-dirty",
+      "run_id": "20261120T200335Z_pr6",
+      "sync_seq": 1,
+      "result_version": "v0.6.1+m1",
+      "diag_pools": {
+        "default": {
+          "code_version": "0.6.1",
+          "git_rev": "5bfd729-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 43,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "strict341": {
+          "code_version": "0.6.1",
+          "git_rev": "5bfd729-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 43,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        }
+      },
+      "artifact_sha256": {
+        "calibration_summary.json": "bfd4d24d1079c22e49132e18e00af2431d814683fe7afe7b798da8394641b81b",
+        "matrix_summary.json": "8e251d0d8fc69dce477d86792a05ae689562f1f046e7efe51c91fdba11df615a",
+        "matrix_summary_strict341.json": "8e251d0d8fc69dce477d86792a05ae689562f1f046e7efe51c91fdba11df615a",
+        "tables_rows.tex": "74e355c1cd1f33266fec186075503fcbb76eb85bad20be4e088ef95d0382c798",
+        "tables_rows_strict341.tex": "74e355c1cd1f33266fec186075503fcbb76eb85bad20be4e088ef95d0382c798",
+        "seed_60_cache.jsonl.gz": "982d14b99217db22e8a73e8fcd7d801f6cd2df894d8e7ccb8212e25d3033f88f",
+        "dev_60_cache.jsonl.gz": "f4cabeed68ae8cb0e46b783f9df260a0d2dc69030db4e1ca5f7d1ae6677fdf19",
+        "eval_450_cache.jsonl.gz": "9451b0eeb33da7087bdea9b1a702a343fbeaf3f7c1c06c1a2f6408aa7fc0f994",
+        "diag_ehurt_cache.jsonl.gz": "4ed74522d9296704064e46664c89d3ab572d588d3fdca307390029af757b7bc9",
+        "diag_controls_cache.jsonl.gz": "8fd6c29cdff8afcda8de8e9e3ff2dbf61f459115b1ed02c196646092d24e4438"
       }
     },
     "Qwen__Qwen3.5-0.8B": {
