@@ -1,12 +1,15 @@
 {
-  "results_seq": 34,
-  "results_version": "v0.5.31-res.34",
-  "code_version": "0.5.31",
-  "git_rev": "fcb586c-dirty",
-  "sync_label": "script-all-in-one:20261120T123558Z",
-  "updated_utc": "2026-11-20T12:54:39Z",
-  "consistent_code_versions": true,
-  "version_warnings": [],
+  "results_seq": 35,
+  "results_version": "v0.6.1-res.35",
+  "code_version": "0.6.1",
+  "git_rev": "77ccf19-dirty",
+  "sync_label": "checkpoint-HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s42:20261120T200335Z_pr6",
+  "updated_utc": "2026-11-21T05:04:46Z",
+  "consistent_code_versions": false,
+  "version_warnings": [
+    "Multiple code versions across model results: 0.5.31, 0.6.0",
+    "Repo VERSION is v0.6.1, while models have versions: ['0.5.31', '0.6.0']"
+  ],
   "models": {
     "HuggingFaceTB__SmolLM3-3B": {
       "model": "HuggingFaceTB/SmolLM3-3B",
@@ -58,6 +61,44 @@
         "diag_ehurt_cache.jsonl.gz": "270dece315bfc6c325f635b36c2495a42caa35a103f60ff8c21787606ed2ce68",
         "diag_controls_cache.jsonl.gz": "16c1d6fd45c692ef810a3759054e5463809002c963b2be1dfb33a48e2c786019",
         "ext_deltanet_blend_cache.jsonl.gz": "79de8f0cbbfcba08f5bfbe9a185df1d2b6205d72fbf40ae804442e351037700d"
+      }
+    },
+    "HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s42": {
+      "model": "HuggingFaceTB/SmolLM3-3B",
+      "code_version": "0.6.0",
+      "git_rev": "6ea0a74-dirty",
+      "run_id": "20261120T200335Z_pr6",
+      "sync_seq": 1,
+      "result_version": "v0.6.0+m1",
+      "diag_pools": {
+        "default": {
+          "code_version": "0.6.0",
+          "git_rev": "6ea0a74-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "strict341": {
+          "code_version": "0.6.0",
+          "git_rev": "6ea0a74-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 42,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        }
+      },
+      "artifact_sha256": {
+        "calibration_summary.json": "ac5c85891320fd7564ff0052bca9947bd2e328fd9bdaf612849cf1e3bd38c852",
+        "matrix_summary.json": "0929f56db604d32790ec6831a61d0080d87896c68234663338a76c52ae537742",
+        "matrix_summary_strict341.json": "0929f56db604d32790ec6831a61d0080d87896c68234663338a76c52ae537742",
+        "tables_rows.tex": "2623e157091a1a7fac6d62ec7510ee58a630ee25a0e86c200c0f06ab41e9f035",
+        "tables_rows_strict341.tex": "2623e157091a1a7fac6d62ec7510ee58a630ee25a0e86c200c0f06ab41e9f035",
+        "seed_60_cache.jsonl.gz": "0eec24fa6157276af18a3de4f888b3d9899a1c3a18d9f8ecd085a4d90fc438bd",
+        "dev_60_cache.jsonl.gz": "2830d2f7821b6e31e121fd81af07f2a88b6bd6462880ee5bc81edd91d6012045",
+        "eval_450_cache.jsonl.gz": "a8d9d520d4545e382cb351da0a9b595304927de8d3227ac98fe1e5145bc0af91",
+        "diag_ehurt_cache.jsonl.gz": "cb44371d968e6c732df3a4037c6c296693eaaf170321231569fd5c830cf7f23c",
+        "diag_controls_cache.jsonl.gz": "152a693e3258a3613751f31a63acfaab076455ce9d58a64ecd1b60d7ad84628e"
       }
     },
     "Qwen__Qwen3.5-0.8B": {
