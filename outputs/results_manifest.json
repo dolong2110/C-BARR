@@ -1,10 +1,10 @@
 {
-  "results_seq": 36,
-  "results_version": "v0.6.1-res.36",
+  "results_seq": 37,
+  "results_version": "v0.6.1-res.37",
   "code_version": "0.6.1",
-  "git_rev": "501168f-dirty",
-  "sync_label": "checkpoint-HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s43:20261120T200335Z_pr6",
-  "updated_utc": "2026-11-21T06:31:02Z",
+  "git_rev": "c537bb1-dirty",
+  "sync_label": "checkpoint-HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s44:20261120T200335Z_pr6",
+  "updated_utc": "2026-11-21T07:39:16Z",
   "consistent_code_versions": false,
   "version_warnings": [
     "Multiple code versions across model results: 0.5.31, 0.6.0, 0.6.1",
@@ -137,6 +137,44 @@
         "eval_450_cache.jsonl.gz": "9451b0eeb33da7087bdea9b1a702a343fbeaf3f7c1c06c1a2f6408aa7fc0f994",
         "diag_ehurt_cache.jsonl.gz": "4ed74522d9296704064e46664c89d3ab572d588d3fdca307390029af757b7bc9",
         "diag_controls_cache.jsonl.gz": "8fd6c29cdff8afcda8de8e9e3ff2dbf61f459115b1ed02c196646092d24e4438"
+      }
+    },
+    "HuggingFaceTB__SmolLM3-3B__T0.6_tp0.95_pp1.5_s44": {
+      "model": "HuggingFaceTB/SmolLM3-3B",
+      "code_version": "0.6.1",
+      "git_rev": "71c4c09-dirty",
+      "run_id": "20261120T200335Z_pr6",
+      "sync_seq": 1,
+      "result_version": "v0.6.1+m1",
+      "diag_pools": {
+        "default": {
+          "code_version": "0.6.1",
+          "git_rev": "71c4c09-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 44,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        },
+        "strict341": {
+          "code_version": "0.6.1",
+          "git_rev": "71c4c09-dirty",
+          "run_id": "20261120T200335Z_pr6",
+          "seed": 44,
+          "lam_utility": 0.05,
+          "dtype": "torch.bfloat16"
+        }
+      },
+      "artifact_sha256": {
+        "calibration_summary.json": "3c31a9b889ed3035c0cfb9fb9dd112f6b8605c73df163dea75ae159f5be1c868",
+        "matrix_summary.json": "82cf7bc38ecb36bdb0d3d9200758d02bf8d07534d31641a1eaba4060763cceff",
+        "matrix_summary_strict341.json": "82cf7bc38ecb36bdb0d3d9200758d02bf8d07534d31641a1eaba4060763cceff",
+        "tables_rows.tex": "580879b9c0f864698bd4f2af2a5696b9948258ee4b23ea7367bf81617e2014b4",
+        "tables_rows_strict341.tex": "580879b9c0f864698bd4f2af2a5696b9948258ee4b23ea7367bf81617e2014b4",
+        "seed_60_cache.jsonl.gz": "563bd55bbac23ca862b24cae61e8226b82cae21ca6d347b484eee5a7aa7f0783",
+        "dev_60_cache.jsonl.gz": "09047c0c4b26c654859ecbc7fb985c949b9dd659f87628f935c229ca15d7d8e1",
+        "eval_450_cache.jsonl.gz": "b0ac41a0614306a037881b561cdaeb60efdbb72f9a93ba86889ceda7b16b6831",
+        "diag_ehurt_cache.jsonl.gz": "70b13621fbf1e5a4b22ba6f6af05121649ab4f79c4517e83ce3ec000b90cf82a",
+        "diag_controls_cache.jsonl.gz": "f3bdb906206f1fec03518928b5d91e9ff3ced2833cdbbffeab76f6285d9ab42c"
       }
     },
     "Qwen__Qwen3.5-0.8B": {
