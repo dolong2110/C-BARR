@@ -2134,8 +2134,8 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261120T123558Z -->
 
 <!-- CBARR_RUN_START:20261120T200335Z_pr6 -->
-### Run `20261120T200335Z_pr6` — **RUNNING (Eval-450: HuggingFaceTB/SmolLM3-3B (strict341))** (Updated 2026-11-21 05:04:02 UTC)
-- **Code Version**: `v0.6.1` | **Git Commit**: `0022a8a` | **Results Release**: `v0.6.1-res.34` | **Last Loop**: `Eval-450: HuggingFaceTB/SmolLM3-3B (strict341)` | **Wall Time**: `5h 49m 06s` (20946.4s)
+### Run `20261120T200335Z_pr6` — **RUNNING (Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341))** (Updated 2026-11-21 05:04:29 UTC)
+- **Code Version**: `v0.6.1` | **Git Commit**: `e85b45d` | **Results Release**: `v0.6.1-res.34` | **Last Loop**: `Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341)` | **Wall Time**: `5h 49m 35s` (20975.9s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
 - **Command**: `scripts/run_matrix.py`
 - **Raw Log**: `outputs/logs/cbarr_20261120T200335Z_pr6.log`
@@ -2155,7 +2155,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "0022a8a",
+  "git_rev": "e85b45d",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -2239,9 +2239,9 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   - **Section 6 Causal (`|E_hurt|=80`)**: rho_rec=62.5%, rho_int=37.5% | A1_strip=100.0%, B2a_post=62.5%, B1_pre=58.8%, B2b_raw=33.8%, A2_swap=60.0%, B3_cut=62.5%
   - *Eval-450 table identical to `strict341` above (omitted duplicate table).*
 
-- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.6.0` (`6ea0a74-dirty`) | dtype=`torch.bfloat16` | sample(T=0.6, top_p=0.95, pp=1.5, seed=42) | status=`eval450_complete` | wall=`20946.4s` (calib=0.1s, eval=20924.2s, diag=0.0s) | tau=0.425, esc=50.0%
+- **`HuggingFaceTB/SmolLM3-3B` (`strict341`**, n_diag=341) — ver=`v0.6.0` (`6ea0a74-dirty`) | dtype=`torch.bfloat16` | sample(T=0.6, top_p=0.95, pp=1.5, seed=42) | wall=`20975.8s` (calib=0.1s, eval=20924.2s, diag=0.1s) | tau=0.425, esc=50.0%
   - **4-Regime**: Helped=18.4%, Hurt=7.8%, Flip=26.2%, TiePass=58.9%, TieFail=14.9%
-  - **Section 6 Causal (`|E_hurt|=0`)**: rho_rec=n/a, rho_int=n/a | A1_strip=0.0%, B2a_post=0.0%, B1_pre=0.0%, B2b_raw=0.0%, A2_swap=0.0%, B3_cut=0.0%
+  - **Section 6 Causal (`|E_hurt|=48`)**: rho_rec=52.1%, rho_int=47.9% | A1_strip=100.0%, B2a_post=52.1%, B1_pre=50.0%, B2b_raw=22.9%, A2_swap=52.1%, B3_cut=58.3%
 
 | Variant | Macro | GSM8K-E | GSM8K-H | CSQA | IF-Plan | IF-Prec | IF-Conf | OAA_250 | AUC_OAA | U_0.05 | MeanTok | Calls | p_holm vs B1b |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
