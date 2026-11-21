@@ -2134,10 +2134,10 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 <!-- CBARR_RUN_END:20261120T123558Z -->
 
 <!-- CBARR_RUN_START:20261120T200335Z_pr6 -->
-### Run `20261120T200335Z_pr6` — **RUNNING (Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341))** (Updated 2026-11-21 06:30:45 UTC)
-- **Code Version**: `v0.6.1` | **Git Commit**: `454349f` | **Results Release**: `v0.6.1-res.35` | **Last Loop**: `Section 6 & Matrix Complete: HuggingFaceTB/SmolLM3-3B (strict341)` | **Wall Time**: `30.7s` (30.7s)
+### Run `20261120T200335Z_pr6` — **RUNNING (after Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge))** (Updated 2026-11-21 06:30:57 UTC)
+- **Code Version**: `v0.6.1` | **Git Commit**: `0ae3858` | **Results Release**: `v0.6.1-res.35` | **Last Loop**: `Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge)` | **Wall Time**: `10h 27m 14s` (37634.0s)
 - **Hardware**: 8x NVIDIA L40 (44.4 GB, SM 8.9, CUDA 13.2, BF16=True) | PyTorch `2.15.0+cu132` | Transformers `5.23.0` | Kernels: `fla=True, causal_conv1d=True`
-- **Command**: `scripts/run_matrix.py`
+- **Command**: `scripts/run_gpu_phases_4_to_6.sh --part r6 --no-unpack --skip-preflight --out-dir outputs --shards auto --r6-models HuggingFaceTB/SmolLM3-3B --r6-seeds 42 43 44 --gpu-boost --hf-home None --commit --push`
 - **Raw Log**: `outputs/logs/cbarr_20261120T200335Z_pr6.log`
 
 #### 1. Training & Experiment Parameters
@@ -2155,7 +2155,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
   "dtype": "auto",
   "gate2_probe_tokens": 32,
   "git_branch": "",
-  "git_rev": "454349f",
+  "git_rev": "0ae3858",
   "include_b512": true,
   "is_mock": false,
   "lam_utility": 0.05,
@@ -2197,6 +2197,7 @@ Tracks every test, mock dry-run, and live GPU experiment execution (wall-clock d
 | Contingency R6 Sampled (T=0.6, seed=42): HuggingFaceTB/SmolLM3-3B | PASS | 3h 10m 30s (11430.0s) |
 | Contingency R6 Sampled (T=0.6, seed=42): HuggingFaceTB/SmolLM3-3B (merge) | PASS | 5h 50m 07s (21007.0s) |
 | Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B | PASS | 1h 25m 03s (5103.0s) |
+| Contingency R6 Sampled (T=0.6, seed=43): HuggingFaceTB/SmolLM3-3B (merge) | PASS | 52.0s (52.0s) |
 
 #### 4. Calibration & Gate-2 Classifier Results (Per Model)
 | Model | Code Ver | tau_prob | tau_h_high | Dev Esc (R1) | G1 Skip | Intercept | Coef (`H1, Hm, Hmax, I, sym`) | Train@0.5 (Acc/Prec/Rec/F1/AUC) | Val-All@tau (Acc/Prec/Rec/F1/AUC) | Val-G2@tau (F1/AUC) | Dev `B1b->M2` Macro (Tok) | Time |
